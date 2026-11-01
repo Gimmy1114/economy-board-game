@@ -1,0 +1,10 @@
+{
+  "name": "economy-board-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node serve.mjs",
+    "test": "node --test"
+  }
+}
