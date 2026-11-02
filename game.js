@@ -5219,7 +5219,7 @@ const PartyUI = (() => {
       map = document.createElement('section'); map.className = 'mobile-map-area'; map.setAttribute('aria-label', '地圖區');
       controls = document.createElement('section'); controls.className = 'mobile-control-area'; controls.setAttribute('aria-label', '玩家操作區');
       const viewport = document.createElement('div'); viewport.className = 'map-viewport';
-      const zoom = document.createElement('div'); zoom.className = 'map-zoom-controls'; zoom.innerHTML = '<button type="button" data-map-zoom="in" aria-label="放大地圖" title="放大">🔍➕</button><button type="button" data-map-zoom="out" aria-label="縮小地圖" title="縮小">🔍➖</button>';
+      const zoom = document.createElement('div'); zoom.className = 'map-zoom-controls'; zoom.innerHTML = '<button type="button" class="zoom-btn" data-map-zoom="in" aria-label="放大地圖" title="放大">＋</button><button type="button" class="zoom-btn" data-map-zoom="out" aria-label="縮小地圖" title="縮小">－</button>';
       const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '查看所有最近動態');
       const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<button type="button" class="map-history-close" data-map-history-close aria-label="關閉動態清單">×</button><div class="map-history-items"></div>';
       map.append(viewport, zoom, ticker, history); controls.append(side, players); grid.prepend(map, controls);
@@ -5245,6 +5245,7 @@ const PartyUI = (() => {
     if (board && map) grid.insertBefore(board, map);
     if (side && map) grid.insertBefore(side, map);
     if (players && map) grid.insertBefore(players, map);
+    grid.querySelectorAll('.mobile-turn-topbar').forEach(bar => bar.remove());
     map?.remove(); controls?.remove();
     grid.classList.remove('mobile-split-view');
     const boardEl = $('#board');
@@ -5259,6 +5260,7 @@ const PartyUI = (() => {
     mobileDelegatesBound = true;
     document.addEventListener('click', e => {
       const target = e.target;
+      if (target.closest('#mobile-fullscreen-btn')) { toggleMobileFullscreen(); return; }
       const zoom = target.closest('[data-map-zoom]');
       if (zoom) zoomMap(zoom.dataset.mapZoom === 'in' ? 1.2 : 1 / 1.2);
       if (target.closest('[data-map-history-open]')) toggleMapHistory(true);
@@ -5271,6 +5273,42 @@ const PartyUI = (() => {
       }
       if (target.closest('[data-mobile-panel-close]')) closeMobilePanel();
     });
+    document.addEventListener('fullscreenchange', syncMobileFullscreenButton);
+    document.addEventListener('webkitfullscreenchange', syncMobileFullscreenButton);
+  }
+
+  function activeFullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  function syncMobileFullscreenButton() {
+    const button = document.getElementById('mobile-fullscreen-btn');
+    if (!button) return;
+    const active = Boolean(activeFullscreenElement());
+    button.setAttribute('aria-pressed', String(active));
+    button.setAttribute('aria-label', active ? '退出全螢幕' : '進入全螢幕');
+    button.title = active ? '退出全螢幕' : '進入全螢幕';
+  }
+
+  function toggleMobileFullscreen() {
+    const root = document.documentElement;
+    if (!activeFullscreenElement()) {
+      const request = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (typeof request !== 'function') {
+        console.log('這個瀏覽器不支援全螢幕；iPhone 可用「加入主畫面」全螢幕開啟。');
+        return;
+      }
+      Promise.resolve(request.call(root)).then(() => {
+        const lock = screen.orientation?.lock;
+        if (typeof lock === 'function') Promise.resolve(lock.call(screen.orientation, 'landscape')).catch(err => console.log(err));
+        syncMobileFullscreenButton();
+      }).catch(err => console.log(err));
+      return;
+    }
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    Promise.resolve(typeof exit === 'function' ? exit.call(document) : null)
+      .then(syncMobileFullscreenButton)
+      .catch(err => console.log(err));
   }
 
   function ensureMobileBottomMenu(controls) {
@@ -5331,7 +5369,8 @@ const PartyUI = (() => {
       bar.className = 'mobile-turn-topbar';
       panel.insertBefore(bar, content);
     }
-    bar.innerHTML = `<span class="mobile-current-turn">CURRENT TURN</span><button type="button" class="mobile-mode-button" data-mobile-mode-rules aria-label="查看${h(mode.name)}規則" title="${h(mode.name)}規則">${mode.icon}</button><span class="mobile-season">${Number(game?.round) || 1}/${Number(game?.maxRounds) || 1}</span>`;
+    bar.innerHTML = `<span class="mobile-current-turn">CURRENT TURN</span><button type="button" class="mobile-mode-button" data-mobile-mode-rules aria-label="查看${h(mode.name)}規則" title="${h(mode.name)}規則">${mode.icon}</button><span class="mobile-season-group"><button type="button" id="mobile-fullscreen-btn" class="mobile-fullscreen-btn" data-mobile-fullscreen aria-label="進入全螢幕" title="進入全螢幕" aria-pressed="false">⛶</button><span class="mobile-season">${Number(game?.round) || 1}/${Number(game?.maxRounds) || 1}</span></span>`;
+    syncMobileFullscreenButton();
 
     const head = content.querySelector('.turn-head'), statStrip = content.querySelector('.stat-strip');
     if (head && statStrip && !content.querySelector('.mobile-player-info')) {

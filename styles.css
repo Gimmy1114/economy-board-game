@@ -608,3 +608,58 @@ html,body{margin:0}
 .party-tile .token{box-sizing:border-box;width:calc((100% - 6px) / 4);height:auto;aspect-ratio:1 / 1;flex:0 0 calc((100% - 6px) / 4);min-width:0;display:flex;justify-content:center;align-items:center;color:#fff;font-size:8px;font-weight:900;line-height:1;border:1.5px solid #fff;border-radius:50%;box-shadow:0 2px 5px #14283588,0 0 0 1px #14283555}
 .party-tile .token.moving{z-index:11}
 @media(max-width:760px){.party-tile .token{font-size:6px;border-width:1px}}
+
+/* ==========================================================================
+   手機橫向遊玩：地圖拖曳、計時器、縮放控制、彈窗與全螢幕
+   以下規則只在手機橫向（寬度 <= 932px）生效，桌面版樣式不受影響。
+   ========================================================================== */
+@media screen and (max-width:932px) and (orientation:landscape){
+  /* 1. 桌面版右下角提示會遮住操作區，手機橫向不顯示。 */
+  #toast{display:none!important}
+
+  /* 2. 中央看板不再攔截地圖拖曳事件；看板內仍可操作的元件另開 pointer-events。 */
+  .mobile-map-area .board-center,
+  .mobile-map-area .board-center.party-center{pointer-events:none}
+  .mobile-map-area .board-center button,
+  .mobile-map-area .board-center a,
+  .mobile-map-area .board-center input,
+  .mobile-map-area .board-center select,
+  .mobile-map-area .board-center textarea,
+  .mobile-map-area .board-center [role="button"],
+  .mobile-map-area .board-center [data-action],
+  .mobile-map-area .board-center [data-dismiss-investment]{pointer-events:auto}
+
+  /* 3. 回合計時器固定在地圖頂部中央，蓋在棋盤與格子上。 */
+  .mobile-map-area .board-turn-clock{position:absolute;top:4px;left:50%;transform:translateX(-50%);z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;margin:0;padding:4px 10px;border:1px solid #ffffff30;border-radius:999px;background:rgba(0,0,0,.7);color:#c7ffe9;box-shadow:0 3px 12px #0006;font-size:16px;line-height:1.1;letter-spacing:.02em;text-shadow:0 0 6px #65ffd0aa;white-space:nowrap;pointer-events:none}
+  .mobile-map-area .board-turn-clock-label{font-size:9px;font-weight:800;line-height:1;letter-spacing:0;color:#e9fff8}
+  .mobile-map-area .board-turn-clock-value{display:inline-block;min-width:22px;font-size:16px;font-weight:900;text-align:center}
+  .mobile-map-area .board-turn-clock.expired{border-color:#ff8b7b;background:rgba(65,9,9,.82);color:#ffb1a6;text-shadow:0 0 6px #ff725eaa}
+
+  /* 4. 縮放控制固定在地圖右上角，層級高於計時器；按鈕尺寸與背景重新設定。 */
+  .mobile-map-area .map-zoom-controls{position:absolute;top:8px;right:8px;z-index:60;display:flex;align-items:center;gap:8px;margin:0;padding:0}
+  .mobile-map-area .map-zoom-controls .zoom-btn{display:grid;place-items:center;width:36px;height:36px;min-width:36px;min-height:36px;margin:0;padding:0;border:1px solid #ffffff3d;border-radius:9px;background:rgba(16,32,40,.88);color:#f2fffb;box-shadow:0 3px 12px #0005;font-size:21px;font-weight:900;line-height:1;touch-action:manipulation}
+  .mobile-map-area .map-zoom-controls .zoom-btn:hover{background:rgba(30,72,82,.94)}
+  .mobile-map-area .map-zoom-controls .zoom-btn:active{transform:scale(.94)}
+  .mobile-map-area .map-zoom-controls .zoom-btn:disabled{opacity:.38}
+
+  /* 5. 事件、抉擇、大廳、結算等所有彈窗外框在手機橫向縮到可視範圍內。 */
+  .modal-card,
+  .ext-modal-card,
+  .connect-card,
+  .lobby-card,
+  .settlement-card,
+  .wheel-card,
+  .custom-map-dialog,
+  .role-skill-dialog,
+  .color-picker-card,
+  .connecting-card{max-width:90vw!important;max-height:85vh!important;overflow-x:hidden!important;overflow-y:auto!important;font-size:.85em;padding:12px!important;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+
+  /* 6. 手機橫向頂部資訊列：全螢幕按鈕與季數靠右對齊。 */
+  .mobile-turn-topbar .mobile-season-group{justify-self:end;display:flex;align-items:center;gap:8px;min-width:0}
+  .mobile-fullscreen-btn{display:grid;place-items:center;flex:none;width:28px;height:28px;min-width:28px;min-height:28px;margin:0;padding:0;border:1px solid #ffffff3d;border-radius:7px;background:rgba(255,255,255,.1);color:#e8f2ee;font-size:17px;font-weight:900;line-height:1;touch-action:manipulation}
+  .mobile-fullscreen-btn:hover{background:rgba(255,255,255,.18)}
+  .mobile-fullscreen-btn:active{transform:scale(.94)}
+  .mobile-fullscreen-btn[aria-pressed="true"]{border-color:#55d8c6;background:#187b71;color:#fff}
+  .mobile-fullscreen-btn:focus-visible{outline:2px solid #7bd5ca;outline-offset:1px}
+}
+
