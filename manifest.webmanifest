@@ -1,0 +1,16 @@
+{
+  "name": "經濟棋局｜併購派對",
+  "short_name": "經濟棋局",
+  "start_url": "./",
+  "display": "standalone",
+  "theme_color": "#111b28",
+  "background_color": "#f5f3ee",
+  "icons": [
+    {
+      "src": "./app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

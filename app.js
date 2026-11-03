@@ -48,6 +48,7 @@ const tabId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
 let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
 let state=null,page='home',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:30,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
@@ -985,6 +986,25 @@ function returnToLobby(lobby){
 }
 $('#home-btn').addEventListener('click',()=>{page='home';closeModal();render();window.scrollTo({top:0,behavior:'smooth'})});
 $('#home-play-btn').addEventListener('click',()=>{page='game';render();window.scrollTo({top:0,behavior:'smooth'})});
+window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();deferredInstallPrompt=event});
+window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null});
+if('serviceWorker' in navigator&&location.protocol!=='file:')window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{})});
+function closePwaInstallModal(){const el=$('#pwa-install-modal');if(el)el.hidden=true}
+function openPwaInstallHelp(){const el=$('#pwa-install-modal');if(el)el.hidden=false}
+$('#pwa-install-btn')?.addEventListener('click',async()=>{
+  if(deferredInstallPrompt){
+    const promptEvent=deferredInstallPrompt;deferredInstallPrompt=null;
+    try{
+      await promptEvent.prompt();
+      await Promise.resolve(promptEvent.userChoice);
+    }catch{
+      openPwaInstallHelp();
+    }
+    return;
+  }
+  openPwaInstallHelp();
+});
+$('#pwa-install-modal')?.addEventListener('click',event=>{if(event.target.closest('[data-close-pwa-modal]'))closePwaInstallModal()});
 $('#new-game-btn').addEventListener('click',()=>{void resetGame()});
 $('#open-tab-btn').addEventListener('click',()=>{window.open(location.href,'_blank','noopener')});
 $('#export-btn').addEventListener('click',()=>{if(!state){notify('目前沒有可匯出的對局。');return}const blob=new Blob([exportGame(state)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`經濟棋局-派對-第${state.round}季.json`;a.click();URL.revokeObjectURL(url)});

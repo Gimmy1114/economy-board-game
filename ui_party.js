@@ -192,7 +192,7 @@ export const PartyUI = (() => {
     map?.remove(); controls?.remove();
     grid.classList.remove('mobile-split-view');
     const boardEl = $('#board');
-    if (boardEl) { boardEl.style.removeProperty('transform'); boardEl.style.removeProperty('translate'); }
+    if (boardEl) boardEl.style.removeProperty('transform');
     mobileMap.zoom = 1.55; mobileMap.x = 0; mobileMap.y = 0; mobileMap.min = 1; mobileMap.turnKey = '';
     mobileNameObserver?.disconnect(); mobileNameObserver = null;
     closeMobilePanel();
@@ -350,6 +350,10 @@ export const PartyUI = (() => {
         skill.removeAttribute('title');
         if (info) skill.append(info);
       }
+      // 回合不是本機玩家時保留所有按鈕的版面空間，只把內容設為不可見。
+      // 這能避免右側操作區在玩家換回合時重新排版而上下跳動。
+      const waiting = actions.classList.contains('is-waiting');
+      actions.querySelectorAll('button').forEach(button => { button.style.visibility = waiting ? 'hidden' : ''; });
     }
   }
 
@@ -383,8 +387,8 @@ export const PartyUI = (() => {
     // 棋盤為方形版面，最小值等於視窗短邊可容納整張棋盤的尺寸。
     mobileMap.min = Math.min(viewport.clientWidth, viewport.clientHeight);
     board.style.transformOrigin = 'center center';
-    board.style.translate = `${mobileMap.x}px ${mobileMap.y}px`;
-    board.style.transform = `scale(${mobileMap.zoom})`;
+    // 把平移與縮放合併在棋盤畫布本身；格子及其內容完全不改尺寸。
+    board.style.transform = `translate(${mobileMap.x}px, ${mobileMap.y}px) scale(${mobileMap.zoom})`;
     const zoomButtons = $$('[data-map-zoom]');
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;

@@ -5249,7 +5249,7 @@ const PartyUI = (() => {
     map?.remove(); controls?.remove();
     grid.classList.remove('mobile-split-view');
     const boardEl = $('#board');
-    if (boardEl) { boardEl.style.removeProperty('transform'); boardEl.style.removeProperty('translate'); }
+    if (boardEl) boardEl.style.removeProperty('transform');
     mobileMap.zoom = 1.55; mobileMap.x = 0; mobileMap.y = 0; mobileMap.min = 1; mobileMap.turnKey = '';
     mobileNameObserver?.disconnect(); mobileNameObserver = null;
     closeMobilePanel();
@@ -5407,6 +5407,10 @@ const PartyUI = (() => {
         skill.removeAttribute('title');
         if (info) skill.append(info);
       }
+      // 回合不是本機玩家時保留所有按鈕的版面空間，只把內容設為不可見。
+      // 這能避免右側操作區在玩家換回合時重新排版而上下跳動。
+      const waiting = actions.classList.contains('is-waiting');
+      actions.querySelectorAll('button').forEach(button => { button.style.visibility = waiting ? 'hidden' : ''; });
     }
   }
 
@@ -5440,8 +5444,8 @@ const PartyUI = (() => {
     // 棋盤為方形版面，最小值等於視窗短邊可容納整張棋盤的尺寸。
     mobileMap.min = Math.min(viewport.clientWidth, viewport.clientHeight);
     board.style.transformOrigin = 'center center';
-    board.style.translate = `${mobileMap.x}px ${mobileMap.y}px`;
-    board.style.transform = `scale(${mobileMap.zoom})`;
+    // 把平移與縮放合併在棋盤畫布本身；格子及其內容完全不改尺寸。
+    board.style.transform = `translate(${mobileMap.x}px, ${mobileMap.y}px) scale(${mobileMap.zoom})`;
     const zoomButtons = $$('[data-map-zoom]');
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;
@@ -7921,6 +7925,7 @@ const tabId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
 let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
 let state=null,page='home',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:30,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
@@ -8858,6 +8863,25 @@ function returnToLobby(lobby){
 }
 $('#home-btn').addEventListener('click',()=>{page='home';closeModal();render();window.scrollTo({top:0,behavior:'smooth'})});
 $('#home-play-btn').addEventListener('click',()=>{page='game';render();window.scrollTo({top:0,behavior:'smooth'})});
+window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();deferredInstallPrompt=event});
+window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null});
+if('serviceWorker' in navigator&&location.protocol!=='file:')window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{})});
+function closePwaInstallModal(){const el=$('#pwa-install-modal');if(el)el.hidden=true}
+function openPwaInstallHelp(){const el=$('#pwa-install-modal');if(el)el.hidden=false}
+$('#pwa-install-btn')?.addEventListener('click',async()=>{
+  if(deferredInstallPrompt){
+    const promptEvent=deferredInstallPrompt;deferredInstallPrompt=null;
+    try{
+      await promptEvent.prompt();
+      await Promise.resolve(promptEvent.userChoice);
+    }catch{
+      openPwaInstallHelp();
+    }
+    return;
+  }
+  openPwaInstallHelp();
+});
+$('#pwa-install-modal')?.addEventListener('click',event=>{if(event.target.closest('[data-close-pwa-modal]'))closePwaInstallModal()});
 $('#new-game-btn').addEventListener('click',()=>{void resetGame()});
 $('#open-tab-btn').addEventListener('click',()=>{window.open(location.href,'_blank','noopener')});
 $('#export-btn').addEventListener('click',()=>{if(!state){notify('目前沒有可匯出的對局。');return}const blob=new Blob([exportGame(state)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`經濟棋局-派對-第${state.round}季.json`;a.click();URL.revokeObjectURL(url)});

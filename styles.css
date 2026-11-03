@@ -78,6 +78,8 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .home-hero h1{font-size:clamp(48.5px,4.2vw,69px);margin-bottom:28px}
 .home-hero>p:not(.eyebrow):not(.home-status){max-width:510px;color:#64747a;font-size:20.5px;line-height:1.85;margin-bottom:30px}
 .home-hero .primary{font-size:18.5px;padding:15px 22px}
+#pwa-install-btn{display:none}
+.pwa-install-btn{margin-top:12px;padding:12px 17px}
 .home-status{font-size:14px;color:#879594;margin:15px 0 0}
 .home-guide{border-top:1px solid #d9dfda}
 .home-step{display:grid;grid-template-columns:43px 1fr;gap:18px;padding:26px 0 27px;border-bottom:1px solid #d9dfda}
@@ -114,11 +116,13 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .home-role-flows dt{min-width:0}.home-role-flows dd{font-weight:800;color:var(--ink);margin:0;white-space:nowrap}
 @media(max-width:960px){.home-page{grid-template-columns:1fr;gap:34px;padding:44px 2% 68px}.home-hero{position:static;padding-top:0}.home-hero h1{font-size:clamp(46px,6vw,69px)}.home-hero>p:not(.eyebrow):not(.home-status){max-width:680px}}
 @media(max-width:760px){.topbar{flex-wrap:wrap;padding:10px 0}.top-actions{width:100%;justify-content:space-between;flex-wrap:wrap}.home-page{padding:40px 0 60px}.home-hero>p:not(.eyebrow):not(.home-status){font-size:18.5px}.home-step{padding:22px 0}.home-step h2{font-size:20.5px}.home-step p{font-size:15px}.home-formula{margin-left:0}.home-roles{margin-top:24px}.home-role-grid{grid-template-columns:1fr}.home-role-story{min-height:0}}
+@media(max-width:932px){#pwa-install-btn{display:block}}
 @media(max-width:440px){.home-role{padding:21px 18px 17px}.home-role-totals strong{font-size:19.5px}.home-role-flows{grid-template-columns:1fr;gap:16px}}
 .business-grid{grid-template-areas:"board side" "players players"}
 .business-grid>.board-panel{grid-area:board;min-width:0}
 .business-grid>.side-stack{grid-area:side;min-width:0}
 .business-grid>.player-area{grid-area:players;min-width:0}
+.tile,.cell{overflow:hidden}
 @media(max-width:1100px){.business-grid{grid-template-areas:"board" "side" "players"}}
 @media(min-width:1440px){
   .business-grid{grid-template-columns:minmax(245px,270px) minmax(0,1fr) minmax(300px,330px);grid-template-areas:"players board side";align-items:start}
@@ -681,6 +685,7 @@ html,body{margin:0}
   .skill-btn{position:relative!important;padding-right:20px!important}
   .skill-info-btn{position:absolute;top:2px;right:2px;z-index:2;display:grid;place-items:center;width:15px;height:15px;border:1px solid currentColor;border-radius:50%;font-size:10px;font-weight:900;line-height:1;cursor:pointer;background:#ffffffaa}
   .map-viewport .party-board{width:100%;max-width:100%;margin:0;transform-origin:center center}
+  .mobile-map-area .tile,.mobile-map-area .cell{overflow:hidden}
 }
 
 /* Phase 1：手機橫向 viewport 與遊戲外框鎖定。 */
@@ -746,18 +751,100 @@ html,body{margin:0}
     height:100%;
     display:flex;
     flex-direction:column;
+    justify-content:space-between;
   }
   .mobile-control-area .side-stack{
     flex:1 1 auto;
     min-height:0;
   }
   .mobile-control-area .turn-actions{
+    display:flex;
+    align-items:center;
     min-height:44px;
+    flex:0 0 44px;
   }
   .mobile-control-area .turn-actions.is-waiting > *{
     visibility:hidden;
   }
   .mobile-control-area .mobile-bottom-menu{
     margin-top:auto;
+  }
+}
+
+/* Phase 2：手機橫向剛性滿版與固定操作佔位。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  html,body{
+    position:fixed;
+    top:0;
+    left:0;
+    width:100vw;
+    height:100vh;
+    margin:0;
+    padding:0;
+    background-color:#1a252c;
+    overflow:hidden;
+  }
+  body:has(#game:not([hidden])) .app-shell,
+  body:has(#game:not([hidden])) main,
+  body:has(#game:not([hidden])) #game,
+  body:has(#game:not([hidden])) #tab-board{
+    position:fixed;
+    top:0;
+    left:0;
+    width:100vw;
+    height:100vh;
+    margin:0;
+    padding:0;
+    max-width:none;
+    min-height:0;
+    background-color:#1a252c;
+    overflow:hidden;
+  }
+  body:has(#game:not([hidden])) .party-grid.mobile-split-view{
+    position:fixed;
+    top:0;
+    left:0;
+    display:flex;
+    flex-direction:row;
+    width:100vw;
+    height:100vh;
+    margin:0;
+    padding:0;
+    gap:0;
+    overflow:hidden;
+  }
+  body:has(#game:not([hidden])) .mobile-map-area,
+  body:has(#game:not([hidden])) .mobile-control-area{
+    width:50%;
+    height:100%;
+    min-width:0;
+    min-height:0;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+  }
+  body:has(#game:not([hidden])) .mobile-control-area{
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+  }
+  body:has(#game:not([hidden])) .mobile-control-area .turn-actions{
+    display:flex;
+    align-items:center;
+    flex:0 0 44px;
+    min-height:44px;
+    margin:3px 0;
+  }
+  body:has(#game:not([hidden])) .map-latest-log{
+    position:absolute;
+    bottom:0;
+    left:0;
+    width:100%;
+    margin:0;
+    border:0;
+    border-radius:0;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
   }
 }

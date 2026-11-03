@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#111b28">
+  <link rel="manifest" href="./manifest.webmanifest">
   <title>經濟棋局｜併購派對</title>
-  <link rel="stylesheet" href="./styles.css?v=47a1271f">
-  <link rel="stylesheet" href="./party-ext.css?v=47a1271f">
+  <link rel="stylesheet" href="./styles.css?v=1adc3ec5">
+  <link rel="stylesheet" href="./party-ext.css?v=1adc3ec5">
 </head>
 <body>
   <div id="landscape-warning" role="alert" aria-live="assertive">
@@ -26,6 +27,7 @@
           <h1 id="home-title">擲出骰子，<br><em>買下整座棋盤。</em></h1>
           <p>輪流丟 骰子、踩格賺總資產、抽道具、放技能，再用併購星把對手變成你的子公司。先拿到 3 顆星的人，就是這場派對的贏家。</p>
           <button id="home-play-btn" class="primary" type="button">設定玩家，開始派對 →</button>
+          <button id="pwa-install-btn" class="secondary pwa-install-btn" type="button">下載 APP（加入主畫面）</button>
           <p id="home-status" class="home-status">一台電腦就能開始，大家輪流操作。</p>
         </div>
         <div class="home-guide" aria-label="玩法步驟">
@@ -104,9 +106,19 @@
       <div id="modal-actions" class="modal-actions"></div>
     </div>
   </div>
+  <div id="pwa-install-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-pwa-modal></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pwa-modal-title">
+      <button class="modal-close" data-close-pwa-modal aria-label="關閉">×</button>
+      <div class="modal-icon">📲</div>
+      <h2 id="pwa-modal-title">加入主畫面</h2>
+      <p>請點擊瀏覽器底部的『分享』按鈕，然後選擇『加入主畫面』，即可享受無邊框的全螢幕遊戲體驗！</p>
+      <div class="modal-actions"><button type="button" class="primary" data-close-pwa-modal>知道了</button></div>
+    </div>
+  </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
-  <script defer src="./game.js?v=47a1271f"></script>
+  <script defer src="./game.js?v=1adc3ec5"></script>
 </body>
 </html>
