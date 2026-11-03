@@ -5400,7 +5400,13 @@ const PartyUI = (() => {
         [...actions.children].filter(child => child !== roll && child !== scroll).forEach(child => scroll.append(child));
       }
       const skill = actions.querySelector('.skill-btn');
-      if (skill) { skill.textContent = skill.textContent.split('·').pop().trim(); skill.removeAttribute('title'); }
+      if (skill) {
+        // Keep the nested info control intact; only shorten the visible label.
+        const info = skill.querySelector('.skill-info-btn');
+        [...skill.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).forEach(node => { node.textContent = node.textContent.split('·').pop().trim(); });
+        skill.removeAttribute('title');
+        if (info) skill.append(info);
+      }
     }
   }
 
@@ -5433,9 +5439,15 @@ const PartyUI = (() => {
     if (!viewport || !board) return;
     // 棋盤為方形版面，最小值等於視窗短邊可容納整張棋盤的尺寸。
     mobileMap.min = Math.min(viewport.clientWidth, viewport.clientHeight);
-    const size = Math.max(mobileMap.min, mobileMap.min * mobileMap.zoom);
-    board.style.width = `${size}px`; board.style.height = `${size}px`;
-    board.style.transform = `translate(${mobileMap.x}px,${mobileMap.y}px)`;
+    const base = mobileMap.min;
+    // Keep one stable board geometry. Zoom is applied only to the outer board
+    // transform so tiles, labels and tokens remain perfectly proportional.
+    if (board.dataset.baseSize !== String(base)) {
+      board.style.width = `${base}px`; board.style.height = `${base}px`;
+      board.dataset.baseSize = String(base);
+    }
+    board.style.transformOrigin = 'center center';
+    board.style.transform = `translate(${mobileMap.x}px,${mobileMap.y}px) scale(${mobileMap.zoom})`;
     const zoomButtons = $$('[data-map-zoom]');
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;
@@ -5457,9 +5469,9 @@ const PartyUI = (() => {
     const viewport = $('.map-viewport'), board = $('#board');
     if (!viewport || !board) return;
     const v = viewport.getBoundingClientRect(), cx = v.left + v.width / 2, cy = v.top + v.height / 2;
-    const old = Math.max(mobileMap.min, mobileMap.min * mobileMap.zoom), size = Math.max(mobileMap.min, mobileMap.min * next);
-    mobileMap.x = cx - (cx - mobileMap.x) * size / old;
-    mobileMap.y = cy - (cy - mobileMap.y) * size / old;
+    const old = mobileMap.zoom;
+    mobileMap.x = cx - (cx - mobileMap.x) * next / old;
+    mobileMap.y = cy - (cy - mobileMap.y) * next / old;
     mobileMap.zoom = next;
     if (next === 1) { mobileMap.x = 0; mobileMap.y = 0; }
     updateMapBounds();
@@ -8421,7 +8433,7 @@ function renderTurn(){
   const status=state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
   const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${PartyNet.canAct(state)?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}</button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
+  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
 }
 function renderPlayers(){
   $('#player-cards').innerHTML=state.players.map((p,index)=>{
@@ -8716,6 +8728,9 @@ $('#start-btn').addEventListener('click',async()=>{
   }catch(e){$('#setup-error').textContent=e.message;SoundManager.play('error')}
 });
 $('#game').addEventListener('click',e=>{
+  // The skill info control lives inside the skill action button. Let the UI
+  // delegate open the help modal without dispatching the skill itself.
+  if(e.target.closest('[data-skill-info]')) return;
   if(e.target.closest('[data-dismiss-investment]')){dismissInvestmentSettlement();return}
   if(state?.net&&PartyNet.active&&!PartyNet.canAct(state)&&!e.target.closest('[data-action="new-game"],[data-action="open-settlement"],[data-kick-peer]')){
     notify('現在不是你的回合，請等待其他玩家。');return;

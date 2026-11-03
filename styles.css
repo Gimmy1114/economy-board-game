@@ -406,6 +406,7 @@ body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-i
 .board-panel>.panel-title h2{white-space:nowrap}
 @media(max-width:768px){.board-panel>.panel-title h2{font-size:clamp(16px,4.4vw,23px)}}
 }
+
 .board-panel-tools{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .board-fullscreen{font-size:12.5px;font-weight:800;line-height:1;border:1px solid #d7e3df;background:#f4f8f6;color:#2f625c;padding:8px 10px;border-radius:7px;white-space:nowrap}
 .board-fullscreen:hover{background:#e7f1ed;color:var(--ink)}
@@ -663,3 +664,34 @@ html,body{margin:0}
   .mobile-fullscreen-btn:focus-visible{outline:2px solid #7bd5ca;outline-offset:1px}
 }
 
+
+/* Final mobile landscape overrides. */
+@media screen and (max-width:932px) and (orientation:landscape){
+  html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden}
+  body:has(#game:not([hidden])) .app-shell{position:fixed;inset:0;width:100%;height:100%;max-width:none;box-sizing:border-box;overflow:hidden}
+  body:has(#game:not([hidden])) main,body:has(#game:not([hidden])) #game,body:has(#game:not([hidden])) #tab-board{width:100%;height:100%;min-height:0;overflow:hidden}
+  body:has(#game:not([hidden])) .party-grid.mobile-split-view{grid-template-columns:50% 50%;width:100%;height:100%;margin:0;gap:0;box-sizing:border-box}
+  .mobile-map-area,.mobile-control-area{width:100%;height:100%;min-width:0;min-height:0;box-sizing:border-box;overflow:hidden}
+  .mobile-control-area{display:flex;flex-direction:column;justify-content:space-between}
+  .mobile-control-area .side-stack{display:flex;flex:1 1 auto;flex-direction:column;justify-content:space-between;min-height:0;overflow:hidden!important;padding:4px!important;gap:3px}
+  .mobile-control-area .player-area{overflow:hidden!important;padding:4px!important}
+  .mobile-control-area .turn-panel,.mobile-control-area #turn-content{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;overflow:hidden!important}
+  .mobile-control-area .turn-actions{display:flex!important;width:100%;min-height:44px;flex:0 0 auto;gap:4px;margin:3px 0;padding:0;align-items:stretch}
+  .mobile-control-area .mobile-action-scroll{display:contents!important;overflow:visible!important;padding:0!important}
+  .mobile-control-area .turn-actions>[data-action="roll"],.mobile-control-area .turn-actions>.secondary,.mobile-control-area .turn-actions .mobile-action-scroll>button{flex:1 1 0!important;width:auto!important;min-width:0!important;max-width:none!important;min-height:40px!important;padding:4px 3px!important;font-size:clamp(8px,1.9vw,11px)!important;line-height:1.1}
+  .mobile-control-area .skill-hint{display:none!important}
+  .mobile-control-area .item-bar{flex-shrink:1;margin:2px 0;padding:2px 0}
+  .mobile-control-area .item-slot{min-height:36px!important;padding:2px}
+  .mobile-control-area .mobile-bottom-menu{min-height:36px!important;padding:3px 4px!important;gap:3px}
+  .mobile-control-area .mobile-bottom-menu button{min-height:28px;padding:2px;font-size:8px}
+  .mobile-control-area .panel{padding:5px;border-radius:6px}
+  .mobile-control-area .stat-strip>div{padding:2px 3px}
+  .mobile-control-area .stat-strip span{font-size:7px}
+  .mobile-control-area .stat-strip strong{font-size:11px}
+  .mobile-control-area .mobile-turn-topbar{min-height:27px;margin:0 0 3px;padding:0 1px}
+  .mobile-control-area .mobile-mode-button{width:25px;height:25px;font-size:14px}
+  .mobile-control-area .mobile-season{font-size:10px}
+  .skill-btn{position:relative!important;padding-right:20px!important}
+  .skill-info-btn{position:absolute;top:2px;right:2px;z-index:2;display:grid;place-items:center;width:15px;height:15px;border:1px solid currentColor;border-radius:50%;font-size:10px;font-weight:900;line-height:1;cursor:pointer;background:#ffffffaa}
+  .map-viewport .party-board{transform-origin:center center}
+}

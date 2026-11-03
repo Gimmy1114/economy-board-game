@@ -343,7 +343,13 @@ export const PartyUI = (() => {
         [...actions.children].filter(child => child !== roll && child !== scroll).forEach(child => scroll.append(child));
       }
       const skill = actions.querySelector('.skill-btn');
-      if (skill) { skill.textContent = skill.textContent.split('·').pop().trim(); skill.removeAttribute('title'); }
+      if (skill) {
+        // Keep the nested info control intact; only shorten the visible label.
+        const info = skill.querySelector('.skill-info-btn');
+        [...skill.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).forEach(node => { node.textContent = node.textContent.split('·').pop().trim(); });
+        skill.removeAttribute('title');
+        if (info) skill.append(info);
+      }
     }
   }
 
@@ -376,9 +382,15 @@ export const PartyUI = (() => {
     if (!viewport || !board) return;
     // 棋盤為方形版面，最小值等於視窗短邊可容納整張棋盤的尺寸。
     mobileMap.min = Math.min(viewport.clientWidth, viewport.clientHeight);
-    const size = Math.max(mobileMap.min, mobileMap.min * mobileMap.zoom);
-    board.style.width = `${size}px`; board.style.height = `${size}px`;
-    board.style.transform = `translate(${mobileMap.x}px,${mobileMap.y}px)`;
+    const base = mobileMap.min;
+    // Keep one stable board geometry. Zoom is applied only to the outer board
+    // transform so tiles, labels and tokens remain perfectly proportional.
+    if (board.dataset.baseSize !== String(base)) {
+      board.style.width = `${base}px`; board.style.height = `${base}px`;
+      board.dataset.baseSize = String(base);
+    }
+    board.style.transformOrigin = 'center center';
+    board.style.transform = `translate(${mobileMap.x}px,${mobileMap.y}px) scale(${mobileMap.zoom})`;
     const zoomButtons = $$('[data-map-zoom]');
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;
@@ -400,9 +412,9 @@ export const PartyUI = (() => {
     const viewport = $('.map-viewport'), board = $('#board');
     if (!viewport || !board) return;
     const v = viewport.getBoundingClientRect(), cx = v.left + v.width / 2, cy = v.top + v.height / 2;
-    const old = Math.max(mobileMap.min, mobileMap.min * mobileMap.zoom), size = Math.max(mobileMap.min, mobileMap.min * next);
-    mobileMap.x = cx - (cx - mobileMap.x) * size / old;
-    mobileMap.y = cy - (cy - mobileMap.y) * size / old;
+    const old = mobileMap.zoom;
+    mobileMap.x = cx - (cx - mobileMap.x) * next / old;
+    mobileMap.y = cy - (cy - mobileMap.y) * next / old;
     mobileMap.zoom = next;
     if (next === 1) { mobileMap.x = 0; mobileMap.y = 0; }
     updateMapBounds();
