@@ -394,6 +394,15 @@ body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-i
 .board-fullscreen:hover{background:#e7f1ed;color:var(--ink)}
 .board-fullscreen[aria-pressed="true"]{background:var(--teal);border-color:var(--teal);color:#fff}
 @media(max-width:760px){.board-panel-tools{gap:6px}.board-fullscreen{font-size:11.5px;padding:7px 8px}}
+.party-fullscreen-btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:36px;padding:7px 10px;border:1px solid #31545a;border-radius:8px;background:#142835;color:#e8f2ee;font-size:12px;font-weight:900;line-height:1;white-space:nowrap;touch-action:manipulation}
+.party-fullscreen-btn:hover{background:#1d4650}
+.party-fullscreen-btn:active{transform:scale(.97)}
+.party-fullscreen-btn[aria-pressed="true"]{border-color:#55d8c6;background:#187b71;color:#fff}
+.home-fullscreen-btn{margin-top:10px}
+.setup-fullscreen-btn{margin-left:auto;flex:none}
+.lobby-top-actions{display:flex;align-items:center;gap:7px;flex:none}
+.lobby-top-actions .ext-modal-close{position:static}
+body.settlement-active .center-backdrop .evil-tower{display:none!important}
 
 .board-panel>.panel-title h2{white-space:nowrap}
 
@@ -1105,4 +1114,99 @@ html,body{margin:0}
   .opening-overlay .opening-count .pointer{font-size:clamp(18px,4vw,28px)}
   .opening-overlay .opening-go span{font-size:clamp(36px,10vh,64px)}
   .opening-overlay .opening-go strong{font-size:clamp(26px,6vw,56px);line-height:1}
+}
+
+/* Phase 2：手機橫向結算畫面與遊戲外全螢幕按鈕。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .party-fullscreen-btn{
+    min-height:30px;
+    padding:5px 8px;
+    font-size:10px;
+  }
+  .home-fullscreen-btn{margin-top:8px}
+  .setup-fullscreen-btn{min-width:84px}
+  .lobby-top-actions{gap:4px}
+
+  /* 結算宣言縮小後完整保留獎盃、玩家結果與兩個操作按鈕。 */
+  .mobile-map-area .party-center .result-scene{
+    box-sizing:border-box;
+    min-width:0;
+    min-height:0;
+    max-width:100%;
+    max-height:100%;
+    gap:3px;
+    padding:4px 6px 6px;
+    overflow:hidden;
+  }
+  .mobile-map-area .party-center .result-crown{
+    flex:none;
+    font-size:clamp(24px,7vh,45px);
+    line-height:1;
+  }
+  .mobile-map-area .party-center .result-scene .card-hint,
+  .mobile-map-area .party-center .result-scene>p:not(.card-hint){
+    max-width:100%;
+    margin:0;
+    font-size:clamp(7px,1.35vw,10px)!important;
+    line-height:1.1;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .mobile-map-area .party-center .result-scene h3{
+    max-width:100%;
+    margin:0;
+    font-size:clamp(13px,2.4vw,21px)!important;
+    line-height:1.05;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .mobile-map-area .party-center .result-stars{
+    max-width:100%;
+    gap:2px;
+    margin:1px 0 2px;
+    overflow:hidden;
+  }
+  .mobile-map-area .party-center .result-stars span{
+    min-width:0;
+    max-width:100%;
+    padding:3px 5px;
+    font-size:clamp(6px,1.15vw,8px);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .mobile-map-area .party-center .result-scene button{
+    flex:none;
+    min-height:0;
+    margin:1px 0 0;
+    padding:6px 10px;
+    font-size:clamp(8px,1.45vw,11px);
+    line-height:1.05;
+  }
+
+  /* 完整圖表結算也不讓標題與獎盃被頂端裁掉。 */
+  .settlement-overlay{
+    align-items:center!important;
+    padding:6px!important;
+    overflow:hidden!important;
+  }
+  .settlement-overlay .settlement-card{
+    width:min(94vw,560px)!important;
+    max-width:94vw!important;
+    max-height:calc(100vh - 12px)!important;
+    margin:0!important;
+    padding:8px 10px!important;
+    overflow:hidden!important;
+  }
+  .settlement-overlay .settle-head{gap:6px;padding-bottom:6px}
+  .settlement-overlay .settle-head h2{font-size:clamp(16px,2.8vw,23px)!important;line-height:1.05;margin:0 0 2px}
+  .settlement-overlay .settle-head p:not(.ext-kicker){font-size:clamp(7px,1.2vw,9px);line-height:1.1}
+  .settlement-overlay .settle-trophy{width:38px;height:38px;font-size:24px}
+  .settlement-overlay .settle-tabs{margin:4px 0 6px}
+  .settlement-overlay .settle-tabs button{padding:4px 6px;font-size:9px}
+  .settlement-overlay .settle-body{min-height:0;max-height:calc(100vh - 122px);overflow:auto}
+  .settlement-overlay .settle-footer{gap:6px;margin-top:6px;padding-top:6px}
+  .settlement-overlay .settle-actions button{padding:6px 9px;font-size:10px}
 }

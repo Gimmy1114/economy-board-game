@@ -203,7 +203,7 @@ export const PartyUI = (() => {
     mobileDelegatesBound = true;
     document.addEventListener('click', e => {
       const target = e.target;
-      if (target.closest('#mobile-fullscreen-btn')) { toggleMobileFullscreen(); return; }
+      if (target.closest('[data-party-fullscreen], #mobile-fullscreen-btn')) { toggleMobileFullscreen(); return; }
       const zoom = target.closest('[data-map-zoom]');
       if (zoom) zoomMap(zoom.dataset.mapZoom === 'in' ? 1.2 : 1 / 1.2);
       if (target.closest('[data-map-history-open]')) toggleMapHistory(true);
@@ -225,12 +225,14 @@ export const PartyUI = (() => {
   }
 
   function syncMobileFullscreenButton() {
-    const button = document.getElementById('mobile-fullscreen-btn');
-    if (!button) return;
     const active = Boolean(activeFullscreenElement());
-    button.setAttribute('aria-pressed', String(active));
-    button.setAttribute('aria-label', active ? '退出全螢幕' : '進入全螢幕');
-    button.title = active ? '退出全螢幕' : '進入全螢幕';
+    document.querySelectorAll('[data-party-fullscreen], #mobile-fullscreen-btn').forEach(button => {
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? '退出全螢幕' : '進入全螢幕');
+      button.title = active ? '退出全螢幕' : '進入全螢幕';
+      const label = button.querySelector('.party-fullscreen-label');
+      if (label) label.textContent = active ? '退出全螢幕' : '全螢幕';
+    });
   }
 
   function toggleMobileFullscreen() {
@@ -252,6 +254,33 @@ export const PartyUI = (() => {
     Promise.resolve(typeof exit === 'function' ? exit.call(document) : null)
       .then(syncMobileFullscreenButton)
       .catch(err => console.log(err));
+  }
+
+  function makeFullscreenButton(className = '') {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `party-fullscreen-btn ${className}`.trim();
+    button.dataset.partyFullscreen = 'true';
+    button.setAttribute('aria-pressed', 'false');
+    button.setAttribute('aria-label', '進入全螢幕');
+    button.title = '進入全螢幕';
+    button.innerHTML = '<span aria-hidden="true">⛶</span><span class="party-fullscreen-label">全螢幕</span>';
+    return button;
+  }
+
+  function ensureOutsideFullscreenButtons() {
+    const homeHero = $('.home-hero');
+    if (homeHero && !homeHero.querySelector('[data-party-fullscreen]')) {
+      const button = makeFullscreenButton('home-fullscreen-btn');
+      const anchor = $('#home-play-btn');
+      if (anchor) anchor.insertAdjacentElement('afterend', button);
+      else homeHero.append(button);
+    }
+    const setupHeading = $('.setup-card .section-heading');
+    if (setupHeading && !setupHeading.querySelector('[data-party-fullscreen]')) {
+      setupHeading.append(makeFullscreenButton('setup-fullscreen-btn'));
+    }
+    syncMobileFullscreenButton();
   }
 
   function ensureMobileBottomMenu(controls) {
@@ -950,7 +979,7 @@ export const PartyUI = (() => {
       <div class="lobby-card">
         <div class="lobby-top">
           <div><p class="ext-kicker">MULTIPLAYER LOBBY · WebRTC</p><h2>派對大廳</h2><p class="lobby-code-line">房間代碼 <strong id="lobby-code">${h(lobby.code)}</strong><button class="quiet" id="copy-code" type="button">複製</button></p>${qrBlock}</div>
-          <button class="ext-modal-close" id="lobby-leave" type="button" title="離開">×</button>
+          <div class="lobby-top-actions"><button class="party-fullscreen-btn lobby-fullscreen-btn" data-party-fullscreen="true" type="button" aria-pressed="false" aria-label="進入全螢幕" title="進入全螢幕"><span aria-hidden="true">⛶</span><span class="party-fullscreen-label">全螢幕</span></button><button class="ext-modal-close" id="lobby-leave" type="button" title="離開">×</button></div>
         </div>
         <div class="lobby-grid">
           <div class="lobby-players">
@@ -1002,6 +1031,7 @@ export const PartyUI = (() => {
     `;
     bindAdvancedSettings(el, { disabled: !isHost });
     el.hidden = false;
+    syncMobileFullscreenButton();
     if (activeNameInput) {
       const input = Array.from(el.querySelectorAll('[data-lobby-name]')).find(candidate => candidate.dataset.peerId === activeNameInput.peerId);
       if (input) {
@@ -1108,6 +1138,7 @@ export const PartyUI = (() => {
     clearOpening();
     hideLobby();
     hideSettlement();
+    document.body.classList.remove('settlement-active');
     hideEnding();
     clearTimeout(finishTimer);
     finishTimer = null;
@@ -2327,6 +2358,7 @@ export const PartyUI = (() => {
     if (Date.now() < settlementLockUntil) { app()?.notify('毀滅日雷射播放中，請稍候…'); return; }
     const data = window.__partyEngine?.extSettlementData?.(p) || null;
     if (!data) return;
+    document.body.classList.add('settlement-active');
     data.cash.forEach((s, i) => s.color = colors[i % colors.length]);
     data.stars.forEach((s, i) => s.color = colors[i % colors.length]);
     const winners = data.winners.map(x => x.name).join('、') || '無人';
@@ -2385,6 +2417,7 @@ export const PartyUI = (() => {
   function afterRender(p) {
     ensureRoot();
     if (!p || !app()) return;
+    document.body.classList.toggle('settlement-active', p.status !== 'playing');
     mountMobileSplitView();
     mountMobileControlHeader(p);
     (p.ext?.shieldBlockEvents || [p.ext?.shieldBlockEvent]).filter(Boolean).forEach(playShieldBlock);
@@ -2813,6 +2846,7 @@ export const PartyUI = (() => {
 
   function init() {
     ensureRoot();
+    ensureOutsideFullscreenButtons();
     let mobileWidth = isMobileLayout();
     const refreshMobileLayout = () => {
       const next = isMobileLayout();
