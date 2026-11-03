@@ -1086,7 +1086,11 @@ test('手機介面、倒數暫停、全螢幕與棋子響應式定位已接線',
   assert.match(appSource, /addEventListener\('orientationchange'/);
   assert.match(appSource, /requestFullscreen/);
   assert.match(css, /html,body\{overflow:hidden;touch-action:manipulation;overscroll-behavior:none/);
-  assert.match(css, /\.board\.party-board\{[^}]*max-width:95vw[^}]*max-height:85vh[^}]*aspect-ratio:1/);
+  assert.match(ui, /board\.style\.transformOrigin = 'center center'/);
+  assert.match(ui, /board\.style\.transform = `scale\(\$\{mobileMap\.zoom\}\)`/);
+  assert.doesNotMatch(ui, /board\.style\.(?:width|height)/);
+  assert.match(css, /\.map-viewport \.party-board\{[^}]*width:100%;max-width:100%;margin:0;transform-origin:center center/);
+  assert.doesNotMatch(css, /\.board\.party-board\{[^}]*max-width:95vw[^}]*max-height:85vh[^}]*aspect-ratio:1/);
 });
 
 test('結束回合時沒確認的命運輪盤直接套用、沒回應的特殊格邀請視為放棄，不會卡住下一位玩家', () => {

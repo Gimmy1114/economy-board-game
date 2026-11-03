@@ -192,7 +192,7 @@ export const PartyUI = (() => {
     map?.remove(); controls?.remove();
     grid.classList.remove('mobile-split-view');
     const boardEl = $('#board');
-    if (boardEl) { boardEl.style.removeProperty('width'); boardEl.style.removeProperty('height'); boardEl.style.removeProperty('transform'); }
+    if (boardEl) { boardEl.style.removeProperty('transform'); boardEl.style.removeProperty('translate'); }
     mobileMap.zoom = 1.55; mobileMap.x = 0; mobileMap.y = 0; mobileMap.min = 1; mobileMap.turnKey = '';
     mobileNameObserver?.disconnect(); mobileNameObserver = null;
     closeMobilePanel();
@@ -382,15 +382,9 @@ export const PartyUI = (() => {
     if (!viewport || !board) return;
     // 棋盤為方形版面，最小值等於視窗短邊可容納整張棋盤的尺寸。
     mobileMap.min = Math.min(viewport.clientWidth, viewport.clientHeight);
-    const base = mobileMap.min;
-    // Keep one stable board geometry. Zoom is applied only to the outer board
-    // transform so tiles, labels and tokens remain perfectly proportional.
-    if (board.dataset.baseSize !== String(base)) {
-      board.style.width = `${base}px`; board.style.height = `${base}px`;
-      board.dataset.baseSize = String(base);
-    }
     board.style.transformOrigin = 'center center';
-    board.style.transform = `translate(${mobileMap.x}px,${mobileMap.y}px) scale(${mobileMap.zoom})`;
+    board.style.translate = `${mobileMap.x}px ${mobileMap.y}px`;
+    board.style.transform = `scale(${mobileMap.zoom})`;
     const zoomButtons = $$('[data-map-zoom]');
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;

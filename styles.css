@@ -26,9 +26,7 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .advanced-settings .advanced-setting-field input[type="number"]{flex:0 0 80px!important;width:80px!important;max-width:80px!important}
 .advanced-settings .advanced-setting-toggle input[type="checkbox"]{flex:none!important}
 @media(max-width:1100px){.business-grid{grid-template-columns:1fr}.side-stack{display:grid;grid-template-columns:1.3fr 1fr}.side-stack .goal-panel{grid-column:1/-1}.event-grid{grid-template-columns:repeat(2,1fr)}.metric-grid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:760px){.app-shell{padding:0 16px}.topbar{min-height:69px}.top-actions{gap:0}.top-actions .save-status{display:none}.top-actions .quiet{font-size:11.5px;padding:7px}.brand strong{font-size:17.5px}.brand small{font-size:8px}.setup-wrap{display:block;padding:45px 0}.setup-hero h1{font-size:60px}.setup-card{margin-top:35px;padding:22px}.setup-player{grid-template-columns:24px 1fr 32px 1.2fr 19px;gap:6px}.setup-options{grid-template-columns:1fr 1fr}.game-heading{padding:28px 0 19px}.game-heading h1{font-size:35.5px}.round-badge{width:76px;height:76px}.round-badge strong{font-size:30px}.tabs{margin-right:-16px}.tabs button{padding:12px 10px;font-size:12.5px}.panel{padding:16px}.board{gap:3px;aspect-ratio:1}.tile{padding:4px;border-radius:5px}.tile-number{font-size:8px}.tile-type{font-size:8px}.tile-icon{font-size:12.5px}.token{width:11px;height:11px}.board-center h3{font-size:20.5px}.board-center .die{width:45px;height:45px;font-size:26.5px}.board-center p{font-size:11.5px}.side-stack{display:flex}.player-grid,.library,.rule-list,.history-layout{grid-template-columns:1fr}.event-grid{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,1fr)}.fed-hero{grid-template-columns:repeat(2,1fr)}footer{font-size:10.5px}.section-heading{align-items:start}.section-hint{max-width:130px;text-align:right}}
-@media(max-width:440px){.tile-icon{display:none}.tile-type{font-size:7.5px}.metric-grid{grid-template-columns:1fr 1fr}.metric-card{min-height:133px;padding:12px}.metric-card strong{font-size:20.5px}.setup-options{grid-template-columns:1fr}.game-heading h1{font-size:31px}.board-center .center-icon{font-size:27.5px;margin-bottom:5px}.board-center p{margin-bottom:6px}.board-center small{font-size:9px}}
-
+@media(max-width:760px){.app-shell{padding:0 16px}.topbar{min-height:69px}.top-actions{gap:0}.top-actions .save-status{display:none}.top-actions .quiet{font-size:11.5px;padding:7px}.brand strong{font-size:17.5px}.brand small{font-size:8px}.setup-wrap{display:block;padding:45px 0}.setup-hero h1{font-size:60px}.setup-card{margin-top:35px;padding:22px}.setup-player{grid-template-columns:24px 1fr 32px 1.2fr 19px;gap:6px}.setup-options{grid-template-columns:1fr 1fr}.game-heading{padding:28px 0 19px}.game-heading h1{font-size:35.5px}.round-badge{width:76px;height:76px}.round-badge strong{font-size:30px}.tabs{margin-right:-16px}.tabs button{padding:12px 10px;font-size:12.5px}.panel{padding:16px}.side-stack{display:flex}.player-grid,.library,.rule-list,.history-layout{grid-template-columns:1fr}.event-grid{grid-template-columns:1fr}.metric-grid{grid-template-columns:repeat(2,1fr)}.fed-hero{grid-template-columns:repeat(2,1fr)}footer{font-size:10.5px}.section-heading{align-items:start}.section-hint{max-width:130px;text-align:right}}
 .tile{transition:box-shadow .16s ease,transform .16s ease}
 .tile.tile-visited{z-index:1;border-color:#a9ff41;box-shadow:inset 0 0 0 1px #d3ff77,0 0 0 2px #a9ff41,0 0 13px 3px #85fb4b9c}
 .tile.tile-active{z-index:2;transform:scale(1.045);box-shadow:0 0 0 3px #bbff4b,0 0 20px 6px #85fb4bcc}
@@ -71,14 +69,6 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 @keyframes deck-float{0%,100%{transform:translateY(3px) rotate(-3deg)}50%{transform:translateY(-8px) rotate(3deg)}}
 @keyframes deck-shuffle{0%,100%{transform:translate(9px,7px) rotate(5deg)}50%{transform:translate(-9px,8px) rotate(-6deg)}}
 @keyframes card-flip{0%{transform:rotateY(90deg) scale(.84);opacity:.2}65%{transform:rotateY(-8deg) scale(1.03);opacity:1}100%{transform:rotateY(0) scale(1);opacity:1}}
-@media(max-width:760px){.slot-machine{gap:7px;padding:7px}.slot-reel{--slot-cell:49px;width:45px}.slot-cell{font-size:34.5px}.slot-total{font-size:11.5px;margin-bottom:5px}}
-@media(max-width:440px){.slot-reel{--slot-cell:39px;width:36px}.slot-cell{font-size:27.5px}.slot-machine{margin-bottom:4px}.board-center .center-icon{margin-bottom:2px}}
-@media(max-width:760px){.board-center.fed-live{padding:6px}.fed-broadcast{gap:4px;padding:7px 5px;border-radius:8px}.fed-broadcast-top{font-size:9px;gap:5px}.fed-live-dot{width:4px;height:4px}.fed-orbit{width:36px;height:36px;font-size:23px;box-shadow:0 0 0 3px #ffffff0c}.fed-broadcast h3{font-size:17.5px}.fed-action{font-size:16px}.fed-detail{font-size:10.5px!important}.fed-broadcast small{font-size:9px}.fed-marquee{padding:4px 0}.fed-marquee-track span{font-size:10.5px}}
-@media(max-width:440px){.fed-broadcast{gap:3px;padding:5px 4px}.fed-orbit{width:30px;height:30px;font-size:19.5px}.fed-broadcast h3{font-size:14px}.fed-action{font-size:14px}.fed-detail,.fed-broadcast small{font-size:8px!important}.fed-marquee{padding:3px 0}}
-@media(max-width:760px){.board-center.manage-mode{padding:6px}.manage-scene{gap:4px;padding:8px 9px;border-radius:8px}.manage-label{font-size:9px}.manage-icon{width:30px;height:30px;border-radius:8px;font-size:20.5px}.manage-scene h3{font-size:18.5px}.manage-story{font-size:11.5px;line-height:1.3}.manage-tip{font-size:10.5px;line-height:1.3;padding:5px 6px}.manage-tip strong{font-size:9px}.manage-stats{gap:4px}.manage-stats div{padding:3px 5px}.manage-stats span{font-size:8px}.manage-stats strong{font-size:11.5px}.manage-scene small{font-size:9px}}
-@media(max-width:440px){.manage-scene{gap:3px;padding:5px 6px}.manage-label{font-size:8px}.manage-icon{width:25px;height:25px;font-size:18.5px}.manage-scene h3{font-size:16px}.manage-story{font-size:10.5px}.manage-tip{font-size:9px;padding:4px 5px}.manage-tip strong{font-size:8px}.manage-stats strong{font-size:10.5px}.manage-scene small{font-size:8px}}
-@media(max-width:760px){.draw-deck{width:min(125px,56%);height:min(160px,58%);min-height:95px}.deck-back{border-width:4px;gap:3px}.deck-back span{font-size:33.5px}.deck-back strong{font-size:16px}.deck-back small,.card-instruction{font-size:10.5px}.revealed-card{padding:9px}.card-scene{gap:6px}.card-hint{font-size:11.5px}.card-continue{font-size:11.5px;padding:6px 10px}}
-@media(max-width:440px){.draw-deck{width:min(95px,58%);height:min(126px,55%);min-height:72px}.deck-back span{font-size:24px}.deck-back strong{font-size:12.5px}.deck-back small{font-size:9px}.card-instruction{display:none}.revealed-card{max-height:72%}.revealed-card h3{font-size:15px}.revealed-card p,.revealed-effects .effect-chip{font-size:9px}.revealed-symbol{font-size:19.5px}}
 @media(prefers-reduced-motion:reduce){.draw-deck,.deck-shadow,.card-reveal,.fed-broadcast::before,.fed-broadcast::after,.fed-orbit,.fed-live-dot,.fed-marquee-track,.token.moving-backward-border{animation:none}}
 @media(max-width:760px){.disclosure-panel summary{padding:16px}.disclosure-panel summary span{align-items:flex-start;flex-direction:column;gap:4px}.disclosure-panel summary em{line-height:1.45}.disclosure-content{padding:14px}}
 
@@ -166,7 +156,7 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 @media(min-width:761px) and (max-width:1439px){.player-grid>.player-card.current{grid-column:1/-1}}
 .tile.crowded .tile-tokens{display:grid;grid-template-columns:repeat(4,11px);gap:1px;left:4px}
 .tile.crowded .token{width:11px;height:11px;border-width:1px}
-@media(max-width:760px){.tile.crowded .tile-tokens{grid-template-columns:repeat(4,8px);left:2px;bottom:2px}.tile.crowded .token{width:8px;height:8px}}
+
 .board{position:relative}
 .tile.ghost-tile{border-color:#bb8fd2;box-shadow:inset 0 0 0 1px #e3c7ee,0 0 12px #a36ac858;background:#f5ebfa}
 .ghost-legend{display:inline-block;margin-right:3px;font-size:16px;font-style:normal;line-height:1;vertical-align:-2px}
@@ -184,7 +174,7 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .strike-effects strong{color:#ffcc91;font-size:15px}
 .strike-scene small{max-width:350px;color:#c8b7d7;font-size:11.5px;line-height:1.4}
 .strike-turn-name{color:#ffca8d}.strike-turn-copy{color:#ecd5f2}.strike-turn-effect{display:flex;justify-content:space-between;gap:9px;align-items:center;padding:12px;margin:12px 0;border:1px solid #b580cd;border-radius:8px;background:#70468742;font-size:12.5px}.strike-turn-effect strong{color:#ffca8d}.strike-turn-effect span{color:#e9d6f1}
-@media(max-width:760px){.ghost-piece{width:23px;height:23px}.ghost-piece span{font-size:23px}.board-center.strike-mode{padding:5px}.strike-scene{gap:4px;padding:7px 8px;border-radius:7px}.strike-siren{font-size:9px}.strike-ghost{font-size:31px}.strike-scene h3{font-size:16px}.strike-scene p{font-size:10.5px;line-height:1.35}.strike-effects{gap:3px}.strike-effects span{font-size:9px;padding:3px 4px}.strike-effects strong{font-size:10.5px}.strike-scene small{font-size:9px}}
+
 @media(prefers-reduced-motion:reduce){.ghost-piece span,.strike-ghost{animation:none}}
 
 /* ===== 併購派對：棋盤、3D 骰子、道具與技能 ===== */
@@ -384,9 +374,9 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .rule-skill p{font-size:11px;line-height:1.45;color:#72857e;margin:0}
 @media(prefers-reduced-motion:reduce){.dice3d.tumbling{animation:none}.dice3d{transition:none}.tile{transition:none}}
 @media(max-width:1100px){.party-grid{grid-template-columns:1fr}.party-grid .side-stack{display:grid;grid-template-columns:1.25fr 1fr;gap:14px}.party-grid .log-panel{grid-column:1/-1}.rules-skills{grid-template-columns:1fr}.party-player-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:760px){.party-tile .tile-icon{font-size:15px}.party-tile .tile-type{font-size:8px}.party-tile .tile-value{font-size:7.5px}.party-tile .tile-number{font-size:7.5px}.party-tile .token{width:10px;height:10px;font-size:7px;border-width:1px}.party-tile .token.moving{width:14px;height:14px;font-size:9px}.party-center{padding:5px}.dice-stage{width:62px;height:62px}.dice3d{width:44px;height:44px}.dice-face{font-size:22px;border-radius:8px}.face-1{transform:translateZ(22px)}.face-2{transform:rotateY(90deg) translateZ(22px)}.face-3{transform:rotateY(180deg) translateZ(22px)}.face-4{transform:rotateY(-90deg) translateZ(22px)}.face-5{transform:rotateX(90deg) translateZ(22px)}.face-6{transform:rotateX(-90deg) translateZ(22px)}.dice-center h3,.roll-result h3,.result-scene h3,.skip-center h3{font-size:16px}.dice-center p,.result-scene p,.skip-center p{font-size:10.5px}.effect-stack{max-height:100px}.roll-effect{font-size:9px;padding:4px 5px}.roll-effect p{font-size:9px}.turn-name{font-size:24px}.stat-strip strong{font-size:16px}.party-grid .side-stack{display:flex}.party-player-grid{grid-template-columns:1fr}.rules-grid{grid-template-columns:1fr}.rules-skills{grid-template-columns:1fr}.rule-block{padding:17px 18px}.item-slot{min-height:46px}.item-icon{font-size:17.5px}.turn-actions .secondary{font-size:10.5px;padding:7px 6px}#party-modal .modal-card{width:100%;padding:22px}}
-@media(max-width:440px){.party-tile .tile-icon{display:none}.party-tile .tile-type{font-size:7px}.party-tile .tile-value{font-size:7px}.stat-strip{grid-template-columns:1fr 1fr}.stat-strip>div:last-child{grid-column:1/-1}.turn-actions{grid-template-columns:1fr}.turn-actions .primary{grid-column:auto}.decision-option{flex-wrap:wrap}.decision-option em{margin-left:37px}.rule-skill{padding:8px}.rules-skills{grid-template-columns:1fr}}
-@media(max-width:440px){.player-card-side{gap:4px}.board-turn-clock{font-size:23px;padding:8px 10px}.kick-player-btn{padding:3px 6px}}
+@media(max-width:760px){.turn-name{font-size:24px}.stat-strip strong{font-size:16px}.party-grid .side-stack{display:flex}.party-player-grid{grid-template-columns:1fr}.rules-grid{grid-template-columns:1fr}.rules-skills{grid-template-columns:1fr}.rule-block{padding:17px 18px}.item-slot{min-height:46px}.item-icon{font-size:17.5px}.turn-actions .secondary{font-size:10.5px;padding:7px 6px}#party-modal .modal-card{width:100%;padding:22px}}
+@media(max-width:440px){.stat-strip{grid-template-columns:1fr 1fr}.stat-strip>div:last-child{grid-column:1/-1}.turn-actions{grid-template-columns:1fr}.turn-actions .primary{grid-column:auto}.decision-option{flex-wrap:wrap}.decision-option em{margin-left:37px}.rule-skill{padding:8px}.rules-skills{grid-template-columns:1fr}}
+@media(max-width:440px){.player-card-side{gap:4px}.kick-player-btn{padding:3px 6px}}
 
 /* 手機版限制只在小螢幕橫向對局啟用，不覆蓋桌面版的捲動與棋盤尺寸。 */
 @media screen and (max-width:932px) and (orientation:landscape){
@@ -395,16 +385,14 @@ html,body{width:100%;height:100%;overflow:hidden;touch-action:manipulation;overs
 input,textarea,select,[contenteditable="true"]{-webkit-user-select:text;user-select:text}
 body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
 .app-shell{height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:contain}
-/* 手機地圖置於 viewport 中等比例顯示。 */
-.board.party-board{width:min(100%,95vw,85vh);max-width:95vw;max-height:85vh;aspect-ratio:1;margin:auto;object-fit:contain}
 .board-panel-tools{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .board-fullscreen{font-size:12.5px;font-weight:800;line-height:1;border:1px solid #d7e3df;background:#f4f8f6;color:#2f625c;padding:8px 10px;border-radius:7px;white-space:nowrap}
 .board-fullscreen:hover{background:#e7f1ed;color:var(--ink)}
 .board-fullscreen[aria-pressed="true"]{background:var(--teal);border-color:var(--teal);color:#fff}
-@media(max-width:760px){.board-panel-tools{gap:6px}.board-fullscreen{font-size:11.5px;padding:7px 8px}.board.party-board{width:min(100%,95vw,80vh);max-height:80vh}}
-@media(max-width:440px){.board-fullscreen{font-size:10.5px;padding:6px 7px}}
+@media(max-width:760px){.board-panel-tools{gap:6px}.board-fullscreen{font-size:11.5px;padding:7px 8px}}
+
 .board-panel>.panel-title h2{white-space:nowrap}
-@media(max-width:768px){.board-panel>.panel-title h2{font-size:clamp(16px,4.4vw,23px)}}
+
 }
 
 .board-panel-tools{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
@@ -425,7 +413,7 @@ body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-i
 }
 @keyframes rotatePhone{0%{transform:rotate(-90deg)}50%{transform:rotate(0)}100%{transform:rotate(-90deg)}}
 
-/* 手機對局：左右等寬，地圖只改變格子佈局尺寸，字體與棋子維持固定像素。 */
+/* 手機對局：左右等寬，地圖沿用桌面版內部尺寸並由外層統一縮放。 */
 @media screen and (max-width:932px) and (orientation:landscape){
 html,body{overflow:hidden;touch-action:manipulation;overscroll-behavior:none;width:100%;height:100%;min-height:100dvh;margin:0;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
   body:has(#game:not([hidden])) .app-shell{width:100vw;height:100dvh;max-width:none;min-height:0;margin:0;padding:0;overflow:hidden;display:flex;flex-direction:column}
@@ -444,7 +432,6 @@ html,body{overflow:hidden;touch-action:manipulation;overscroll-behavior:none;wid
   .map-viewport{position:absolute;inset:0 0 40px;overflow:hidden;touch-action:none;display:grid;place-items:center}
   .map-zoom-controls,.map-latest-log{display:flex}
   .map-history:not([hidden]){display:block}
-  .map-viewport .party-board{width:var(--map-board-size,100%);height:var(--map-board-size,100%);max-width:none;max-height:none;min-width:0;min-height:0;aspect-ratio:1;flex:none;margin:0;transition:none}
   .map-zoom-controls{position:absolute;z-index:30;top:8px;right:8px;display:flex;gap:5px}
   .map-zoom-controls button,.map-history-close{width:40px;height:40px;border:1px solid #ffffff38;border-radius:10px;background:#182a32eF;color:#fff;font-size:20px;box-shadow:0 3px 12px #0004}
   .map-zoom-controls button:disabled{opacity:.4}
@@ -608,7 +595,7 @@ html,body{margin:0}
 .party-tile .tile-tokens{position:absolute;left:2px;right:2px;bottom:2px;display:flex;flex-wrap:wrap-reverse;justify-content:center;align-items:flex-end;align-content:flex-end;gap:2px;z-index:10}
 .party-tile .token{box-sizing:border-box;width:calc((100% - 6px) / 4);height:auto;aspect-ratio:1 / 1;flex:0 0 calc((100% - 6px) / 4);min-width:0;display:flex;justify-content:center;align-items:center;color:#fff;font-size:8px;font-weight:900;line-height:1;border:1.5px solid #fff;border-radius:50%;box-shadow:0 2px 5px #14283588,0 0 0 1px #14283555}
 .party-tile .token.moving{z-index:11}
-@media(max-width:760px){.party-tile .token{font-size:6px;border-width:1px}}
+
 
 /* ==========================================================================
    手機橫向遊玩：地圖拖曳、計時器、縮放控制、彈窗與全螢幕
@@ -631,9 +618,9 @@ html,body{margin:0}
   .mobile-map-area .board-center [data-dismiss-investment]{pointer-events:auto}
 
   /* 3. 回合計時器固定在地圖頂部中央，蓋在棋盤與格子上。 */
-  .mobile-map-area .board-turn-clock{position:absolute;top:4px;left:50%;transform:translateX(-50%);z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;margin:0;padding:4px 10px;border:1px solid #ffffff30;border-radius:999px;background:rgba(0,0,0,.7);color:#c7ffe9;box-shadow:0 3px 12px #0006;font-size:16px;line-height:1.1;letter-spacing:.02em;text-shadow:0 0 6px #65ffd0aa;white-space:nowrap;pointer-events:none}
-  .mobile-map-area .board-turn-clock-label{font-size:9px;font-weight:800;line-height:1;letter-spacing:0;color:#e9fff8}
-  .mobile-map-area .board-turn-clock-value{display:inline-block;min-width:22px;font-size:16px;font-weight:900;text-align:center}
+  .mobile-map-area .board-turn-clock{position:absolute;top:4px;left:50%;transform:translateX(-50%);z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;margin:0;padding:4px 10px;border:1px solid #ffffff30;border-radius:999px;background:rgba(0,0,0,.7);color:#c7ffe9;box-shadow:0 3px 12px #0006;line-height:1.1;letter-spacing:.02em;text-shadow:0 0 6px #65ffd0aa;white-space:nowrap;pointer-events:none}
+  .mobile-map-area .board-turn-clock-label{font-weight:800;line-height:1;letter-spacing:0;color:#e9fff8}
+  .mobile-map-area .board-turn-clock-value{display:inline-block;min-width:22px;font-weight:900;text-align:center}
   .mobile-map-area .board-turn-clock.expired{border-color:#ff8b7b;background:rgba(65,9,9,.82);color:#ffb1a6;text-shadow:0 0 6px #ff725eaa}
 
   /* 4. 縮放控制固定在地圖右上角，層級高於計時器；按鈕尺寸與背景重新設定。 */
@@ -693,5 +680,84 @@ html,body{margin:0}
   .mobile-control-area .mobile-season{font-size:10px}
   .skill-btn{position:relative!important;padding-right:20px!important}
   .skill-info-btn{position:absolute;top:2px;right:2px;z-index:2;display:grid;place-items:center;width:15px;height:15px;border:1px solid currentColor;border-radius:50%;font-size:10px;font-weight:900;line-height:1;cursor:pointer;background:#ffffffaa}
-  .map-viewport .party-board{transform-origin:center center}
+  .map-viewport .party-board{width:100%;max-width:100%;margin:0;transform-origin:center center}
+}
+
+/* Phase 1：手機橫向 viewport 與遊戲外框鎖定。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  html,body{
+    margin:0;
+    padding:0;
+    width:100vw;
+    height:100vh;
+    max-width:100%;
+    max-height:100%;
+    overflow:hidden;
+  }
+  html{background-color:#1a252c}
+  body:has(#game:not([hidden])){background-color:#1a252c}
+  body:has(#game:not([hidden])) .app-shell{
+    position:fixed;
+    top:0;
+    left:0;
+    width:100vw;
+    height:100vh;
+    max-width:100%;
+    max-height:100%;
+    margin:0;
+    padding:0;
+    background-color:#1a252c;
+    overflow:hidden;
+    box-sizing:border-box;
+  }
+  html:fullscreen,
+  html:fullscreen body,
+  body:fullscreen{
+    width:100%;
+    height:100%;
+    max-width:100%;
+    max-height:100%;
+    margin:0;
+    padding:0;
+    overflow:hidden;
+    background-color:#1a252c;
+  }
+  html:fullscreen .app-shell,
+  body:fullscreen .app-shell,
+  .app-shell:fullscreen{
+    position:fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    max-width:100%;
+    max-height:100%;
+    margin:0;
+    padding:0;
+    background-color:#1a252c;
+    overflow:hidden;
+    box-sizing:border-box;
+  }
+}
+
+/* Phase 2：手機橫向右側操作區固定高度，避免換回合時版面塌陷。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .mobile-control-area{
+    height:100%;
+    display:flex;
+    flex-direction:column;
+  }
+  .mobile-control-area .side-stack{
+    flex:1 1 auto;
+    min-height:0;
+  }
+  .mobile-control-area .turn-actions{
+    min-height:44px;
+  }
+  .mobile-control-area .turn-actions.is-waiting > *{
+    visibility:hidden;
+  }
+  .mobile-control-area .mobile-bottom-menu{
+    margin-top:auto;
+  }
 }
