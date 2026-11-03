@@ -745,6 +745,38 @@ html,body{margin:0}
   }
 }
 
+/* Phase 2：手機橫向開場動畫不超出可視範圍。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .opening-overlay{
+    inset:2.5vh 2.5vw;
+    width:auto;
+    height:auto;
+    max-width:95vw;
+    max-height:95vh;
+    padding:2vh 2vw;
+    overflow:hidden;
+  }
+  .opening-overlay .opening-scene{
+    width:min(90vw,680px);
+    max-width:95%;
+    max-height:95%;
+    gap:clamp(4px,1.5vh,14px);
+    transform:scale(.72);
+    transform-origin:center center;
+    overflow:hidden;
+  }
+  .opening-overlay .opening-cup{font-size:clamp(44px,14vh,100px)}
+  .opening-overlay .opening-cup span{font-size:clamp(8px,2vw,14px);letter-spacing:.2em}
+  .opening-overlay .opening-win{max-width:100%;gap:2px}
+  .opening-overlay .opening-win small{font-size:clamp(8px,1.8vw,11px);letter-spacing:.16em}
+  .opening-overlay .opening-win strong{max-width:100%;font-size:clamp(16px,3.8vw,30px);line-height:1.15;overflow-wrap:anywhere}
+  .opening-overlay .opening-win em{max-width:100%;font-size:clamp(8px,1.8vw,12px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .opening-overlay .opening-count strong{font-size:clamp(54px,12vh,96px)}
+  .opening-overlay .opening-count .pointer{font-size:clamp(22px,5vw,34px)}
+  .opening-overlay .opening-go span{font-size:clamp(44px,12vh,76px)}
+  .opening-overlay .opening-go strong{font-size:clamp(30px,8vw,70px)}
+}
+
 /* Phase 2：手機橫向右側操作區固定高度，避免換回合時版面塌陷。 */
 @media screen and (max-width:932px) and (orientation:landscape){
   .mobile-control-area{
@@ -846,5 +878,119 @@ html,body{margin:0}
     white-space:nowrap;
     overflow:hidden;
     text-overflow:ellipsis;
+  }
+}
+
+/* Phase 1：手機橫向地圖中央與格子內容的尺寸約束。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  /* 邪惡企業資訊縮小並與上方模式說明留出間距。 */
+  .mobile-map-area .center-backdrop .evil-tower{
+    width:min(80%,180px);
+    min-width:0;
+    bottom:6px;
+    margin-top:14px;
+    padding:5px 8px;
+    gap:0;
+    overflow:hidden;
+  }
+  .mobile-map-area .center-foreground{
+    min-width:0;
+    padding-bottom:14px;
+  }
+  .mobile-map-area .center-backdrop .evil-tower .tower-building{
+    max-width:70%;
+    max-height:50%;
+    font-size:clamp(15px,4vw,22px);
+    line-height:1;
+    overflow:hidden;
+  }
+  .mobile-map-area .center-backdrop .evil-tower strong,
+  .mobile-map-area .center-backdrop .evil-tower small{
+    display:block;
+    max-width:100%;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .mobile-map-area .center-backdrop .evil-tower strong{font-size:clamp(8px,1.8vw,10px);line-height:1.1}
+  .mobile-map-area .center-backdrop .evil-tower small{font-size:clamp(7px,1.5vw,9px);line-height:1.1}
+
+  /* 地圖中央的彩色長條提示不遮住邪惡企業資訊。 */
+  .mobile-map-area .center-toast,
+  .mobile-map-area .board-message-banner,
+  .mobile-map-area .center-message-banner,
+  .mobile-map-area .flash-content,
+  .mobile-map-area .event-flash,
+  .mobile-map-area .doom-sequence-title,
+  .mobile-map-area .victory-pending-banner,
+  .event-flash,
+  .flash-content,
+  .doom-sequence-title,
+  .victory-pending-banner,
+  .indulgence-banner,
+  .ghost-strike-copy,
+  .center-toast,
+  .board-message-banner,
+  .center-message-banner{display:none!important}
+
+  /* 格子內的圖示與文字限制在格子邊界內。 */
+  .mobile-map-area .cell,
+  .mobile-map-area .tile{
+    min-width:0;
+    min-height:0;
+    font-size:clamp(7px,1.5vw,11px);
+    line-height:1.1;
+    overflow:hidden;
+    word-break:break-all;
+  }
+  .mobile-map-area .cell img,
+  .mobile-map-area .cell svg,
+  .mobile-map-area .cell picture,
+  .mobile-map-area .cell .icon,
+  .mobile-map-area .cell .cell-icon,
+  .mobile-map-area .cell .tile-icon,
+  .mobile-map-area .tile img,
+  .mobile-map-area .tile svg,
+  .mobile-map-area .tile picture,
+  .mobile-map-area .tile .icon,
+  .mobile-map-area .tile .cell-icon,
+  .mobile-map-area .tile .tile-icon{
+    display:block;
+    max-width:70%;
+    max-height:50%;
+    width:auto;
+    height:auto;
+    object-fit:contain;
+    margin:0 auto;
+    overflow:hidden;
+  }
+  .mobile-map-area .cell .icon,
+  .mobile-map-area .cell .cell-icon,
+  .mobile-map-area .cell .tile-icon,
+  .mobile-map-area .tile .icon,
+  .mobile-map-area .tile .cell-icon,
+  .mobile-map-area .tile .tile-icon{font-size:clamp(10px,2vw,16px);line-height:1}
+  .mobile-map-area .cell p,
+  .mobile-map-area .cell span,
+  .mobile-map-area .cell strong,
+  .mobile-map-area .cell small,
+  .mobile-map-area .cell em,
+  .mobile-map-area .cell label,
+  .mobile-map-area .tile p,
+  .mobile-map-area .tile span,
+  .mobile-map-area .tile strong,
+  .mobile-map-area .tile small,
+  .mobile-map-area .tile em,
+  .mobile-map-area .tile label,
+  .mobile-map-area .tile-type,
+  .mobile-map-area .tile-value,
+  .mobile-map-area .tile-number{
+    min-width:0;
+    max-width:100%;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+    font-size:clamp(7px,1.5vw,10px);
+    line-height:1.1;
   }
 }

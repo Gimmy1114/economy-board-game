@@ -1339,6 +1339,24 @@ export const PartyUI = (() => {
     }
   }
 
+  const DOOM_ANIMATION_FALLBACK_MS = 3500;
+  function waitDoomAnimation(element, timeout = DOOM_ANIMATION_FALLBACK_MS) {
+    return new Promise(resolve => {
+      let settled = false;
+      let fallbackTimer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        element?.removeEventListener?.('animationend', finish);
+        element?.removeEventListener?.('transitionend', finish);
+        resolve();
+      };
+      element?.addEventListener?.('animationend', finish, { once: true });
+      element?.addEventListener?.('transitionend', finish, { once: true });
+      fallbackTimer = setTimeout(finish, Math.max(0, Number(timeout) || 0));
+    });
+  }
   const waitDoom = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function runDoomSequence() {
     const game = state(), pending = game?.ext?.doomPending;
@@ -1364,7 +1382,11 @@ export const PartyUI = (() => {
         if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
         const result = state()?.ext?.doomPending?.lastResult;
         showDoomOutcome(result);
-        await waitDoom(result?.outcome === 'executed' ? 720 : 550);
+        if (result?.outcome === 'executed') {
+          await waitDoomAnimation($('#board .doom-laser-layer'));
+        } else {
+          await waitDoom(550);
+        }
       }
       const pendingAtFinish = state()?.ext?.doomPending;
       if (!pendingAtFinish) return;
@@ -1579,10 +1601,16 @@ export const PartyUI = (() => {
     sound('victory');
     const shouldContinue = await new Promise(resolve => {
       let done = false;
+      let timer = null;
+      let fallbackTimer = null;
+      const card = overlay.querySelector('.evil-victory-card');
       const finish = showSettlement => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        card?.removeEventListener?.('animationend', onAnimationEnd);
+        card?.removeEventListener?.('transitionend', onAnimationEnd);
         if (evilVictoryResolve === cancel) evilVictoryResolve = null;
         overlay.hidden = true;
         overlay.innerHTML = '';
@@ -1590,7 +1618,11 @@ export const PartyUI = (() => {
         resolve(showSettlement);
       };
       const cancel = () => finish(false);
-      const timer = setTimeout(() => finish(true), 3000);
+      const onAnimationEnd = () => finish(true);
+      card?.addEventListener?.('animationend', onAnimationEnd, { once: true });
+      card?.addEventListener?.('transitionend', onAnimationEnd, { once: true });
+      timer = setTimeout(() => finish(true), 3000);
+      fallbackTimer = setTimeout(() => finish(true), DOOM_ANIMATION_FALLBACK_MS);
       evilVictoryResolve = cancel;
     });
     if (shouldContinue && state()?.status !== 'playing' && state()?.ext?.mode === 'evil') openSettlement(state());
