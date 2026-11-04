@@ -702,6 +702,24 @@ html,body{margin:0}
   .skill-info-btn{position:absolute;top:2px;right:2px;z-index:2;display:grid;place-items:center;width:15px;height:15px;border:1px solid currentColor;border-radius:50%;font-size:10px;font-weight:900;line-height:1;cursor:pointer;background:#ffffffaa}
   .map-viewport .party-board{width:100%;max-width:100%;margin:0;transform-origin:center center}
   .mobile-map-area .tile,.mobile-map-area .cell{overflow:hidden}
+  /* 移動中的棋子會暫時掛到 #board；脫離格子後仍維持固定尺寸與字體。 */
+  .mobile-map-area .token.moving,
+  .mobile-map-area #board > .token.moving,
+  #board > .token.moving{
+    box-sizing:border-box!important;
+    width:24px!important;
+    height:24px!important;
+    min-width:24px!important;
+    min-height:24px!important;
+    max-width:24px!important;
+    max-height:24px!important;
+    flex:0 0 24px!important;
+    display:grid!important;
+    place-items:center!important;
+    font-size:12px!important;
+    line-height:1!important;
+    border-radius:50%!important;
+  }
   /* 幽靈直接掛在目標格內，尺寸與格內棋子同級，避免固定大字元溢出。 */
   .mobile-map-area .ghost-piece{
     box-sizing:border-box;
@@ -1046,21 +1064,24 @@ html,body{margin:0}
     box-sizing:border-box;
     width:min(76%,150px)!important;
     min-width:0!important;
+    min-height:68px!important;
     max-width:100%;
     bottom:4px!important;
     margin:0;
-    padding:3px 5px!important;
-    gap:1px!important;
+    padding:6px 8px 5px!important;
+    gap:2px!important;
+    align-content:end;
     overflow:hidden;
   }
   .mobile-map-area .center-backdrop .evil-tower .tower-building{
     display:block;
     width:100%;
-    height:auto;
+    height:28px;
     max-width:100%!important;
-    max-height:48%!important;
+    max-height:28px!important;
     object-fit:contain;
-    font-size:clamp(13px,3vw,19px)!important;
+    margin:0 0 1px;
+    font-size:clamp(18px,4vw,26px)!important;
     line-height:1;
     overflow:hidden;
     text-align:center;

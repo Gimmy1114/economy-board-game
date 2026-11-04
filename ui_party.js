@@ -1863,22 +1863,46 @@ export const PartyUI = (() => {
     if (!isLocalOwner(p, ev.playerId)) return;
     const key = eventPromptKeyOf(p);
     if (modal === 'event' && eventPromptKey === key) return;
-    eventPromptKey = key;
-    modal = 'event';
-    const amount = Number(ev.amount) || 0;
-    const energyEvent = ev.kind === 'allEnergy' || ev.kind === 'selfEnergy';
-    const amountText = amount ? `${amount > 0 ? '+' : ''}${energyEvent ? `${amount} 技能點` : `${money(amount)} 總資產`}` : '';
-    updateExtModal({
-      kicker: `EVENT TILE · 第 ${p.round} 季`, icon: ev.icon || '❓', title: ev.name || '突發事件', type: 'event',
-      text: ev.text || '市場上突然出現一則消息，影響所有企業。',
-      body: `<div class="event-prompt-box">
-        <span class="event-prompt-icon">${ev.icon || '❓'}</span>
-        <div><small>觸發事件</small><strong>${h(ev.name || '突發事件')}</strong><p>${h(ev.text || '')}</p></div>
-        ${amountText ? `<em class="${amount > 0 ? 'good' : 'bad'}">${h(amountText)}</em>` : ''}
-      </div>`,
-      actions: `<button class="primary" data-event-ok="1" type="button">確認事件</button>`
-    });
-    sound(eventSound(ev));
+    const clearEventPromptFallback = error => {
+      console.error('事件視窗無法掛載，啟用自動完成備援', error);
+      modal = null;
+      eventPromptKey = '';
+      try {
+        const clear = window.__partyEngine?.extClearEventPrompt;
+        app()?.runAction?.({ type: 'CLEAR_EVENT_PROMPT' }, () => {
+          if (clear) clear(p);
+          else if (p?.ext) p.ext.eventPrompt = null;
+        });
+      } catch (fallbackError) {
+        console.error('事件提示備援同步失敗', fallbackError);
+        if (p?.ext) p.ext.eventPrompt = null;
+        try { app()?.save?.(); app()?.render?.(); } catch (renderError) { console.error(renderError); }
+      }
+      app()?.notify?.('事件視窗無法顯示，已自動完成本次事件。');
+    };
+    try {
+      const amount = Number(ev.amount) || 0;
+      const energyEvent = ev.kind === 'allEnergy' || ev.kind === 'selfEnergy';
+      const amountText = amount ? `${amount > 0 ? '+' : ''}${energyEvent ? `${amount} 技能點` : `${money(amount)} 總資產`}` : '';
+      updateExtModal({
+        kicker: `EVENT TILE · 第 ${p.round} 季`, icon: ev.icon || '❓', title: ev.name || '突發事件', type: 'event',
+        text: ev.text || '市場上突然出現一則消息，影響所有企業。',
+        body: `<div class="event-prompt-box">
+          <span class="event-prompt-icon">${ev.icon || '❓'}</span>
+          <div><small>觸發事件</small><strong>${h(ev.name || '突發事件')}</strong><p>${h(ev.text || '')}</p></div>
+          ${amountText ? `<em class="${amount > 0 ? 'good' : 'bad'}">${h(amountText)}</em>` : ''}
+        </div>`,
+        actions: `<button class="primary" data-event-ok="1" type="button">確認事件</button>`
+      });
+      const modalElement = $('#ext-modal');
+      if (!modalElement || modalElement.hidden || !modalElement.querySelector('[data-event-ok]')) throw new Error('事件 Modal 節點不存在或未完成掛載');
+      // DOM 確認掛載成功後才鎖定事件 modal，避免手機重排時留下「有狀態、沒按鈕」。
+      eventPromptKey = key;
+      modal = 'event';
+      sound(eventSound(ev));
+    } catch (error) {
+      clearEventPromptFallback(error);
+    }
   }
 
   // -------------------------------------------------------------------------
