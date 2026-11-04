@@ -5062,6 +5062,9 @@ globalThis.SoundManager = SoundManager;
 // 派對擴充 UI（動態掛載，不破壞原始 index.html 結構）
 // ============================================================================
 
+// 手機地圖鏡頭是否在回合與移動動畫中跟隨目前玩家。
+let isCameraFollowEnabled = false;
+
 const PartyUI = (() => {
   const $ = s => document.querySelector(s);
   const $$ = s => Array.from(document.querySelectorAll(s));
@@ -5224,9 +5227,10 @@ const PartyUI = (() => {
       controls = document.createElement('section'); controls.className = 'mobile-control-area'; controls.setAttribute('aria-label', '玩家操作區');
       const viewport = document.createElement('div'); viewport.className = 'map-viewport';
       const zoom = document.createElement('div'); zoom.className = 'map-zoom-controls'; zoom.innerHTML = '<button type="button" class="zoom-btn" data-map-zoom="in" aria-label="放大地圖" title="放大">＋</button><button type="button" class="zoom-btn" data-map-zoom="out" aria-label="縮小地圖" title="縮小">－</button>';
+      const camera = document.createElement('button'); camera.type = 'button'; camera.className = 'camera-follow-btn'; camera.dataset.mapCameraFollow = '1'; camera.innerHTML = '<span class="camera-follow-icon" aria-hidden="true">◎</span><span class="camera-follow-label">跟隨</span>';
       const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '查看所有最近動態');
       const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<button type="button" class="map-history-close" data-map-history-close aria-label="關閉動態清單">×</button><div class="map-history-items"></div>';
-      map.append(viewport, zoom, ticker, history); controls.append(side, players); grid.prepend(map, controls);
+      map.append(viewport, zoom, camera, ticker, history); controls.append(side, players); grid.prepend(map, controls);
       viewport.append(boardPanel);
       viewport.addEventListener('pointerdown', mapPointerDown);
       viewport.addEventListener('pointermove', mapPointerMove);
@@ -5238,8 +5242,9 @@ const PartyUI = (() => {
     const game = state(), current = game?.players?.[game.turnIndex];
     const key = `${game?.sync?.gameId || ''}:${current?.id || ''}`;
     updateMapLog(game);
-    if (mobileMap.turnKey !== key) { mobileMap.turnKey = key; mobileMap.zoom = 1.55; mobileMap.x = 0; mobileMap.y = 0; updateMapBounds(); requestAnimationFrame(() => centerCurrentTile()); }
+    if (mobileMap.turnKey !== key) { mobileMap.turnKey = key; updateMapBounds(); if (isCameraFollowEnabled) requestAnimationFrame(() => centerCurrentTile()); }
     else requestAnimationFrame(updateMapBounds);
+    updateCameraFollowButton();
   }
 
   function restoreDesktopSplitView() {
@@ -5254,7 +5259,7 @@ const PartyUI = (() => {
     grid.classList.remove('mobile-split-view');
     const boardEl = $('#board');
     if (boardEl) boardEl.style.removeProperty('transform');
-    mobileMap.zoom = 1.55; mobileMap.x = 0; mobileMap.y = 0; mobileMap.min = 1; mobileMap.turnKey = '';
+    mobileMap.min = 1; mobileMap.turnKey = '';
     mobileNameObserver?.disconnect(); mobileNameObserver = null;
     closeMobilePanel();
   }
@@ -5267,6 +5272,7 @@ const PartyUI = (() => {
       if (target.closest('[data-party-fullscreen], #mobile-fullscreen-btn')) { toggleMobileFullscreen(); return; }
       const zoom = target.closest('[data-map-zoom]');
       if (zoom) zoomMap(zoom.dataset.mapZoom === 'in' ? 1.2 : 1 / 1.2);
+      if (target.closest('[data-map-camera-follow]')) toggleCameraFollow();
       if (target.closest('[data-map-history-open]')) toggleMapHistory(true);
       if (target.closest('[data-map-history-close]')) toggleMapHistory(false);
       if (target.closest('[data-mobile-mode-rules]')) showMobileModeRules();
@@ -5484,16 +5490,42 @@ const PartyUI = (() => {
     if (zoomButtons[1]) zoomButtons[1].disabled = mobileMap.zoom <= 1.001;
     if (zoomButtons[0]) zoomButtons[0].disabled = mobileMap.zoom >= 3.5;
   }
-  function centerCurrentTile() {
-    const viewport = $('.map-viewport'), board = $('#board'), game = state();
-    const player = game?.players?.[game.turnIndex];
-    if (!viewport || !board || !player) return;
-    const tile = board.querySelector(`[data-tile-index="${Number(player.position)}"]`);
+  function updateCameraFollowButton() {
+    const button = $('.camera-follow-btn');
+    if (!button) return;
+    button.classList.toggle('is-on', isCameraFollowEnabled);
+    button.classList.toggle('is-off', !isCameraFollowEnabled);
+    button.setAttribute('aria-pressed', String(isCameraFollowEnabled));
+    button.setAttribute('aria-label', isCameraFollowEnabled ? '關閉視角跟隨' : '開啟視角跟隨');
+    button.title = isCameraFollowEnabled ? '關閉視角跟隨' : '開啟視角跟隨';
+    const icon = button.querySelector('.camera-follow-icon');
+    if (icon) icon.textContent = isCameraFollowEnabled ? '◎' : '⊘';
+    const label = button.querySelector('.camera-follow-label');
+    if (label) label.textContent = isCameraFollowEnabled ? '跟隨中' : '自由視角';
+  }
+  function toggleCameraFollow() {
+    isCameraFollowEnabled = !isCameraFollowEnabled;
+    updateCameraFollowButton();
+    if (isCameraFollowEnabled) requestAnimationFrame(() => centerCurrentTile());
+  }
+  // 只調整平移座標；mobileMap.zoom 永遠沿用玩家目前的縮放比例。
+  function centerCameraOnPosition(x, y) {
+    if (!isCameraFollowEnabled) return;
+    const viewport = $('.map-viewport'), board = $('#board');
+    if (!viewport || !board) return;
+    const tileIndex = y === undefined ? Number(x) : Number(y);
+    const tile = board.querySelector(`[data-tile-index="${tileIndex}"]`);
     if (!tile) return;
     const v = viewport.getBoundingClientRect(), t = tile.getBoundingClientRect();
     mobileMap.x += (v.left + v.width / 2) - (t.left + t.width / 2);
     mobileMap.y += (v.top + v.height / 2) - (t.top + t.height / 2);
     updateMapBounds();
+  }
+  function centerCurrentTile() {
+    const viewport = $('.map-viewport'), board = $('#board'), game = state();
+    const player = game?.players?.[game.turnIndex];
+    if (!viewport || !board || !player) return;
+    centerCameraOnPosition(player.position);
   }
   function zoomMap(multiplier) {
     const next = Math.max(1, Math.min(3.5, mobileMap.zoom * multiplier));
@@ -8049,7 +8081,7 @@ const PartyUI = (() => {
     openSettlement, hideSettlement, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
     closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock,
     playGhostInterference: flashGhostInterference, playSkillCue,
-    flashCornerSubsidy, startCornerMessage,
+    flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,
     decisionBlocked, flashFrozen
   };
@@ -8757,6 +8789,8 @@ function moveTokenStep(position){
   const token=$('#board .token.moving'),destination=$(`#board [data-tile-index="${position}"] .tile-tokens`);
   if(!token||!destination||tab!=='board'||page!=='game')return;
   cleanupMovingToken();
+  // 跟隨模式只在每個移動步驟調整平移，縮放值由玩家自行保留。
+  PartyUI.centerCameraOnPosition?.(position);
   const board=$('#board'),boardRect=board.getBoundingClientRect();
   const scaleX=board.offsetWidth?boardRect.width/board.offsetWidth:1;
   const scaleY=board.offsetHeight?boardRect.height/board.offsetHeight:1;

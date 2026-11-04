@@ -408,6 +408,17 @@ body.settlement-active .center-backdrop .evil-tower{display:none!important}
 
 }
 
+/* 手機地圖視角跟隨切換：固定在地圖左上角，不影響縮放與拖曳區。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .mobile-map-area .camera-follow-btn{position:absolute;top:10px;left:10px;z-index:100;display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:40px;min-height:36px;margin:0;padding:5px 8px;border:1px solid #ffffff45;border-radius:9px;background:rgba(16,32,40,.9);color:#b9c4c2;box-shadow:0 3px 12px #0005;font-size:11px;font-weight:900;line-height:1;touch-action:manipulation}
+  .mobile-map-area .camera-follow-btn.is-on{border-color:#4fd2a5;background:rgba(15,103,83,.95);color:#eafff7}
+  .mobile-map-area .camera-follow-btn.is-off{border-color:#ffffff35;background:rgba(31,42,48,.92);color:#b5c0be}
+  .mobile-map-area .camera-follow-btn:active{transform:scale(.94)}
+  .mobile-map-area .camera-follow-btn:focus-visible{outline:2px solid #7bd5ca;outline-offset:2px}
+  .mobile-map-area .camera-follow-icon{font-size:18px;line-height:.85}
+  .mobile-map-area .camera-follow-label{white-space:nowrap}
+}
+
 /* 遊戲外仍允許捲動：全螢幕只鎖定真正顯示棋盤的 #game。 */
 @media screen and (max-width:932px) and (orientation:landscape){
   html:has(#game[hidden]),

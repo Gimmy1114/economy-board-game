@@ -1102,9 +1102,18 @@ test('手機介面、倒數暫停、全螢幕與棋子響應式定位已接線',
   assert.match(appSource, /requestFullscreen/);
   assert.match(css, /html,body\{overflow:hidden;touch-action:manipulation;overscroll-behavior:none/);
   assert.match(ui, /board\.style\.transformOrigin = 'center center'/);
-  assert.match(ui, /board\.style\.transform = `scale\(\$\{mobileMap\.zoom\}\)`/);
+  assert.match(ui, /board\.style\.transform = `translate\(\$\{mobileMap\.x\}px, \$\{mobileMap\.y\}px\) scale\(\$\{mobileMap\.zoom\}\)`/);
+  assert.match(ui, /let isCameraFollowEnabled = false/);
+  assert.match(ui, /data-map-camera-follow/);
+  assert.match(ui, /function centerCameraOnPosition\(x, y\)/);
+  assert.match(ui, /if \(!isCameraFollowEnabled\) return/);
+  assert.doesNotMatch(ui, /mobileMap\.turnKey !== key\) \{ mobileMap\.turnKey = key; mobileMap\.zoom = 1\.55/);
+  assert.match(appSource, /PartyUI\.centerCameraOnPosition\?\.\(position\)/);
   assert.doesNotMatch(ui, /board\.style\.(?:width|height)/);
   assert.match(css, /\.map-viewport \.party-board\{[^}]*width:100%;max-width:100%;margin:0;transform-origin:center center/);
+  assert.match(css, /\.mobile-map-area \.camera-follow-btn\{position:absolute;top:10px;left:10px;z-index:100/);
+  assert.match(css, /\.camera-follow-btn\.is-on/);
+  assert.match(css, /\.camera-follow-btn\.is-off/);
   assert.doesNotMatch(css, /\.board\.party-board\{[^}]*max-width:95vw[^}]*max-height:85vh[^}]*aspect-ratio:1/);
 });
 

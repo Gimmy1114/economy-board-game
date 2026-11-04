@@ -713,6 +713,8 @@ function moveTokenStep(position){
   const token=$('#board .token.moving'),destination=$(`#board [data-tile-index="${position}"] .tile-tokens`);
   if(!token||!destination||tab!=='board'||page!=='game')return;
   cleanupMovingToken();
+  // 跟隨模式只在每個移動步驟調整平移，縮放值由玩家自行保留。
+  PartyUI.centerCameraOnPosition?.(position);
   const board=$('#board'),boardRect=board.getBoundingClientRect();
   const scaleX=board.offsetWidth?boardRect.width/board.offsetWidth:1;
   const scaleY=board.offsetHeight?boardRect.height/board.offsetHeight:1;
