@@ -490,6 +490,21 @@ test('房主只派發客機 Action，忽略客機狀態並向客機派發 Event'
   }
 });
 
+test('客機會接收房主的 AUCTION_RESOLVED 完成事件', () => {
+  withGuest(({connection}) => {
+    const events = [];
+    PartyNet.onEvent = event => events.push(event);
+    connection.emit('data', {
+      t: 'event',
+      event: {type: 'AUCTION_RESOLVED', auctionId: 'auction-1', reason: 'completed'},
+      fromPeer: 'host-peer-id',
+      mid: 'auction-resolved-1'
+    });
+    assert.deepEqual(events, [{type: 'AUCTION_RESOLVED', auctionId: 'auction-1', reason: 'completed'}]);
+    PartyNet.onEvent = null;
+  });
+});
+
 test('重複收到相同封包時只處理一次', () => {
   const previousPeer = globalThis.Peer;
   globalThis.Peer = FakePeer;

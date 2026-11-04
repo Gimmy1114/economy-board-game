@@ -5,7 +5,7 @@ import { PLAYER_COLORS } from './party_data.js';
 // ---- 5 碼房間代碼 ----------------------------------------------------------
 // 房主用「前綴 + 5 碼」向 PeerJS 配對伺服器登記，畫面上只顯示 5 碼（去掉容易看錯的 0/O/1/I）。
 // 改了房間訊息或對局格式時，把前綴的版本號往上加，新舊版本就進不了同一個房間。
-export const ROOM_PREFIX = 'econparty-v6-';
+export const ROOM_PREFIX = 'econparty-v7-';
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 export function makeRoomCode(random = Math.random) {
   let code = '';

@@ -8,7 +8,7 @@ import {
   extSkipStarOffer,extResolveReplace,
   extInsiderPay,extAuctionAction,extAuctionCurrent,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,
   extSpinWheel,extTriggerDoom,extResolveDoomPlayer,extFinishDoom,extRefreshInflation,extRecordRound,extEnsureState,
-  extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extUseFateDice,extForceEndTurn,extMovementTarget
+  extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extUseFateDice,extForceEndTurn,extMovementTarget,extAuctionId
 } from './party_engine.js';
 import {syncInfo,isNewerGame} from './sync.js';
 import {PartyNet} from './net.js';
@@ -18,7 +18,7 @@ import {SoundManager} from './audio_system.js';
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
 globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
 globalThis.__partyEngine={
-  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,
+  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn
 };
@@ -54,6 +54,11 @@ let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
 let movingTokenCleanup=null;
 let uiRecoveryInProgress=false;
+// 黑市拍賣的跨裝置收束：完成事件是主要路徑，逾時是手機背景暫停或
+// DataChannel 遺失時的最後保險。這些旗標只描述本機 UI，不取代房主狀態。
+const AUCTION_WAIT_TIMEOUT_MS=20000;
+let auctionWaitTimer=null,auctionWaitKey='',pendingAuctionResolve=null;
+let isAuctionActive=false,isWaitingForRemote=false;
 // 房客在自己的棋子移動時，房主仍可能送來同一回合的中間快照。
 // 先暫存最後一份，避免整份 state 取代本地動畫而把棋子拉回起點。
 let deferredRoomState=null;
@@ -118,11 +123,13 @@ function expireTurn(key){
   closeModal();
   PartyUI.clearTurnInteractions?.();
   try{
+    const auctionBefore=state.ext?.auction;
     extForceEndTurn(state,'行動時間結束');
     turnClock.expiring=false;
     syncTurnClock();
     save();
     render();
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore,{reason:'turn-timeout'});
   }catch(error){
     turnClock.expiring=false;
     notify(`無法自動結束回合：${error?.message||'未知錯誤'}`);
@@ -190,7 +197,6 @@ function dismissInvestmentSettlement(key=investmentSettlementKey(state?.ext?.inv
 }
 function investmentSettlementKey(settlement){return settlement?.at?`${settlement.round}:${settlement.at}`:''}
 function visibleInvestmentSettlement(settlement){
-  if(state?.ext?.mode==='evil')return null;
   if(!settlement?.results?.length)return null;
   if(!PartyNet.active)return settlement;
   const playerId=PartyNet.myPlayerId;
@@ -226,6 +232,93 @@ function cancelAnimation({resumeTimer=true}={}){
   animation=null;
   if(!flushingDeferredRoomState)deferredRoomState=null;
   if(resumeTimer)resumeTurnClock();
+}
+
+function auctionWaitId(auction){
+  try{return extAuctionId(auction)||''}catch{return ''}
+}
+function settleAuctionWait(){
+  clearTimeout(auctionWaitTimer);
+  auctionWaitTimer=null;
+  auctionWaitKey='';
+  isAuctionActive=false;
+  isWaitingForRemote=false;
+  const resolve=pendingAuctionResolve;
+  pendingAuctionResolve=null;
+  try{resolve?.()}catch(error){console.warn('拍賣等待 Promise 釋放失敗',error)}
+}
+function broadcastAuctionResolved(auction,details={}){
+  if(!PartyNet.isHost||!auction)return;
+  PartyNet.broadcastEvent({
+    type:'AUCTION_RESOLVED',
+    auctionId:auctionWaitId(auction),
+    initiatorId:auction.initiatorId||null,
+    winnerId:auction.highestBidder||null,
+    price:Number(auction.highestBid)||0,
+    reason:details.reason||'completed'
+  });
+}
+function forceCloseAuctionWaitingUI({resolved=true,reason='remote'}={}){
+  try{
+    // UI 是可選層；任何一個節點不存在都不能阻止 finally 釋放邏輯鎖。
+    closeModal();
+    PartyUI.closeExtModal?.();
+    PartyUI.clearTurnLock?.();
+    document.body.classList.remove('spectator-mode');
+    const waiting=document.querySelector('#spectator-note');
+    if(waiting)waiting.hidden=true;
+  }catch(error){
+    console.warn('Mobile UI close error gracefully caught:',error);
+  }finally{
+    // 完成事件或逾時都代表本機不能再停在黑市等待畫面。
+    if(resolved&&state?.ext?.auction)state.ext.auction=null;
+    settleAuctionWait();
+    try{if(state)render()}catch(error){console.warn('拍賣收束後重繪失敗',error)}
+    try{flushDeferredRoomState()}catch(error){console.warn('拍賣完成快照套用失敗',error)}
+    if(reason==='timeout')notify('黑市拍賣等待逾時，已解除本機鎖定。');
+  }
+}
+function armAuctionResolutionTimeout(){
+  const auction=state?.ext?.auction;
+  if(!PartyNet.active||!auction){
+    if(!auction&&auctionWaitKey)settleAuctionWait();
+    return;
+  }
+  const key=auctionWaitId(auction);
+  if(!key)return;
+  isAuctionActive=true;
+  const owner=state?.net?.owners?.[auction.currentId];
+  isWaitingForRemote=Boolean(owner&&owner!==PartyNet.peerId);
+  if(auctionWaitKey===key&&auctionWaitTimer)return;
+  settleAuctionWait();
+  auctionWaitKey=key;
+  // UI 不需要 await 這個 Promise；它存在是為了讓任何等待中的流程都能由
+  // 完成事件或逾時明確 resolve，而不是留下永遠 pending 的 Promise。
+  const waitForAuctionResult=new Promise(resolve=>{pendingAuctionResolve=resolve});
+  void waitForAuctionResult;
+  auctionWaitTimer=setTimeout(()=>{
+    if(auctionWaitKey!==key)return;
+    const current=state?.ext?.auction;
+    if(!current||auctionWaitId(current)!==key){settleAuctionWait();return}
+    if(PartyNet.isHost){
+      try{
+        const before=current;
+        extAuctionFinish(state);
+        save();
+        forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+        broadcastAuctionResolved(before,{reason:'timeout'});
+      }catch(error){
+        console.error('拍賣逾時結算失敗',error);
+        forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+      }
+    }else{
+      // 客機不能自行寫入房主狀態，送出只允許由發起者提出的逾時請求；
+      // 即使封包也遺失，finally 仍會解除本機 UI 與 Promise 鎖。
+      PartyNet.sendAction({type:'AUCTION_TIMEOUT',auctionId:key,playerId:PartyNet.myPlayerId});
+      forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+    }
+  },AUCTION_WAIT_TIMEOUT_MS);
+  auctionWaitTimer?.unref?.();
 }
 
 // 這兩個判斷集中管理「主動玩家正在移動／處理落地事件」的狀態。
@@ -308,7 +401,8 @@ function recoverAfterUiError(error){
         if(fallbackAction)PartyNet.sendAction({...fallbackAction,playerId:ownerId});
       }
     }
-    if(ext.auction){
+    const auctionBefore=ext.auction;
+    if(auctionBefore){
       try{extAuctionFinish(state)}catch(finishError){console.error('黑市拍賣備援結算失敗',finishError);ext.auction=null}
     }
     // A failed replacement/investment/tax prompt must not hold the active player.
@@ -327,6 +421,7 @@ function recoverAfterUiError(error){
     }
     save();
     try{render()}catch(renderError){console.error('特殊格 UI 備援重繪失敗',renderError)}
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore,{reason:'ui-recovery'});
     notify('特殊格視窗無法顯示，已同步落點並解除回合鎖定。');
     return true;
   }catch(recoveryError){
@@ -377,7 +472,16 @@ async function run(fn,options={}){
   const auctionOwner=options.allowAuction&&state?.ext?.auction&&window.__partyEngine?.extAuctionCurrent?.(state)?.id===PartyNet.myPlayerId;
   if(state?.net&&!PartyNet.canAct(state)&&!auctionOwner&&!options.authoritative){notify('現在不是你的回合，請等待其他玩家。');return}
   let before=null;
-  try{await withGameLock(()=>{if(!ensureFresh())return;before=cashSnapshot();fn();save();render();options.afterCommit?.()})}
+  try{await withGameLock(()=>{
+    if(!ensureFresh())return;
+    before=cashSnapshot();
+    const auctionBefore=state?.ext?.auction;
+    fn();
+    save();
+    render();
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore);
+    options.afterCommit?.();
+  })}
   catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return}
   if(before)animateCashChanges(before);
 }
@@ -507,7 +611,7 @@ function centerBackdropMarkup(){
   return `<div class="center-backdrop">${parts.join('')}</div>`;
 }
 function centerMarkup(){
-  const investment=state.ext?.mode==='evil'?null:visibleInvestmentSettlement(state.ext?.investmentSettlement);
+  const investment=visibleInvestmentSettlement(state.ext?.investmentSettlement);
   const investmentKey=investmentSettlementKey(investment);
   if(investment?.results?.length&&investmentKey!==dismissedInvestmentSettlementKey){
     const rows=investment.results.map(result=>{
@@ -1031,6 +1135,8 @@ function render(){
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-page').forEach(p=>p.classList.toggle('active',p.id===`tab-${tab}`));
   renderBoard();renderTurn();renderGoals();renderPlayers();renderLog();renderModal();
+  if(state?.ext?.auction)armAuctionResolutionTimeout();
+  else if(auctionWaitKey)settleAuctionWait();
   try{PartyUI.afterRender(state);}catch(e){console.error(e)}
 }
 
@@ -1305,10 +1411,11 @@ PartyNet.onState = (game,fromPeer) => {
       const localId=localActivePlayerId();
       const incomingActiveId=incoming.players?.[incoming.turnIndex]?.id;
       const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
+      const incomingAuctionResolved=Boolean(state?.ext?.auction&&!incoming.ext?.auction);
       // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
       // resolve 快照進來解除 moving，否則會永久卡在移動階段。
       const protectingMove=localOwnsTurn&&!flushingDeferredRoomState&&animation?.playerId===localId&&isMoving(localId);
-      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId);
+      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId)&&!incomingAuctionResolved;
       if(protectingMove){
         // 移動中的主動玩家是本機唯一真實來源；記住最新快照，等落地後再套用。
         deferredRoomState={game,fromPeer};
@@ -1343,6 +1450,14 @@ PartyNet.onState = (game,fromPeer) => {
 };
 PartyNet.onAction = (action,fromPeer) => {
   if(!PartyNet.isHost||!state?.net||!action?.type||animation)return;
+  const execute=(fn,options={})=>{void run(fn,{...options,authoritative:true})};
+  if(action.type==='AUCTION_TIMEOUT'){
+    const auction=state.ext?.auction;
+    const initiatorOwner=auction&&state.net.owners?.[auction.initiatorId];
+    if(!auction||auctionWaitId(auction)!==String(action.auctionId||'')||initiatorOwner!==fromPeer)return;
+    execute(()=>extAuctionFinish(state),{allowAuction:true});
+    return;
+  }
   const pendingOwners={
     DECISION:state.pendingDecision?.playerId,
     STAR_OFFER:state.ext?.starOffer?.playerId,
@@ -1357,7 +1472,6 @@ PartyNet.onAction = (action,fromPeer) => {
   const actorId=pendingOwners[action.type]||activePlayer()?.id;
   if(action.playerId!==actorId||state.net.owners?.[actorId]!==fromPeer)return;
   if(state.ext?.vectorPending&&action.type!=='CLEAR_EVENT_PROMPT')return;
-  const execute=(fn,options={})=>{void run(fn,{...options,authoritative:true})};
   switch(action.type){
     case 'ROLL_DICE':
       if(state.phase==='roll')void rollWithAnimation(true);
@@ -1417,6 +1531,13 @@ PartyNet.onAction = (action,fromPeer) => {
   }
 };
 PartyNet.onEvent = event => {
+  if(event?.type==='AUCTION_RESOLVED'){
+    const localAuction=state?.ext?.auction;
+    if(localAuction&&event.auctionId&&auctionWaitId(localAuction)!==String(event.auctionId))return;
+    // 先收束本機 UI／Promise，再等待或套用房主的完整 state 快照；
+    // 這條路徑不依賴快照剛好在手機背景分頁中被及時繪製。
+    forceCloseAuctionWaitingUI({resolved:true,reason:'remote'});
+  }
   if(event?.type==='TURN_TIMER'||event?.type==='TURN_TIMEOUT')PartyUI.updateTurnTimer?.(event);
   if(event?.type==='TURN_TIMEOUT')notify('行動時間結束');
   if(event?.type==='PLAYER_KICKED')notify(`${event.name||'玩家'} 已被房主移出對局。`);
@@ -1462,7 +1583,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
-  cashSnapshot, animateCashChanges, recoverAfterUiError,
+  cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   buyStar:()=>runAction({type:'BUY_STAR'},()=>extBuyStar(state)),
   useMythic:(id,payload)=>runAction({type:'USE_MYTHIC',id,payload},()=>extUseMythic(state,id,payload)),

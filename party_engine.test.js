@@ -5,8 +5,8 @@ import {
   extInitGame, extEnsureState, extAddMythic, extAddItem, extHasItemSpace, extItemCount,
   extUseMythic, extUseSkill, extCanBuyStar, extBuyStar, extSkipStarOffer, extApplyWheel,
   extTriggerDoom, extResolveDoomPlayer, extFinishDoom, extResolveReplace, extSettlementData, extCheckBankruptcy, extCheckWin,
-  extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extPrepareWheel, extResolveWheel,
-  extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath,
+  extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extAuctionId, extPrepareWheel, extResolveWheel,
+  extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath, extInvest, extIsDoomApproaching,
   extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice
 } from './party_engine.js';
 import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS, SPECIAL_ITEMS, FATE_DICE_ID} from './party_data.js';
@@ -205,7 +205,10 @@ test('黑市採用房主設定的起標與抬價，並揭露商品或標示爛�
   assert.equal(state.ext.auction.currentPrice, 300);
   assert.equal(state.ext.auction.bidIncrement, 75);
   assert.equal(state.ext.auction.transparent, true);
+  const auctionId = extAuctionId(state);
+  assert.ok(auctionId);
   extAuctionAction(state, 'bid');
+  assert.equal(extAuctionId(state), auctionId);
   assert.equal(state.ext.auction.currentPrice, 375);
 });
 
@@ -398,7 +401,7 @@ test('毀滅日精準分出付款、抵抗與處決名單，並累積保護費',
   assert.ok(!protectedPlayer.mythics.some(x => x.id === 'totem'));
 });
 
-test('邪惡企業季末跳過投資結算並直接進入毀滅日', () => {
+test('邪惡企業季末也結算股票憑證並直接進入毀滅日', () => {
   const state = make('evil', 42, {doomEvery: 5, doomPrice: 1000});
   const [player] = state.players;
   const startingCash = player.cash;
@@ -407,11 +410,67 @@ test('邪惡企業季末跳過投資結算並直接進入毀滅日', () => {
 
   engineHooks.afterRound(state, 5, {final: false});
 
-  assert.equal(player.cash, startingCash, '季末不派發投資收益');
-  assert.equal(state.ext.investmentSettlement, null, '不留下投資結果視窗資料');
-  assert.deepEqual(state.ext.certificates, [], '不保留不會在此模式結算的憑證');
+  assert.ok(state.ext.investmentSettlement?.results?.length === 1, '季末應留下投資結果視窗資料');
+  assert.equal(player.ext.certificates.length, 0, '結算後移除玩家持有的憑證');
+  assert.deepEqual(state.ext.certificates, [], '結算後移除全域憑證清單');
   assert.ok(state.ext.doomPending, '毀滅日仍在同一季末啟動');
   assert.equal(state.ext.lastEvent?.type, 'doom');
+});
+
+test('投資成功會把股票憑證放進玩家持有清單並扣除本金', () => {
+  const state = make('star', 77);
+  const player = state.players[0];
+  player.cash = 2000;
+  const tile = state.board.find(t => t.type === 'invest');
+  assert.ok(tile, '測試地圖應包含投資格');
+  player.position = tile.index;
+  const effects = [];
+  engineHooks.resolveTile(state, player, {}, effects);
+  assert.equal(state.ext.investOffer.playerId, player.id);
+  assert.equal(state.ext.investOffer.cost, 1000);
+  assert.equal(extInvest(state, true), true);
+  assert.equal(player.cash, 1000);
+  assert.equal(player.ext.certificates.length, 1);
+  assert.equal(player.ext.certificates[0].principal, 1000);
+  assert.equal(state.ext.certificates.length, 1);
+});
+
+test('毀滅日前一季投資格直接停擺且不建立投資視窗', () => {
+  const state = make('evil', 78, {doomEvery: 5});
+  state.round = 4;
+  const player = state.players[0];
+  const tile = state.board.find(t => t.type === 'invest');
+  player.position = tile.index;
+  const effects = [];
+  engineHooks.resolveTile(state, player, {}, effects);
+  assert.equal(extIsDoomApproaching(state), true);
+  assert.equal(state.ext.investOffer, null);
+  assert.ok(effects.some(effect => effect.text === '即將面臨毀滅日，交易平台停擺。'));
+});
+
+test('三人毀滅日依序結算全部玩家並清除待處理狀態', () => {
+  const state = createGame({
+    players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}, {name: '丙', roleId: 'hardware'}],
+    seed: 79, maxRounds: 10
+  });
+  extInitGame(state, {mode: 'evil', debug: true, doomEvery: 1, doomPrice: 1000});
+  state.players.forEach((player, index) => { player.cash = 5000 - index * 1000; });
+  extTriggerDoom(state);
+  assert.deepEqual(state.ext.doomPending.entries.map(entry => entry.playerId), state.players.map(player => player.id));
+  const result = resolveAllDoom(state);
+  assert.equal(result.resumeRound, true);
+  assert.equal(state.ext.doomPending, undefined);
+  assert.equal(state.ext.doomEvent.paidIds.length, 3);
+});
+
+test('邪惡企業也會顯示股票憑證季末結算面板', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(app.slice(app.indexOf('function visibleInvestmentSettlement'), app.indexOf('function beginMapPick')), /mode==='evil'.*return null/);
+  assert.match(app, /const investment=visibleInvestmentSettlement\(state\.ext\?\.investmentSettlement\)/);
+  assert.match(ui, /const investment = app\(\)\?\.visibleInvestmentSettlement/);
+  assert.match(ui.slice(ui.indexOf('async function runDoomSequence'), ui.indexOf('function syncDoomPresentation')), /for \(const current of sequence\)/);
 });
 
 test('季末毀滅日逐名額結算完成前不推進到下一季', () => {

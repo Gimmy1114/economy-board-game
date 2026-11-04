@@ -75,13 +75,49 @@ function extStarBladeRevert(state, player, reason = '星星被偷走') {
   return false;
 }
 
+// 股票憑證是投資者持有的特殊道具，不佔一般三格道具欄；全域清單保留給
+// 舊版 UI／存檔相容，玩家 ext.certificates 才是每位玩家的持有清單。
+function extAddCertificate(state, player, principal) {
+  extPlayerExt(player);
+  if (!Array.isArray(state.ext.certificates)) state.ext.certificates = [];
+  const id = `cert-${state.round}-${player.id}-${state.ext.certificates.length}`;
+  const cert = { id, playerId: player.id, principal, round: state.round, resolved: false };
+  player.ext.certificates.push(cert);
+  state.ext.certificates.push(cert);
+  return cert;
+}
+
+function extRemoveResolvedCertificates(state) {
+  const resolved = new Set((state.ext.certificates || []).filter(c => c.resolved).map(c => c.id));
+  for (const player of state.players || []) {
+    for (const cert of player.ext?.certificates || []) if (cert.resolved) resolved.add(cert.id);
+  }
+  for (const player of state.players || []) {
+    extPlayerExt(player);
+    player.ext.certificates = player.ext.certificates.filter(c => !resolved.has(c.id));
+  }
+  state.ext.certificates = (state.ext.certificates || []).filter(c => !resolved.has(c.id));
+}
+
+function extDoomDistance(state) {
+  const every = Number(state?.ext?.doomEvery);
+  if (!Number.isInteger(every) || every <= 1) return null;
+  const round = Math.max(0, Number(state?.round) || 0);
+  const remainder = round % every;
+  return remainder === 0 ? every : every - remainder;
+}
+
+export function extIsDoomApproaching(state) {
+  return state?.ext?.mode === 'evil' && extDoomDistance(state) === 1;
+}
+
 function extPlayerExt(p) {
   if (!p.ext || typeof p.ext !== 'object') {
     p.ext = {
       eliminated: false, ghostRole: false, frozen: 0, iceLock: 0, burn: 0, immune: false,
       bankFreeze: false, bankai: false, itemsAcquired: 0, aliveSeasons: 0,
       forceOneNext: false, noDiceItems: false, oneStepLock: false, domainUsedRound: 0, starsBought: 0,
-      itemGets: {}, itemRound: null
+      itemGets: {}, itemRound: null, certificates: []
     };
   }
   p.ext.eliminated = Boolean(p.ext.eliminated);
@@ -100,6 +136,7 @@ function extPlayerExt(p) {
   p.ext.domainUsedRound = Number(p.ext.domainUsedRound) || 0;
   p.ext.starsBought = Number(p.ext.starsBought) || 0;
   if (!p.ext.itemGets || typeof p.ext.itemGets !== 'object') p.ext.itemGets = {};
+  if (!Array.isArray(p.ext.certificates)) p.ext.certificates = [];
   if (!Array.isArray(p.mythics)) p.mythics = [];
   if (!Array.isArray(p.items)) p.items = [];
   if (!Array.isArray(p.specials)) p.specials = [];
@@ -324,6 +361,7 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     doomEvery: resolvedDoomEvery,
     suddenDeath: false,
     enraged: Boolean(state.advancedSettings?.angryGhost),
+    auctionSequence: 0,
     auction: null,
     investOffer: null,
     taxChoice: null,
@@ -377,6 +415,7 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     p.stars = 0;
     p.cash = resolvedStartingCash;
     p.ext.itemRound = null;
+    p.ext.certificates = [];
   }
   state.starGoal = resolvedStarGoal;
   state.phase = 'roll';
@@ -412,6 +451,7 @@ export function extEnsureState(state) {
     state.ext.targetAssets = Number(state.ext.targetAssets ?? state.ext.target) || 0;
     state.ext.targetStars = Number(state.ext.targetStars ?? state.starGoal) || STAR_GOAL;
     if (!('eventPrompt' in state.ext)) state.ext.eventPrompt = null;
+    if (!Number.isFinite(Number(state.ext.auctionSequence))) state.ext.auctionSequence = 0;
     if (!('wheelPending' in state.ext)) state.ext.wheelPending = null;
     if (!('indulgenceEvent' in state.ext)) state.ext.indulgenceEvent = null;
     if (!('totemEvent' in state.ext)) state.ext.totemEvent = null;
@@ -421,6 +461,20 @@ export function extEnsureState(state) {
     if (!state.ext.tycoonStreaks || typeof state.ext.tycoonStreaks !== 'object') state.ext.tycoonStreaks = {};
     if (!('tycoonComeback' in state.ext)) state.ext.tycoonComeback = null;
     if (!('pendingVictory' in state.ext)) state.ext.pendingVictory = null;
+    if (!Array.isArray(state.ext.certificates)) state.ext.certificates = [];
+    // 舊存檔只有全域憑證清單時，補進各玩家的持有清單；新資料以玩家清單為準。
+    const ownedIds = new Set((state.players || []).flatMap(p => (p.ext?.certificates || []).map(c => c.id)));
+    const globalIds = new Set(state.ext.certificates.map(c => c.id));
+    for (const player of state.players || []) {
+      for (const cert of player.ext?.certificates || []) {
+        if (!globalIds.has(cert.id)) { state.ext.certificates.push(cert); globalIds.add(cert.id); }
+      }
+    }
+    for (const cert of state.ext.certificates) {
+      if (ownedIds.has(cert.id)) continue;
+      const owner = state.players.find(p => p.id === cert.playerId);
+      if (owner) owner.ext.certificates.push(cert);
+    }
     if (!('noRedemption' in state.ext)) state.ext.noRedemption = false;
     const savedDoomStep = Number(state.ext.doomStep);
     state.ext.doomStep = state.ext.requestedMode === 'random'
@@ -433,6 +487,7 @@ export function extEnsureState(state) {
     version: EXT_VERSION, mode: 'star', requestedMode: 'star', debug: false,
     target: 3, targetAssets: 3, targetStars: 3, starPrice: STAR_PRICE_START, starSold: 0, inflation: 1, inflationStage: 1,
     doomPrice: DOOM_START, doomStep: DOOM_STEP, doomCount: 0, doomEvery: DOOM_EVERY, suddenDeath: false, enraged: false,
+    auctionSequence: 0,
     auction: null, investOffer: null, taxChoice: null, insiderOffer: null, wheelResult: null,
     forcedStarOffer: null, vector: null, domain: null, certificates: [], history: [],
     turnSnapshot: null, doomEvent: null, suddenDeathEvent: null, pendingVictory: null, finishTitle: null, lastEvent: null,
@@ -813,7 +868,10 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
     const settings = state.advancedSettings || {};
     const basePrice = Math.max(0, Math.round(Number(settings.blackMarketStartingPrice ?? 1000)));
     const junk = settings.blackMarketJunk === true && nextRandom(state) < 0.25;
+    const sequence = (Number(ext.auctionSequence) || 0) + 1;
+    ext.auctionSequence = sequence;
     ext.auction = {
+      id: `${state.round}:${player.id}:${tile.index}:${sequence}`,
       tileIndex: tile.index, itemId: junk ? null : item.id, junk, transparent: settings.blackMarketTransparent === true,
       bidIncrement: Math.max(1, Math.round(Number(settings.blackMarketBidIncrement ?? 250))), basePrice, currentPrice: basePrice,
       highestBidder: null, highestBid: 0, order, index: startIndex, currentId: order[startIndex] || null,
@@ -824,6 +882,13 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
     return;
   }
   if (tile.type === 'invest') {
+    if (extIsDoomApproaching(state)) {
+      const text = '即將面臨毀滅日，交易平台停擺。';
+      effects.push({ icon: '⛔', text, tone: 'bad' });
+      ext.lastEvent = { type: 'investmentSuspended', playerId: player.id, round: state.round, at: Date.now() };
+      log(state, `⛔ ${player.name} ${text}`);
+      return;
+    }
     const cost = Math.floor(Math.max(0, player.cash) * 0.5);
     ext.investOffer = { playerId: player.id, tileIndex: tile.index, cost };
     effects.push({ icon: '📈', text: cost > 0 ? `投資格：可投入 ${extMoney(cost)}（50% 總資產）換取股票憑證。` : '投資格：目前沒有可投入的總資產。', tone: 'event' });
@@ -1083,8 +1148,7 @@ export function extAngryRetreatPath(position, length) {
 engineHooks.grantCertificate = (state, player, amount) => {
   const principal = Math.max(0, Math.round(Number(amount) || 0));
   if (!principal) return null;
-  const cert = { id: `cert-${state.round}-${player.id}-${(state.ext.certificates || []).length}`, playerId: player.id, principal, round: state.round, resolved: false };
-  state.ext.certificates.push(cert);
+  const cert = extAddCertificate(state, player, principal);
   log(state, `📈 ${player.name} 取得 ${extMoney(principal)} 股票憑證，季末結算。`);
   return cert;
 };
@@ -1139,37 +1203,39 @@ engineHooks.moveGhost = state => {
 engineHooks.afterRound = (state, finishedRound, { final } = {}) => {
   const ext = state.ext;
   if (!ext) return;
-  // 邪惡企業模式以毀滅日作為季末結算焦點，不處理股票憑證或產生投資結果視窗。
-  if (ext.mode === 'evil') {
-    ext.investmentSettlement = null;
-    ext.certificates = [];
-  } else {
-    // 股票憑證季末結算
-    const unresolved = (ext.certificates || []).filter(c => !c.resolved);
-    const investmentResults = [];
-    for (const cert of unresolved) {
-      const roll = nextRandom(state);
-      let multiplier = 0, label = '龐氏騙局';
-      if (roll < 0.10) { multiplier = 3; label = '大牛市'; }
-      else if (roll < 0.50) { multiplier = 1.5; label = '平穩期'; }
-      const player = state.players.find(p => p.id === cert.playerId);
-      if (!player) continue;
-      const payout = Math.round(cert.principal * multiplier);
-      const prev = ext.noInflation; ext.noInflation = true;
-      if (payout > 0) addCash(state, player, payout);
-      ext.noInflation = prev;
-      cert.resolved = true;
-      cert.outcome = label;
-      cert.payout = payout;
-      investmentResults.push({ playerId: player.id, playerName: player.name, label, principal: cert.principal, payout });
-      log(state, `📈 ${player.name} 的股票憑證（本金 ${extMoney(cert.principal)}）季末結果：${label}，回收 ${extMoney(payout)}。`);
-      ext.lastEvent = { type: 'investment', playerId: player.id, label, payout, principal: cert.principal };
-    }
-    ext.investmentSettlement = investmentResults.length
-      ? { round: finishedRound, at: Date.now(), results: investmentResults }
-      : null;
-    ext.certificates = (ext.certificates || []).filter(c => !c.resolved || c.round === finishedRound);
+  // 兼容尚未帶玩家持有清單的舊狀態或測試匯入資料。
+  for (const cert of ext.certificates || []) {
+    const owner = state.players.find(p => p.id === cert.playerId);
+    if (!owner) continue;
+    extPlayerExt(owner);
+    if (!owner.ext.certificates.some(c => c.id === cert.id)) owner.ext.certificates.push(cert);
   }
+  // 股票憑證季末結算（包含邪惡企業模式）；每張憑證都從持有玩家的清單移除。
+  const unresolved = (state.players || []).flatMap(player => {
+    extPlayerExt(player);
+    return player.ext.certificates.filter(c => !c.resolved).map(cert => ({ cert, player }));
+  });
+  const investmentResults = [];
+  for (const { cert, player } of unresolved) {
+    const roll = nextRandom(state);
+    let multiplier = 0, label = '龐氏騙局';
+    if (roll < 0.10) { multiplier = 3; label = '大牛市'; }
+    else if (roll < 0.50) { multiplier = 1.5; label = '平穩期'; }
+    const payout = Math.round(cert.principal * multiplier);
+    const prev = ext.noInflation; ext.noInflation = true;
+    if (payout > 0) addCash(state, player, payout);
+    ext.noInflation = prev;
+    cert.resolved = true;
+    cert.outcome = label;
+    cert.payout = payout;
+    investmentResults.push({ playerId: player.id, playerName: player.name, label, principal: cert.principal, payout });
+    log(state, `📈 ${player.name} 的股票憑證（本金 ${extMoney(cert.principal)}）季末結果：${label}，回收 ${extMoney(payout)}。`);
+    ext.lastEvent = { type: 'investment', playerId: player.id, label, payout, principal: cert.principal };
+  }
+  ext.investmentSettlement = investmentResults.length
+    ? { round: finishedRound, at: Date.now(), results: investmentResults }
+    : null;
+  extRemoveResolvedCertificates(state);
   // 弱者的領域改為持續到擁有者下一次自己的回合開始，由 startTurn 收束。
   // 矢量操作只在本回合有效，若沒有玩家碰到指定格則季末失效。
   if (ext.vector && ext.vector.round <= finishedRound) {
@@ -1845,6 +1911,18 @@ export function extAuctionCurrent(state) {
   return state.players.find(p => p.id === a.currentId) || null;
 }
 
+// 拍賣在各次出價後都會保留同一個識別碼，讓房主的完成事件、客機的
+// UI 清理與逾時保險可以對準同一場拍賣。舊存檔沒有 id 時使用穩定的
+// 欄位組合，避免讀取舊局後無法解除等待狀態。
+export function extAuctionId(stateOrAuction) {
+  const isState=Boolean(stateOrAuction?.ext&&Object.prototype.hasOwnProperty.call(stateOrAuction,'players'));
+  const auction=isState?stateOrAuction.ext.auction:stateOrAuction;
+  if (!auction || typeof auction !== 'object') return '';
+  if (auction.id != null && String(auction.id)) return String(auction.id);
+  const order = Array.isArray(auction.order) ? auction.order.join(',') : '';
+  return [auction.round ?? '', auction.initiatorId ?? '', auction.tileIndex ?? '', auction.itemId ?? '', order].join(':');
+}
+
 function extAuctionAdvance(state, a) {
   for (let i = 0; i < a.order.length; i++) {
     a.index = (a.index + 1) % a.order.length;
@@ -1975,8 +2053,7 @@ export function extInvest(state, accept) {
   const prev = state.ext.noInflation; state.ext.noInflation = true;
   addCash(state, p, -offer.cost);
   state.ext.noInflation = prev;
-  state.ext.certificates.push({ id: `cert-${state.round}-${p.id}-${state.ext.certificates.length}`, playerId: p.id, principal: offer.cost, round: state.round, resolved: false });
-  p.ext.itemsAcquired = (p.ext.itemsAcquired || 0) + 0;
+  extAddCertificate(state, p, offer.cost);
   log(state, `📈 ${p.name} 投入 ${extMoney(offer.cost)} 取得股票憑證，季末結算。`);
   return true;
 }

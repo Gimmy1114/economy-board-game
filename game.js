@@ -1277,13 +1277,49 @@ function extStarBladeRevert(state, player, reason = '星星被偷走') {
   return false;
 }
 
+// 股票憑證是投資者持有的特殊道具，不佔一般三格道具欄；全域清單保留給
+// 舊版 UI／存檔相容，玩家 ext.certificates 才是每位玩家的持有清單。
+function extAddCertificate(state, player, principal) {
+  extPlayerExt(player);
+  if (!Array.isArray(state.ext.certificates)) state.ext.certificates = [];
+  const id = `cert-${state.round}-${player.id}-${state.ext.certificates.length}`;
+  const cert = { id, playerId: player.id, principal, round: state.round, resolved: false };
+  player.ext.certificates.push(cert);
+  state.ext.certificates.push(cert);
+  return cert;
+}
+
+function extRemoveResolvedCertificates(state) {
+  const resolved = new Set((state.ext.certificates || []).filter(c => c.resolved).map(c => c.id));
+  for (const player of state.players || []) {
+    for (const cert of player.ext?.certificates || []) if (cert.resolved) resolved.add(cert.id);
+  }
+  for (const player of state.players || []) {
+    extPlayerExt(player);
+    player.ext.certificates = player.ext.certificates.filter(c => !resolved.has(c.id));
+  }
+  state.ext.certificates = (state.ext.certificates || []).filter(c => !resolved.has(c.id));
+}
+
+function extDoomDistance(state) {
+  const every = Number(state?.ext?.doomEvery);
+  if (!Number.isInteger(every) || every <= 1) return null;
+  const round = Math.max(0, Number(state?.round) || 0);
+  const remainder = round % every;
+  return remainder === 0 ? every : every - remainder;
+}
+
+function extIsDoomApproaching(state) {
+  return state?.ext?.mode === 'evil' && extDoomDistance(state) === 1;
+}
+
 function extPlayerExt(p) {
   if (!p.ext || typeof p.ext !== 'object') {
     p.ext = {
       eliminated: false, ghostRole: false, frozen: 0, iceLock: 0, burn: 0, immune: false,
       bankFreeze: false, bankai: false, itemsAcquired: 0, aliveSeasons: 0,
       forceOneNext: false, noDiceItems: false, oneStepLock: false, domainUsedRound: 0, starsBought: 0,
-      itemGets: {}, itemRound: null
+      itemGets: {}, itemRound: null, certificates: []
     };
   }
   p.ext.eliminated = Boolean(p.ext.eliminated);
@@ -1302,6 +1338,7 @@ function extPlayerExt(p) {
   p.ext.domainUsedRound = Number(p.ext.domainUsedRound) || 0;
   p.ext.starsBought = Number(p.ext.starsBought) || 0;
   if (!p.ext.itemGets || typeof p.ext.itemGets !== 'object') p.ext.itemGets = {};
+  if (!Array.isArray(p.ext.certificates)) p.ext.certificates = [];
   if (!Array.isArray(p.mythics)) p.mythics = [];
   if (!Array.isArray(p.items)) p.items = [];
   if (!Array.isArray(p.specials)) p.specials = [];
@@ -1526,6 +1563,7 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
     doomEvery: resolvedDoomEvery,
     suddenDeath: false,
     enraged: Boolean(state.advancedSettings?.angryGhost),
+    auctionSequence: 0,
     auction: null,
     investOffer: null,
     taxChoice: null,
@@ -1579,6 +1617,7 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
     p.stars = 0;
     p.cash = resolvedStartingCash;
     p.ext.itemRound = null;
+    p.ext.certificates = [];
   }
   state.starGoal = resolvedStarGoal;
   state.phase = 'roll';
@@ -1614,6 +1653,7 @@ function extEnsureState(state) {
     state.ext.targetAssets = Number(state.ext.targetAssets ?? state.ext.target) || 0;
     state.ext.targetStars = Number(state.ext.targetStars ?? state.starGoal) || STAR_GOAL;
     if (!('eventPrompt' in state.ext)) state.ext.eventPrompt = null;
+    if (!Number.isFinite(Number(state.ext.auctionSequence))) state.ext.auctionSequence = 0;
     if (!('wheelPending' in state.ext)) state.ext.wheelPending = null;
     if (!('indulgenceEvent' in state.ext)) state.ext.indulgenceEvent = null;
     if (!('totemEvent' in state.ext)) state.ext.totemEvent = null;
@@ -1623,6 +1663,20 @@ function extEnsureState(state) {
     if (!state.ext.tycoonStreaks || typeof state.ext.tycoonStreaks !== 'object') state.ext.tycoonStreaks = {};
     if (!('tycoonComeback' in state.ext)) state.ext.tycoonComeback = null;
     if (!('pendingVictory' in state.ext)) state.ext.pendingVictory = null;
+    if (!Array.isArray(state.ext.certificates)) state.ext.certificates = [];
+    // 舊存檔只有全域憑證清單時，補進各玩家的持有清單；新資料以玩家清單為準。
+    const ownedIds = new Set((state.players || []).flatMap(p => (p.ext?.certificates || []).map(c => c.id)));
+    const globalIds = new Set(state.ext.certificates.map(c => c.id));
+    for (const player of state.players || []) {
+      for (const cert of player.ext?.certificates || []) {
+        if (!globalIds.has(cert.id)) { state.ext.certificates.push(cert); globalIds.add(cert.id); }
+      }
+    }
+    for (const cert of state.ext.certificates) {
+      if (ownedIds.has(cert.id)) continue;
+      const owner = state.players.find(p => p.id === cert.playerId);
+      if (owner) owner.ext.certificates.push(cert);
+    }
     if (!('noRedemption' in state.ext)) state.ext.noRedemption = false;
     const savedDoomStep = Number(state.ext.doomStep);
     state.ext.doomStep = state.ext.requestedMode === 'random'
@@ -1635,6 +1689,7 @@ function extEnsureState(state) {
     version: EXT_VERSION, mode: 'star', requestedMode: 'star', debug: false,
     target: 3, targetAssets: 3, targetStars: 3, starPrice: STAR_PRICE_START, starSold: 0, inflation: 1, inflationStage: 1,
     doomPrice: DOOM_START, doomStep: DOOM_STEP, doomCount: 0, doomEvery: DOOM_EVERY, suddenDeath: false, enraged: false,
+    auctionSequence: 0,
     auction: null, investOffer: null, taxChoice: null, insiderOffer: null, wheelResult: null,
     forcedStarOffer: null, vector: null, domain: null, certificates: [], history: [],
     turnSnapshot: null, doomEvent: null, suddenDeathEvent: null, pendingVictory: null, finishTitle: null, lastEvent: null,
@@ -2015,7 +2070,10 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
     const settings = state.advancedSettings || {};
     const basePrice = Math.max(0, Math.round(Number(settings.blackMarketStartingPrice ?? 1000)));
     const junk = settings.blackMarketJunk === true && nextRandom(state) < 0.25;
+    const sequence = (Number(ext.auctionSequence) || 0) + 1;
+    ext.auctionSequence = sequence;
     ext.auction = {
+      id: `${state.round}:${player.id}:${tile.index}:${sequence}`,
       tileIndex: tile.index, itemId: junk ? null : item.id, junk, transparent: settings.blackMarketTransparent === true,
       bidIncrement: Math.max(1, Math.round(Number(settings.blackMarketBidIncrement ?? 250))), basePrice, currentPrice: basePrice,
       highestBidder: null, highestBid: 0, order, index: startIndex, currentId: order[startIndex] || null,
@@ -2026,6 +2084,13 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
     return;
   }
   if (tile.type === 'invest') {
+    if (extIsDoomApproaching(state)) {
+      const text = '即將面臨毀滅日，交易平台停擺。';
+      effects.push({ icon: '⛔', text, tone: 'bad' });
+      ext.lastEvent = { type: 'investmentSuspended', playerId: player.id, round: state.round, at: Date.now() };
+      log(state, `⛔ ${player.name} ${text}`);
+      return;
+    }
     const cost = Math.floor(Math.max(0, player.cash) * 0.5);
     ext.investOffer = { playerId: player.id, tileIndex: tile.index, cost };
     effects.push({ icon: '📈', text: cost > 0 ? `投資格：可投入 ${extMoney(cost)}（50% 總資產）換取股票憑證。` : '投資格：目前沒有可投入的總資產。', tone: 'event' });
@@ -2285,8 +2350,7 @@ function extAngryRetreatPath(position, length) {
 engineHooks.grantCertificate = (state, player, amount) => {
   const principal = Math.max(0, Math.round(Number(amount) || 0));
   if (!principal) return null;
-  const cert = { id: `cert-${state.round}-${player.id}-${(state.ext.certificates || []).length}`, playerId: player.id, principal, round: state.round, resolved: false };
-  state.ext.certificates.push(cert);
+  const cert = extAddCertificate(state, player, principal);
   log(state, `📈 ${player.name} 取得 ${extMoney(principal)} 股票憑證，季末結算。`);
   return cert;
 };
@@ -2341,37 +2405,39 @@ engineHooks.moveGhost = state => {
 engineHooks.afterRound = (state, finishedRound, { final } = {}) => {
   const ext = state.ext;
   if (!ext) return;
-  // 邪惡企業模式以毀滅日作為季末結算焦點，不處理股票憑證或產生投資結果視窗。
-  if (ext.mode === 'evil') {
-    ext.investmentSettlement = null;
-    ext.certificates = [];
-  } else {
-    // 股票憑證季末結算
-    const unresolved = (ext.certificates || []).filter(c => !c.resolved);
-    const investmentResults = [];
-    for (const cert of unresolved) {
-      const roll = nextRandom(state);
-      let multiplier = 0, label = '龐氏騙局';
-      if (roll < 0.10) { multiplier = 3; label = '大牛市'; }
-      else if (roll < 0.50) { multiplier = 1.5; label = '平穩期'; }
-      const player = state.players.find(p => p.id === cert.playerId);
-      if (!player) continue;
-      const payout = Math.round(cert.principal * multiplier);
-      const prev = ext.noInflation; ext.noInflation = true;
-      if (payout > 0) addCash(state, player, payout);
-      ext.noInflation = prev;
-      cert.resolved = true;
-      cert.outcome = label;
-      cert.payout = payout;
-      investmentResults.push({ playerId: player.id, playerName: player.name, label, principal: cert.principal, payout });
-      log(state, `📈 ${player.name} 的股票憑證（本金 ${extMoney(cert.principal)}）季末結果：${label}，回收 ${extMoney(payout)}。`);
-      ext.lastEvent = { type: 'investment', playerId: player.id, label, payout, principal: cert.principal };
-    }
-    ext.investmentSettlement = investmentResults.length
-      ? { round: finishedRound, at: Date.now(), results: investmentResults }
-      : null;
-    ext.certificates = (ext.certificates || []).filter(c => !c.resolved || c.round === finishedRound);
+  // 兼容尚未帶玩家持有清單的舊狀態或測試匯入資料。
+  for (const cert of ext.certificates || []) {
+    const owner = state.players.find(p => p.id === cert.playerId);
+    if (!owner) continue;
+    extPlayerExt(owner);
+    if (!owner.ext.certificates.some(c => c.id === cert.id)) owner.ext.certificates.push(cert);
   }
+  // 股票憑證季末結算（包含邪惡企業模式）；每張憑證都從持有玩家的清單移除。
+  const unresolved = (state.players || []).flatMap(player => {
+    extPlayerExt(player);
+    return player.ext.certificates.filter(c => !c.resolved).map(cert => ({ cert, player }));
+  });
+  const investmentResults = [];
+  for (const { cert, player } of unresolved) {
+    const roll = nextRandom(state);
+    let multiplier = 0, label = '龐氏騙局';
+    if (roll < 0.10) { multiplier = 3; label = '大牛市'; }
+    else if (roll < 0.50) { multiplier = 1.5; label = '平穩期'; }
+    const payout = Math.round(cert.principal * multiplier);
+    const prev = ext.noInflation; ext.noInflation = true;
+    if (payout > 0) addCash(state, player, payout);
+    ext.noInflation = prev;
+    cert.resolved = true;
+    cert.outcome = label;
+    cert.payout = payout;
+    investmentResults.push({ playerId: player.id, playerName: player.name, label, principal: cert.principal, payout });
+    log(state, `📈 ${player.name} 的股票憑證（本金 ${extMoney(cert.principal)}）季末結果：${label}，回收 ${extMoney(payout)}。`);
+    ext.lastEvent = { type: 'investment', playerId: player.id, label, payout, principal: cert.principal };
+  }
+  ext.investmentSettlement = investmentResults.length
+    ? { round: finishedRound, at: Date.now(), results: investmentResults }
+    : null;
+  extRemoveResolvedCertificates(state);
   // 弱者的領域改為持續到擁有者下一次自己的回合開始，由 startTurn 收束。
   // 矢量操作只在本回合有效，若沒有玩家碰到指定格則季末失效。
   if (ext.vector && ext.vector.round <= finishedRound) {
@@ -3047,6 +3113,18 @@ function extAuctionCurrent(state) {
   return state.players.find(p => p.id === a.currentId) || null;
 }
 
+// 拍賣在各次出價後都會保留同一個識別碼，讓房主的完成事件、客機的
+// UI 清理與逾時保險可以對準同一場拍賣。舊存檔沒有 id 時使用穩定的
+// 欄位組合，避免讀取舊局後無法解除等待狀態。
+function extAuctionId(stateOrAuction) {
+  const isState=Boolean(stateOrAuction?.ext&&Object.prototype.hasOwnProperty.call(stateOrAuction,'players'));
+  const auction=isState?stateOrAuction.ext.auction:stateOrAuction;
+  if (!auction || typeof auction !== 'object') return '';
+  if (auction.id != null && String(auction.id)) return String(auction.id);
+  const order = Array.isArray(auction.order) ? auction.order.join(',') : '';
+  return [auction.round ?? '', auction.initiatorId ?? '', auction.tileIndex ?? '', auction.itemId ?? '', order].join(':');
+}
+
 function extAuctionAdvance(state, a) {
   for (let i = 0; i < a.order.length; i++) {
     a.index = (a.index + 1) % a.order.length;
@@ -3177,8 +3255,7 @@ function extInvest(state, accept) {
   const prev = state.ext.noInflation; state.ext.noInflation = true;
   addCash(state, p, -offer.cost);
   state.ext.noInflation = prev;
-  state.ext.certificates.push({ id: `cert-${state.round}-${p.id}-${state.ext.certificates.length}`, playerId: p.id, principal: offer.cost, round: state.round, resolved: false });
-  p.ext.itemsAcquired = (p.ext.itemsAcquired || 0) + 0;
+  extAddCertificate(state, p, offer.cost);
   log(state, `📈 ${p.name} 投入 ${extMoney(offer.cost)} 取得股票憑證，季末結算。`);
   return true;
 }
@@ -3649,7 +3726,7 @@ function isNewerGame(incoming,current){
 // ---- 5 碼房間代碼 ----------------------------------------------------------
 // 房主用「前綴 + 5 碼」向 PeerJS 配對伺服器登記，畫面上只顯示 5 碼（去掉容易看錯的 0/O/1/I）。
 // 改了房間訊息或對局格式時，把前綴的版本號往上加，新舊版本就進不了同一個房間。
-const ROOM_PREFIX = 'econparty-v6-';
+const ROOM_PREFIX = 'econparty-v7-';
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function makeRoomCode(random = Math.random) {
   let code = '';
@@ -6608,6 +6685,75 @@ const PartyUI = (() => {
       doomFinishInProgress = false;
     }
   }
+  async function forceFinishDoomsday(reason = 'sequence-finally') {
+    if (isMobileDoomViewport()) return finishDoomsday({ force: true, reason });
+    if (!state()?.ext?.doomPending || doomFinishInProgress) return false;
+    doomFinishInProgress = true;
+    try {
+      await app().runAction({ type: 'DOOM_FINISH', reason }, () => {
+        const live = state()?.ext?.doomPending;
+        if (!live) return;
+        while (live.index < live.entries.length) {
+          window.__partyEngine.extResolveDoomPlayer(state(), live.entries[live.index].playerId);
+        }
+        const result = window.__partyEngine.extFinishDoom(state());
+        if (result.resumeRound) window.__partyEngine.resumeRoundAfterDoom(state(), result.finishedRound);
+      }, { allowDoom: true, authoritative: true });
+      return !state()?.ext?.doomPending;
+    } catch (error) {
+      console.error('Doom sequence force finish failed', error);
+      return false;
+    } finally {
+      doomFinishInProgress = false;
+    }
+  }
+  async function playDoomsdayForPlayerWithTimeout(current, sequenceGeneration, isLastPlayer, timeout = MOBILE_DOOM_ANIMATION_FALLBACK_MS) {
+    let timeoutId = null;
+    let timedOut = false;
+    const animation = (async () => {
+      const latest = state()?.ext?.doomPending;
+      if (!latest || latest.entries[latest.index]?.playerId !== current.playerId) return;
+      const beforeIndex = latest.index;
+      if (isMobileDoomViewport() && isLastPlayer) {
+        try {
+          await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
+            window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
+          }, { allowDoom: true, authoritative: true });
+          if (timedOut) return;
+          if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
+          const result = state()?.ext?.doomPending?.lastResult;
+          showDoomOutcome(result);
+          if (result?.outcome === 'executed') await waitDoomAnimation($('#board .doom-laser-layer'));
+          else await waitDoom(550);
+          if (timedOut || !state()?.ext?.doomPending) return;
+        } catch (error) {
+          console.error('Mobile final Doomsday player UI failed', error);
+        } finally {
+          if (state()?.ext?.doomPending) await finishDoomsday({ force: true, reason: 'mobile-finally' });
+        }
+        return;
+      }
+      await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
+        window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
+      }, { allowDoom: true, authoritative: true });
+      if (timedOut) return;
+      if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
+      const result = state()?.ext?.doomPending?.lastResult;
+      showDoomOutcome(result);
+      if (result?.outcome === 'executed') await waitDoomAnimation($('#board .doom-laser-layer'));
+      else await waitDoom(550);
+      if (timedOut || !state()?.ext?.doomPending) return;
+    })();
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => { timedOut = true; reject(new Error('毀滅日玩家動畫逾時')); }, timeout);
+    });
+    try {
+      await Promise.race([animation, timeoutPromise]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+
   async function runDoomSequence() {
     const game = state(), pending = game?.ext?.doomPending;
     if (!pending || doomControllerActive) return;
@@ -6616,56 +6762,23 @@ const PartyUI = (() => {
     doomControllerActive = true;
     if (isMobileDoomViewport()) armMobileDoomsdayFallback(game);
     const sequenceGeneration = doomSequenceGeneration;
+    // 快照一份序列，逐位等待；不要以 forEach 或共享遞迴索引驅動動畫。
+    const sequence = pending.entries.slice(pending.index);
     settlementLockUntil = Number.POSITIVE_INFINITY;
     sound('doom');
     try {
-      while (sequenceGeneration === doomSequenceGeneration && state()?.ext?.doomPending) {
-        const current = state().ext.doomPending.entries[state().ext.doomPending.index];
-        showDoomOverlay(state().ext.doomPending);
-        if (!current) break;
+      for (const current of sequence) {
+        if (sequenceGeneration !== doomSequenceGeneration || !state()?.ext?.doomPending) return;
+        const live = state().ext.doomPending;
+        if (live.entries[live.index]?.playerId !== current.playerId) continue;
+        showDoomOverlay(live);
         placeDoomArrow(current.playerId);
         await waitDoom(1000);
         if (sequenceGeneration !== doomSequenceGeneration) return;
         const latest = state()?.ext?.doomPending;
         if (!latest || latest.entries[latest.index]?.playerId !== current.playerId) continue;
         const isLastPlayer = latest.index === latest.entries.length - 1;
-        if (isMobileDoomViewport() && isLastPlayer) {
-          try {
-            const beforeIndex = latest.index;
-            await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
-              window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
-            }, { allowDoom: true, authoritative: true });
-            if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
-            const result = state()?.ext?.doomPending?.lastResult;
-            showDoomOutcome(result);
-            if (result?.outcome === 'executed') {
-              await waitDoomAnimation($('#board .doom-laser-layer'));
-              if (sequenceGeneration !== doomSequenceGeneration) return;
-            } else {
-              await waitDoom(550);
-              if (sequenceGeneration !== doomSequenceGeneration) return;
-            }
-          } catch (error) {
-            console.error('Mobile final Doomsday player UI failed', error);
-          } finally {
-            if (state()?.ext?.doomPending) await finishDoomsday({ force: true, reason: 'mobile-finally' });
-          }
-        } else {
-          const beforeIndex = latest.index;
-          await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
-            window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
-          }, { allowDoom: true, authoritative: true });
-          if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
-          const result = state()?.ext?.doomPending?.lastResult;
-          showDoomOutcome(result);
-          if (result?.outcome === 'executed') {
-            await waitDoomAnimation($('#board .doom-laser-layer'));
-            if (sequenceGeneration !== doomSequenceGeneration) return;
-          } else {
-            await waitDoom(550);
-            if (sequenceGeneration !== doomSequenceGeneration) return;
-          }
-        }
+        await playDoomsdayForPlayerWithTimeout(current, sequenceGeneration, isLastPlayer, 3000);
       }
       const pendingAtFinish = state()?.ext?.doomPending;
       if (!pendingAtFinish) return;
@@ -6676,14 +6789,25 @@ const PartyUI = (() => {
       }, { allowDoom: true, authoritative: true });
     } catch (error) {
       console.error('Doom sequence interrupted', error);
-      app()?.notify('保護費審判中斷，請重新整理後繼續。');
+      app()?.notify('保護費審判中斷，系統將強制結束本次結算。');
     } finally {
+      // 動畫、網路同步或行動瀏覽器都不能讓 doomPending 永遠卡住。
+      if (state()?.ext?.doomPending) await forceFinishDoomsday('sequence-finally');
       if (isMobileDoomViewport() && !state()?.ext?.doomPending) {
         clearTimeout(doomMasterFallbackTimer);
         doomMasterFallbackTimer = null;
       }
       doomControllerActive = false;
       if (!state()?.ext?.doomPending) {
+        clearDoomsdayAnimations();
+        removeDoomArrow();
+        const el = $('#doom-sequence');
+        if (el) { el.hidden = true; el.className = 'doom-sequence'; }
+        document.body.classList.remove('doom-resolving');
+        settlementLockUntil = 0;
+      }
+      // 即使網路強制結算失敗，也不能把畫面鎖在毀滅日遮罩；下一次同步可重新呈現狀態。
+      if (state()?.ext?.doomPending) {
         clearDoomsdayAnimations();
         removeDoomArrow();
         const el = $('#doom-sequence');
@@ -7770,7 +7894,7 @@ const PartyUI = (() => {
       lastCornerSubsidyKey = subsidyKey;
       flashCornerSubsidy(subsidy);
     }
-    const investment = p.ext?.mode === 'evil' ? null : app()?.visibleInvestmentSettlement?.(p.ext?.investmentSettlement);
+    const investment = app()?.visibleInvestmentSettlement?.(p.ext?.investmentSettlement);
     const investmentKey = investment?.at ? `${investment.round}:${investment.at}` : '';
     if (!investmentKey && lastInvestmentSettlementKey) {
       lastInvestmentSettlementKey = '';
@@ -8212,7 +8336,7 @@ globalThis.PartyUI = PartyUI;
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
 globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
 globalThis.__partyEngine={
-  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,
+  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn
 };
@@ -8248,6 +8372,11 @@ let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
 let movingTokenCleanup=null;
 let uiRecoveryInProgress=false;
+// 黑市拍賣的跨裝置收束：完成事件是主要路徑，逾時是手機背景暫停或
+// DataChannel 遺失時的最後保險。這些旗標只描述本機 UI，不取代房主狀態。
+const AUCTION_WAIT_TIMEOUT_MS=20000;
+let auctionWaitTimer=null,auctionWaitKey='',pendingAuctionResolve=null;
+let isAuctionActive=false,isWaitingForRemote=false;
 // 房客在自己的棋子移動時，房主仍可能送來同一回合的中間快照。
 // 先暫存最後一份，避免整份 state 取代本地動畫而把棋子拉回起點。
 let deferredRoomState=null;
@@ -8312,11 +8441,13 @@ function expireTurn(key){
   closeModal();
   PartyUI.clearTurnInteractions?.();
   try{
+    const auctionBefore=state.ext?.auction;
     extForceEndTurn(state,'行動時間結束');
     turnClock.expiring=false;
     syncTurnClock();
     save();
     render();
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore,{reason:'turn-timeout'});
   }catch(error){
     turnClock.expiring=false;
     notify(`無法自動結束回合：${error?.message||'未知錯誤'}`);
@@ -8384,7 +8515,6 @@ function dismissInvestmentSettlement(key=investmentSettlementKey(state?.ext?.inv
 }
 function investmentSettlementKey(settlement){return settlement?.at?`${settlement.round}:${settlement.at}`:''}
 function visibleInvestmentSettlement(settlement){
-  if(state?.ext?.mode==='evil')return null;
   if(!settlement?.results?.length)return null;
   if(!PartyNet.active)return settlement;
   const playerId=PartyNet.myPlayerId;
@@ -8420,6 +8550,93 @@ function cancelAnimation({resumeTimer=true}={}){
   animation=null;
   if(!flushingDeferredRoomState)deferredRoomState=null;
   if(resumeTimer)resumeTurnClock();
+}
+
+function auctionWaitId(auction){
+  try{return extAuctionId(auction)||''}catch{return ''}
+}
+function settleAuctionWait(){
+  clearTimeout(auctionWaitTimer);
+  auctionWaitTimer=null;
+  auctionWaitKey='';
+  isAuctionActive=false;
+  isWaitingForRemote=false;
+  const resolve=pendingAuctionResolve;
+  pendingAuctionResolve=null;
+  try{resolve?.()}catch(error){console.warn('拍賣等待 Promise 釋放失敗',error)}
+}
+function broadcastAuctionResolved(auction,details={}){
+  if(!PartyNet.isHost||!auction)return;
+  PartyNet.broadcastEvent({
+    type:'AUCTION_RESOLVED',
+    auctionId:auctionWaitId(auction),
+    initiatorId:auction.initiatorId||null,
+    winnerId:auction.highestBidder||null,
+    price:Number(auction.highestBid)||0,
+    reason:details.reason||'completed'
+  });
+}
+function forceCloseAuctionWaitingUI({resolved=true,reason='remote'}={}){
+  try{
+    // UI 是可選層；任何一個節點不存在都不能阻止 finally 釋放邏輯鎖。
+    closeModal();
+    PartyUI.closeExtModal?.();
+    PartyUI.clearTurnLock?.();
+    document.body.classList.remove('spectator-mode');
+    const waiting=document.querySelector('#spectator-note');
+    if(waiting)waiting.hidden=true;
+  }catch(error){
+    console.warn('Mobile UI close error gracefully caught:',error);
+  }finally{
+    // 完成事件或逾時都代表本機不能再停在黑市等待畫面。
+    if(resolved&&state?.ext?.auction)state.ext.auction=null;
+    settleAuctionWait();
+    try{if(state)render()}catch(error){console.warn('拍賣收束後重繪失敗',error)}
+    try{flushDeferredRoomState()}catch(error){console.warn('拍賣完成快照套用失敗',error)}
+    if(reason==='timeout')notify('黑市拍賣等待逾時，已解除本機鎖定。');
+  }
+}
+function armAuctionResolutionTimeout(){
+  const auction=state?.ext?.auction;
+  if(!PartyNet.active||!auction){
+    if(!auction&&auctionWaitKey)settleAuctionWait();
+    return;
+  }
+  const key=auctionWaitId(auction);
+  if(!key)return;
+  isAuctionActive=true;
+  const owner=state?.net?.owners?.[auction.currentId];
+  isWaitingForRemote=Boolean(owner&&owner!==PartyNet.peerId);
+  if(auctionWaitKey===key&&auctionWaitTimer)return;
+  settleAuctionWait();
+  auctionWaitKey=key;
+  // UI 不需要 await 這個 Promise；它存在是為了讓任何等待中的流程都能由
+  // 完成事件或逾時明確 resolve，而不是留下永遠 pending 的 Promise。
+  const waitForAuctionResult=new Promise(resolve=>{pendingAuctionResolve=resolve});
+  void waitForAuctionResult;
+  auctionWaitTimer=setTimeout(()=>{
+    if(auctionWaitKey!==key)return;
+    const current=state?.ext?.auction;
+    if(!current||auctionWaitId(current)!==key){settleAuctionWait();return}
+    if(PartyNet.isHost){
+      try{
+        const before=current;
+        extAuctionFinish(state);
+        save();
+        forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+        broadcastAuctionResolved(before,{reason:'timeout'});
+      }catch(error){
+        console.error('拍賣逾時結算失敗',error);
+        forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+      }
+    }else{
+      // 客機不能自行寫入房主狀態，送出只允許由發起者提出的逾時請求；
+      // 即使封包也遺失，finally 仍會解除本機 UI 與 Promise 鎖。
+      PartyNet.sendAction({type:'AUCTION_TIMEOUT',auctionId:key,playerId:PartyNet.myPlayerId});
+      forceCloseAuctionWaitingUI({resolved:true,reason:'timeout'});
+    }
+  },AUCTION_WAIT_TIMEOUT_MS);
+  auctionWaitTimer?.unref?.();
 }
 
 // 這兩個判斷集中管理「主動玩家正在移動／處理落地事件」的狀態。
@@ -8502,7 +8719,8 @@ function recoverAfterUiError(error){
         if(fallbackAction)PartyNet.sendAction({...fallbackAction,playerId:ownerId});
       }
     }
-    if(ext.auction){
+    const auctionBefore=ext.auction;
+    if(auctionBefore){
       try{extAuctionFinish(state)}catch(finishError){console.error('黑市拍賣備援結算失敗',finishError);ext.auction=null}
     }
     // A failed replacement/investment/tax prompt must not hold the active player.
@@ -8521,6 +8739,7 @@ function recoverAfterUiError(error){
     }
     save();
     try{render()}catch(renderError){console.error('特殊格 UI 備援重繪失敗',renderError)}
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore,{reason:'ui-recovery'});
     notify('特殊格視窗無法顯示，已同步落點並解除回合鎖定。');
     return true;
   }catch(recoveryError){
@@ -8571,7 +8790,16 @@ async function run(fn,options={}){
   const auctionOwner=options.allowAuction&&state?.ext?.auction&&window.__partyEngine?.extAuctionCurrent?.(state)?.id===PartyNet.myPlayerId;
   if(state?.net&&!PartyNet.canAct(state)&&!auctionOwner&&!options.authoritative){notify('現在不是你的回合，請等待其他玩家。');return}
   let before=null;
-  try{await withGameLock(()=>{if(!ensureFresh())return;before=cashSnapshot();fn();save();render();options.afterCommit?.()})}
+  try{await withGameLock(()=>{
+    if(!ensureFresh())return;
+    before=cashSnapshot();
+    const auctionBefore=state?.ext?.auction;
+    fn();
+    save();
+    render();
+    if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore);
+    options.afterCommit?.();
+  })}
   catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return}
   if(before)animateCashChanges(before);
 }
@@ -8701,7 +8929,7 @@ function centerBackdropMarkup(){
   return `<div class="center-backdrop">${parts.join('')}</div>`;
 }
 function centerMarkup(){
-  const investment=state.ext?.mode==='evil'?null:visibleInvestmentSettlement(state.ext?.investmentSettlement);
+  const investment=visibleInvestmentSettlement(state.ext?.investmentSettlement);
   const investmentKey=investmentSettlementKey(investment);
   if(investment?.results?.length&&investmentKey!==dismissedInvestmentSettlementKey){
     const rows=investment.results.map(result=>{
@@ -9225,6 +9453,8 @@ function render(){
   document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-page').forEach(p=>p.classList.toggle('active',p.id===`tab-${tab}`));
   renderBoard();renderTurn();renderGoals();renderPlayers();renderLog();renderModal();
+  if(state?.ext?.auction)armAuctionResolutionTimeout();
+  else if(auctionWaitKey)settleAuctionWait();
   try{PartyUI.afterRender(state);}catch(e){console.error(e)}
 }
 
@@ -9499,10 +9729,11 @@ PartyNet.onState = (game,fromPeer) => {
       const localId=localActivePlayerId();
       const incomingActiveId=incoming.players?.[incoming.turnIndex]?.id;
       const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
+      const incomingAuctionResolved=Boolean(state?.ext?.auction&&!incoming.ext?.auction);
       // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
       // resolve 快照進來解除 moving，否則會永久卡在移動階段。
       const protectingMove=localOwnsTurn&&!flushingDeferredRoomState&&animation?.playerId===localId&&isMoving(localId);
-      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId);
+      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId)&&!incomingAuctionResolved;
       if(protectingMove){
         // 移動中的主動玩家是本機唯一真實來源；記住最新快照，等落地後再套用。
         deferredRoomState={game,fromPeer};
@@ -9537,6 +9768,14 @@ PartyNet.onState = (game,fromPeer) => {
 };
 PartyNet.onAction = (action,fromPeer) => {
   if(!PartyNet.isHost||!state?.net||!action?.type||animation)return;
+  const execute=(fn,options={})=>{void run(fn,{...options,authoritative:true})};
+  if(action.type==='AUCTION_TIMEOUT'){
+    const auction=state.ext?.auction;
+    const initiatorOwner=auction&&state.net.owners?.[auction.initiatorId];
+    if(!auction||auctionWaitId(auction)!==String(action.auctionId||'')||initiatorOwner!==fromPeer)return;
+    execute(()=>extAuctionFinish(state),{allowAuction:true});
+    return;
+  }
   const pendingOwners={
     DECISION:state.pendingDecision?.playerId,
     STAR_OFFER:state.ext?.starOffer?.playerId,
@@ -9551,7 +9790,6 @@ PartyNet.onAction = (action,fromPeer) => {
   const actorId=pendingOwners[action.type]||activePlayer()?.id;
   if(action.playerId!==actorId||state.net.owners?.[actorId]!==fromPeer)return;
   if(state.ext?.vectorPending&&action.type!=='CLEAR_EVENT_PROMPT')return;
-  const execute=(fn,options={})=>{void run(fn,{...options,authoritative:true})};
   switch(action.type){
     case 'ROLL_DICE':
       if(state.phase==='roll')void rollWithAnimation(true);
@@ -9611,6 +9849,13 @@ PartyNet.onAction = (action,fromPeer) => {
   }
 };
 PartyNet.onEvent = event => {
+  if(event?.type==='AUCTION_RESOLVED'){
+    const localAuction=state?.ext?.auction;
+    if(localAuction&&event.auctionId&&auctionWaitId(localAuction)!==String(event.auctionId))return;
+    // 先收束本機 UI／Promise，再等待或套用房主的完整 state 快照；
+    // 這條路徑不依賴快照剛好在手機背景分頁中被及時繪製。
+    forceCloseAuctionWaitingUI({resolved:true,reason:'remote'});
+  }
   if(event?.type==='TURN_TIMER'||event?.type==='TURN_TIMEOUT')PartyUI.updateTurnTimer?.(event);
   if(event?.type==='TURN_TIMEOUT')notify('行動時間結束');
   if(event?.type==='PLAYER_KICKED')notify(`${event.name||'玩家'} 已被房主移出對局。`);
@@ -9656,7 +9901,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
-  cashSnapshot, animateCashChanges, recoverAfterUiError,
+  cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   buyStar:()=>runAction({type:'BUY_STAR'},()=>extBuyStar(state)),
   useMythic:(id,payload)=>runAction({type:'USE_MYTHIC',id,payload},()=>extUseMythic(state,id,payload)),
