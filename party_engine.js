@@ -554,7 +554,7 @@ function extTryRedeem(state, player, amount, label = '', { silent = false } = {}
   return true;
 }
 
-export function extDamage(state, player, amount, { ignoreShield = false, ignoreRedemption = false, ignoreImmune = false, label = '', silent = false, sourceId = null } = {}) {
+export function extDamage(state, player, amount, { ignoreShield = false, ignoreRedemption = false, ignoreImmune = false, label = '', silent = false, sourceId = null, source = '' } = {}) {
   amount = Math.round(Number(amount) || 0);
   if (amount <= 0 || !player) return 0;
   if (player.ext?.eliminated) return 0;
@@ -570,13 +570,17 @@ export function extDamage(state, player, amount, { ignoreShield = false, ignoreR
     if (!silent) log(state, `🛡️ ${player.name} 的護盾擋下「${label || '負面效果'}」。`);
     return 0;
   }
-  if (!ignoreRedemption) {
+  // 毀滅日是模式的致命結算，只能由不死圖騰在上層流程抵擋；
+  // 這裡也要把來源帶進共用扣款路徑，避免全域贖罪券攔截 addCash()。
+  const bypassRedemption = ignoreRedemption || source === 'doomsday';
+  if (!bypassRedemption) {
     if (extTryRedeem(state, player, amount, label, { silent })) return 0;
   }
-  if (ignoreRedemption && state.ext) {
+  if (bypassRedemption && state.ext) {
+    const previousNoRedemption = state.ext.noRedemption;
     state.ext.noRedemption = true;
     try { addCash(state, player, -amount); }
-    finally { state.ext.noRedemption = false; }
+    finally { state.ext.noRedemption = previousNoRedemption; }
   } else {
     addCash(state, player, -amount);
   }
@@ -1809,9 +1813,18 @@ export function extUseFateDice(state, value) {
   if (engineHooks.canUse && !engineHooks.canUse(state, p, 'item', FATE_DICE_ID)) {
     throw Error(engineHooks.blockedReason?.(state, p, 'item', FATE_DICE_ID) || '目前無法使用。');
   }
-  p.specials.splice(index, 1);
+  const testMode = extAllowsPostRollItems(state);
+  if (testMode) {
+    // 測試模式可在同一回合反覆使用命運骰子；清掉上一個落地決策，
+    // 讓 app.js 接著呼叫 rollDie() 時不會再次被 phase='roll' 擋住。
+    state.phase = 'roll';
+    state.pendingDecision = null;
+    state.pendingLanding = null;
+  } else {
+    p.specials.splice(index, 1);
+  }
   state.ext.fateDice = null;
-  log(state, `🎲 ${p.name} 使用命運骰子，鎖定前進 ${step} 步。`);
+  log(state, `🎲 ${p.name} ${testMode ? '在測試模式重複使用' : '使用'}命運骰子，鎖定前進 ${step} 步。`);
   return step;
 }
 
@@ -2291,8 +2304,16 @@ export function extResolveDoomPlayer(state, playerId) {
   if (player && !player.ext?.eliminated) {
     if (player.cash >= pending.fee) {
       const previous = state.ext.noInflation; state.ext.noInflation = true;
-      try { addCash(state, player, -pending.fee); }
-      finally { state.ext.noInflation = previous; }
+      try {
+        extDamage(state, player, pending.fee, {
+          ignoreShield: true,
+          ignoreImmune: true,
+          source: 'doomsday',
+          label: '毀滅日保護費'
+        });
+      } finally {
+        state.ext.noInflation = previous;
+      }
       pending.paid.push(player.name); pending.paidIds.push(player.id); outcome = 'paid';
     } else if (extHasMythic(player, 'totem')) {
       player.mythics = player.mythics.filter(x => x.id !== 'totem');

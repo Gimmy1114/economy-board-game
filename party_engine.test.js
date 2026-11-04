@@ -53,9 +53,18 @@ test('測試模式可直接取得並使用命運骰子', () => {
   const player = state.players[state.turnIndex];
   extDebugGive(state, 'special', FATE_DICE_ID);
   assert.ok(player.specials.includes(FATE_DICE_ID));
+  state.phase = 'resolve';
   extPrepareFateDice(state);
   assert.equal(extUseFateDice(state, 4), 4);
-  assert.equal(player.specials.includes(FATE_DICE_ID), false);
+  assert.equal(state.phase, 'roll', '測試模式選定步數後要重新開放強制移動');
+  assert.equal(player.specials.includes(FATE_DICE_ID), true, '測試模式不消耗命運骰子');
+
+  avoidGhost(state);
+  rollDie(state, 2);
+  state.phase = 'resolve';
+  extPrepareFateDice(state);
+  assert.equal(extUseFateDice(state, 1), 1, '移動完成後仍可再次開啟命運骰子');
+  assert.equal(player.specials.includes(FATE_DICE_ID), true);
 });
 
 test('首頁與遊戲內規則說明共用同一個動態模板', async () => {
@@ -400,6 +409,35 @@ test('毀滅日精準分出付款、抵抗與處決名單，並累積保護費',
   assert.deepEqual(totem.ext.doomEvent.executedIds, []);
   assert.equal(protectedPlayer.ext.eliminated, false);
   assert.ok(!protectedPlayer.mythics.some(x => x.id === 'totem'));
+});
+
+test('毀滅日不消耗贖罪券，只有不死圖騰能抵擋致命結算', () => {
+  const state = make('evil', 431, {doomEvery: 5, doomPrice: 1000});
+  const [payer, other] = state.players;
+  payer.cash = 1500;
+  other.cash = 2000;
+  extAddMythic(state, payer, 'indulgence');
+  const ticket = () => payer.mythics.find(entry => entry.id === 'indulgence');
+  assert.equal(ticket().charges, 5);
+
+  extTriggerDoom(state);
+  resolveAllDoom(state);
+
+  assert.equal(payer.cash, 500, '有足夠資產時仍應實際支付毀滅日保護費');
+  assert.equal(ticket().charges, 5, '毀滅日不得消耗贖罪券');
+  assert.equal(state.ext.indulgenceEvent, null, '毀滅日不得觸發贖罪券事件');
+  assert.ok(state.ext.doomEvent.paidIds.includes(payer.id));
+
+  const doomed = make('evil', 432, {doomEvery: 5, doomPrice: 1000});
+  const [poor, rich] = doomed.players;
+  poor.cash = 500;
+  rich.cash = 2000;
+  extAddMythic(doomed, poor, 'indulgence');
+  extTriggerDoom(doomed);
+  extResolveDoomPlayer(doomed, rich.id);
+  const result = extResolveDoomPlayer(doomed, poor.id);
+  assert.equal(result.outcome, 'executed', '只有贖罪券且資產不足時仍應被毀滅日處決');
+  assert.equal(doomed.ext.indulgenceEvent, null, '處決前不能先觸發贖罪券');
 });
 
 test('邪惡企業季末也結算股票憑證並直接進入毀滅日', () => {
