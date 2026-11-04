@@ -100,6 +100,9 @@ export const PartyUI = (() => {
   let doomArrowTimer = null;
   let doomAnimationCancel = null;
   let doomWaitCancel = null;
+  let doomMasterFallbackTimer = null;
+  let doomMasterFallbackRunning = false;
+  let doomFinishInProgress = false;
   const presentedDoomResults = new Set();
   let evilVictoryKey = '';
   let evilVictoryResolve = null;
@@ -1392,6 +1395,10 @@ export const PartyUI = (() => {
   // 也讓中止中的結算迴圈知道不要再把畫面接回來。
   function clearDoomsdayAnimations({ cancelSequence = true, removeDom = true } = {}) {
     if (cancelSequence) doomSequenceGeneration += 1;
+    if (isMobileDoomViewport()) {
+      clearTimeout(doomMasterFallbackTimer);
+      doomMasterFallbackTimer = null;
+    }
     doomTimers.forEach(timer => clearTimeout(timer));
     doomTimers = [];
     doomIntervals.forEach(interval => clearInterval(interval));
@@ -1437,6 +1444,24 @@ export const PartyUI = (() => {
   const DOOM_ANIMATION_FALLBACK_MS = 3500;
   const MOBILE_DOOM_ANIMATION_FALLBACK_MS = 3000;
   const isMobileDoomViewport = () => typeof window !== 'undefined' && Number(window.innerWidth) <= 932;
+  function armMobileDoomsdayFallback(game) {
+    clearTimeout(doomMasterFallbackTimer);
+    doomMasterFallbackTimer = null;
+    if (!isMobileDoomViewport()) return;
+    const players = Array.isArray(game?.players) ? game.players : [];
+    const maxWaitTime = (players.length * 2000) + 3000;
+    doomMasterFallbackTimer = setTimeout(() => {
+      doomMasterFallbackTimer = null;
+      if (doomMasterFallbackRunning || doomFinishInProgress || !state()?.ext?.doomPending) return;
+      doomMasterFallbackRunning = true;
+      console.warn('Mobile Doomsday timeout triggered. Forcing progression.');
+      settlementLockUntil = 0;
+      clearDoomsdayAnimations();
+      void finishDoomsday({ force: true, reason: 'mobile-timeout' }).finally(() => {
+        doomMasterFallbackRunning = false;
+      });
+    }, maxWaitTime);
+  }
   function waitDoomAnimation(element, timeout = MOBILE_DOOM_ANIMATION_FALLBACK_MS) {
     return new Promise(resolve => {
       let settled = false;
@@ -1471,12 +1496,40 @@ export const PartyUI = (() => {
     doomWaitCancel = finish;
     timer = setTimeout(finish, ms);
   });
+  async function finishDoomsday({ force = false, reason = 'normal' } = {}) {
+    if (!isMobileDoomViewport() || doomFinishInProgress) return false;
+    const pending = state()?.ext?.doomPending;
+    if (!pending) return false;
+    doomFinishInProgress = true;
+    try {
+      await app().runAction({ type: 'DOOM_FINISH', reason }, () => {
+        const live = state()?.ext?.doomPending;
+        if (!live) return;
+        if (force) {
+          while (live.index < live.entries.length) {
+            const current = live.entries[live.index];
+            window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
+          }
+        }
+        const result = window.__partyEngine.extFinishDoom(state());
+        if (result.resumeRound) window.__partyEngine.resumeRoundAfterDoom(state(), result.finishedRound);
+      }, { allowDoom: true, authoritative: true });
+      return !state()?.ext?.doomPending;
+    } catch (error) {
+      console.error('Doom finish fallback failed', error);
+      return false;
+    } finally {
+      if (!state()?.ext?.doomPending) settlementLockUntil = 0;
+      doomFinishInProgress = false;
+    }
+  }
   async function runDoomSequence() {
     const game = state(), pending = game?.ext?.doomPending;
     if (!pending || doomControllerActive) return;
     const net = app()?.PartyNet;
     if (net?.active && !net.isHost) return;
     doomControllerActive = true;
+    if (isMobileDoomViewport()) armMobileDoomsdayFallback(game);
     const sequenceGeneration = doomSequenceGeneration;
     settlementLockUntil = Number.POSITIVE_INFINITY;
     sound('doom');
@@ -1490,19 +1543,43 @@ export const PartyUI = (() => {
         if (sequenceGeneration !== doomSequenceGeneration) return;
         const latest = state()?.ext?.doomPending;
         if (!latest || latest.entries[latest.index]?.playerId !== current.playerId) continue;
-        const beforeIndex = latest.index;
-        await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
-          window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
-        }, { allowDoom: true, authoritative: true });
-        if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
-        const result = state()?.ext?.doomPending?.lastResult;
-        showDoomOutcome(result);
-        if (result?.outcome === 'executed') {
-          await waitDoomAnimation($('#board .doom-laser-layer'));
-          if (sequenceGeneration !== doomSequenceGeneration) return;
+        const isLastPlayer = latest.index === latest.entries.length - 1;
+        if (isMobileDoomViewport() && isLastPlayer) {
+          try {
+            const beforeIndex = latest.index;
+            await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
+              window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
+            }, { allowDoom: true, authoritative: true });
+            if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
+            const result = state()?.ext?.doomPending?.lastResult;
+            showDoomOutcome(result);
+            if (result?.outcome === 'executed') {
+              await waitDoomAnimation($('#board .doom-laser-layer'));
+              if (sequenceGeneration !== doomSequenceGeneration) return;
+            } else {
+              await waitDoom(550);
+              if (sequenceGeneration !== doomSequenceGeneration) return;
+            }
+          } catch (error) {
+            console.error('Mobile final Doomsday player UI failed', error);
+          } finally {
+            if (state()?.ext?.doomPending) await finishDoomsday({ force: true, reason: 'mobile-finally' });
+          }
         } else {
-          await waitDoom(550);
-          if (sequenceGeneration !== doomSequenceGeneration) return;
+          const beforeIndex = latest.index;
+          await app().runAction({ type: 'DOOM_RESOLVE', playerId: current.playerId }, () => {
+            window.__partyEngine.extResolveDoomPlayer(state(), current.playerId);
+          }, { allowDoom: true, authoritative: true });
+          if (state()?.ext?.doomPending?.index === beforeIndex) throw new Error('保護費玩家結算未提交');
+          const result = state()?.ext?.doomPending?.lastResult;
+          showDoomOutcome(result);
+          if (result?.outcome === 'executed') {
+            await waitDoomAnimation($('#board .doom-laser-layer'));
+            if (sequenceGeneration !== doomSequenceGeneration) return;
+          } else {
+            await waitDoom(550);
+            if (sequenceGeneration !== doomSequenceGeneration) return;
+          }
         }
       }
       const pendingAtFinish = state()?.ext?.doomPending;
@@ -1516,6 +1593,10 @@ export const PartyUI = (() => {
       console.error('Doom sequence interrupted', error);
       app()?.notify('保護費審判中斷，請重新整理後繼續。');
     } finally {
+      if (isMobileDoomViewport() && !state()?.ext?.doomPending) {
+        clearTimeout(doomMasterFallbackTimer);
+        doomMasterFallbackTimer = null;
+      }
       doomControllerActive = false;
       if (!state()?.ext?.doomPending) {
         clearDoomsdayAnimations();

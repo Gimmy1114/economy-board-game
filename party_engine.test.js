@@ -1058,6 +1058,14 @@ test('手機毀滅日結算有專屬逾時，退出與結束時清掉箭頭和�
   assert.match(wait, /innerWidth\)\s*<=\s*932/);
   assert.match(wait, /if \(isMobileDoomViewport\(\)\) fallbackTimer = setTimeout\(finish/);
   assert.match(wait, /MOBILE_DOOM_ANIMATION_FALLBACK_MS\s*=\s*3000/);
+  assert.match(ui, /const maxWaitTime = \(players\.length \* 2000\) \+ 3000/);
+  assert.match(ui, /if \(!isMobileDoomViewport\(\)\) return;/);
+  assert.match(ui, /if \(!isMobileDoomViewport\(\) \|\| doomFinishInProgress\) return false;/);
+  assert.match(ui, /Mobile Doomsday timeout triggered\. Forcing progression\./);
+  assert.match(ui, /clearDoomsdayAnimations\(\);\s*void finishDoomsday\(\{ force: true/);
+  assert.match(ui, /if \(isMobileDoomViewport\(\) && isLastPlayer\) \{/);
+  assert.match(ui, /finally \{\s*if \(state\(\)\?\.ext\?\.doomPending\) await finishDoomsday\(\{ force: true, reason: 'mobile-finally' \}\);/s);
+  assert.match(ui, /clearTimeout\(doomMasterFallbackTimer\);/);
   assert.doesNotMatch(wait, /fallbackTimer = setTimeout\(finish[^\n]*\);\s*\n\s*}\s*\n\s*}\);/);
   assert.match(cleanup, /clearInterval/);
   assert.match(cleanup, /querySelectorAll\('\.doom-judgment-arrow, \.doomsday-arrow, \.doom-laser-layer, \.doom-money-loss'\)/);
