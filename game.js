@@ -7062,7 +7062,18 @@ const PartyUI = (() => {
     });
   }
 
+  // 黑市／投資／查稅等特殊格視窗是可選 UI；任何手機 DOM 例外都交給
+  // app.js 的狀態備援收束，不能讓引擎停在等待互動的階段。
   function openSpecialModal(s) {
+    try {
+      openSpecialModalUnsafe(s);
+    } catch (error) {
+      console.error('特殊格視窗無法掛載，啟用狀態備援', error);
+      app()?.recoverAfterUiError?.(error);
+    }
+  }
+
+  function openSpecialModalUnsafe(s) {
     const p = state();
     if (!p) return;
     const owner = specialOwnerId(p);
@@ -8038,6 +8049,10 @@ let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
 let movingTokenCleanup=null;
 let uiRecoveryInProgress=false;
+// 房客在自己的棋子移動時，房主仍可能送來同一回合的中間快照。
+// 先暫存最後一份，避免整份 state 取代本地動畫而把棋子拉回起點。
+let deferredRoomState=null;
+let flushingDeferredRoomState=false;
 const MOVE_MS=520;
 try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].includes(view?.tab))tab=view.tab}catch{}
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
@@ -8200,7 +8215,56 @@ function cleanupMovingToken(){
   movingTokenCleanup=null;
   try{cleanup?.()}catch(error){console.warn('moving token cleanup failed',error)}
 }
-function cancelAnimation({resumeTimer=true}={}){animationSerial++;cleanupMovingToken();animation=null;if(resumeTimer)resumeTurnClock()}
+function cancelAnimation({resumeTimer=true}={}){
+  animationSerial++;
+  cleanupMovingToken();
+  animation=null;
+  if(!flushingDeferredRoomState)deferredRoomState=null;
+  if(resumeTimer)resumeTurnClock();
+}
+
+// 這兩個判斷集中管理「主動玩家正在移動／處理落地事件」的狀態。
+// 不依賴 DOM，手機重排或 modal 暫時不存在時仍能保護遊戲狀態。
+function isMoving(playerId=activePlayer()?.id){
+  return Boolean(playerId&&(
+    animation?.playerId===playerId||
+    (state?.phase==='moving'&&state.lastRoll?.playerId===playerId)
+  ));
+}
+function isHandlingEvent(playerId=activePlayer()?.id){
+  if(!state?.ext||!playerId)return false;
+  const ext=state.ext;
+  return Boolean(
+    ext.eventPrompt?.playerId===playerId||
+    ext.auction?.currentId===playerId||
+    ext.replaceOffer?.playerId===playerId||
+    ext.starOffer?.playerId===playerId||
+    ext.investOffer?.playerId===playerId||
+    ext.taxChoice?.playerId===playerId||
+    ext.insiderOffer?.playerId===playerId||
+    ext.wheelPending?.playerId===playerId||
+    state.pendingDecision?.playerId===playerId
+  );
+}
+function localActivePlayerId(){
+  const player=activePlayer();
+  return PartyNet.isClient&&player?.id===PartyNet.myPlayerId?player.id:null;
+}
+function sameMovement(a,b){
+  if(!a||!b||a.playerId!==b.playerId||a.from!==b.from||a.value!==b.value)return false;
+  const pathA=Array.isArray(a.path)?a.path:[];
+  const pathB=Array.isArray(b.path)?b.path:[];
+  return pathA.length===pathB.length&&pathA.every((tile,index)=>tile===pathB[index]);
+}
+function flushDeferredRoomState(){
+  const deferred=deferredRoomState;
+  deferredRoomState=null;
+  if(!deferred||animation)return;
+  // 丟掉同一個移動快照的重送；動畫已經完整走完，等待 resolve/decision 快照即可。
+  if(deferred.game?.phase==='moving'&&sameMovement(deferred.game.lastRoll,state?.lastRoll))return;
+  flushingDeferredRoomState=true;
+  try{PartyNet.onState?.(deferred.game,deferred.fromPeer)}finally{flushingDeferredRoomState=false}
+}
 function save(){
   if(!state)return;
   if(PartyNet.isClient){$('#save-status').textContent='房主狀態同步中';return}
@@ -8221,6 +8285,9 @@ function recoverAfterUiError(error){
   uiRecoveryInProgress=true;
   try{
     console.error('特殊格 UI 備援收束',error);
+    // UI 例外也可能發生在動畫節點重建的邊界；先解除動畫鎖，
+    // 再把已寫入的落點推進到可結束回合的階段。
+    if(animation)cancelAnimation({resumeTimer:false});
     const ext=state.ext||{};
     try{PartyUI.closeExtModal?.()}catch(closeError){console.error('特殊格 Modal 關閉失敗',closeError)}
     if(PartyNet.isClient){
@@ -8710,7 +8777,6 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
     if(fallbackTimer)clearTimeout(fallbackTimer);
     cleanupMovingToken();
     if(animation?.playerId===playerId)animation=null;
-    try{render()}catch(error){console.error(`棋子移動${reason}後重繪失敗`,error)}
     try{onDone?.()}catch(error){
       console.error(`棋子移動${reason}後落地結算失敗`,error);
       // 落地結算失敗時也不能讓 state 永遠停在 moving；保留目前位置，
@@ -8721,7 +8787,14 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
         if(state.lastRoll)state.lastRoll.resolved=true;
         try{save();render()}catch(syncError){console.error('移動狀態備援同步失敗',syncError)}
       }
-    }finally{if(!state?.ext?.vectorPending)resumeTurnClock()}
+    }
+    // onDone 會先寫入終點並廣播，再由這裡刷新畫面；UI 例外不會阻止落點同步。
+    try{render()}catch(error){console.error(`棋子移動${reason}後重繪失敗`,error)}
+    finally{
+      if(!state?.ext?.vectorPending)resumeTurnClock();
+      // 落地與事件鏈完成後，才處理動畫期間暫存的房主快照。
+      flushDeferredRoomState();
+    }
   };
   // 手機瀏覽器可能不送出 transitionend，或在重繪時遺失動畫節點。
   // 逾時後直接走同一個 finalize，確保落地效果與同步一定會發生。
@@ -8762,7 +8835,8 @@ function finishLanding(before,interactive=true){
   // and publish it before any landing UI is rendered so a mobile DOM failure cannot
   // make a later state update restore the old square.
   const pending=state.pendingLanding;
-  const landingPlayer=pending?.playerId&&state.players.find(player=>player.id===pending.playerId);
+  const landingPlayerId=pending?.playerId||state.lastRoll?.playerId;
+  const landingPlayer=landingPlayerId&&state.players.find(player=>player.id===landingPlayerId);
   const landingPath=Array.isArray(pending?.path)&&pending.path.length?pending.path:(Array.isArray(state.lastRoll?.path)?state.lastRoll.path:[]);
   const landingTarget=landingPath.length?landingPath[landingPath.length-1]:state.lastRoll?.tileIndex;
   if(landingPlayer&&Number.isInteger(landingTarget)){
@@ -9200,6 +9274,27 @@ PartyNet.onState = (game,fromPeer) => {
     const incoming=extEnsureState(importGame(game));
     const sameRoom=state?.net?.roomCode===PartyNet.code&&state?.net?.hostId===PartyNet.hostId;
     if(incoming.net?.roomCode===PartyNet.code&&incoming.net?.hostId===PartyNet.hostId&&(!sameRoom||isNewerGame(incoming,state))){
+      const localId=localActivePlayerId();
+      const incomingActiveId=incoming.players?.[incoming.turnIndex]?.id;
+      const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
+      // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
+      // resolve 快照進來解除 moving，否則會永久卡在移動階段。
+      const protectingMove=localOwnsTurn&&!flushingDeferredRoomState&&animation?.playerId===localId&&isMoving(localId);
+      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId);
+      if(protectingMove){
+        // 移動中的主動玩家是本機唯一真實來源；記住最新快照，等落地後再套用。
+        deferredRoomState={game,fromPeer};
+        return;
+      }
+      if(protectingEvent&&state?.players){
+        // 事件 UI 期間仍可同步資產／事件欄位，但不能讓外部快照覆寫本機落點。
+        const localPlayer=state.players.find(player=>player.id===localId);
+        const incomingPlayer=incoming.players?.find(player=>player.id===localId);
+        if(localPlayer&&incomingPlayer){
+          incomingPlayer.position=localPlayer.position;
+          if(incoming.lastRoll?.playerId===localId)incoming.lastRoll.tileIndex=localPlayer.position;
+        }
+      }
       const moving=incoming.status==='playing'&&incoming.phase==='moving'&&(incoming.lastRoll?.value>0||incoming.lastRoll?.backward===true);
       const from=moving?incoming.lastRoll.from:null;
       const before=cashSnapshot();

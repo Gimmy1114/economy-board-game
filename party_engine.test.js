@@ -1079,7 +1079,7 @@ test('手機介面、倒數暫停、全螢幕與棋子響應式定位已接線',
   const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
   assert.match(html, /maximum-scale=1\.0, user-scalable=no, viewport-fit=cover/);
   assert.match(appSource, /pauseTurnClock\(\);[\s\S]*?await withGameLock/);
-  assert.match(appSource, /finally\{if\(!state\?\.ext\?\.vectorPending\)resumeTurnClock\(\)\}/);
+  assert.match(appSource, /finally\{[\s\S]*?if\(!state\?\.ext\?\.vectorPending\)resumeTurnClock\(\)/);
   assert.match(ui, /app\(\)\?\.resumeTurnClock\?\.\(\)/);
   assert.match(appSource, /tileRect\.width\/2/);
   assert.match(appSource, /addEventListener\('resize',updateBoardLayout/);
@@ -1207,4 +1207,21 @@ test('vector operation shield blocks forced teleport before position changes', (
   assert.equal(target.position, 4);
   assert.equal(target.shields, 0);
   assert.equal(state.ext.shieldBlockEvent.playerId, target.id);
+});
+
+test('多人移動同步保護主動玩家，落點先同步再觸發格子 UI', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  assert.match(app, /function isMoving\(/);
+  assert.match(app, /function isHandlingEvent\(/);
+  assert.match(app, /protectingMove=localOwnsTurn[^;]*animation\?\.playerId===localId/);
+  assert.match(app, /deferredRoomState=\{game,fromPeer\}/);
+  assert.match(app, /flushDeferredRoomState\(\)/);
+  const landing = app.slice(app.indexOf('function finishLanding('), app.indexOf('function beginAngryRetreat('));
+  assert.ok(landing.indexOf('landingPlayer.position=landingTarget') < landing.indexOf('try{save()}catch(error){console.error(\'落地位置同步失敗\''));
+  assert.ok(landing.indexOf('落地位置同步失敗') < landing.indexOf('resolveLanding(state'));
+  assert.match(ui, /function openSpecialModal\(s\)\s*\{\s*try\s*\{/);
+  assert.match(ui, /function openEventPrompt\(p\)[\s\S]*?try\s*\{/);
+  assert.match(ui, /app\(\)\?\.recoverAfterUiError\?\./);
 });

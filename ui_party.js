@@ -2005,7 +2005,18 @@ export const PartyUI = (() => {
     });
   }
 
+  // 黑市／投資／查稅等特殊格視窗是可選 UI；任何手機 DOM 例外都交給
+  // app.js 的狀態備援收束，不能讓引擎停在等待互動的階段。
   function openSpecialModal(s) {
+    try {
+      openSpecialModalUnsafe(s);
+    } catch (error) {
+      console.error('特殊格視窗無法掛載，啟用狀態備援', error);
+      app()?.recoverAfterUiError?.(error);
+    }
+  }
+
+  function openSpecialModalUnsafe(s) {
     const p = state();
     if (!p) return;
     const owner = specialOwnerId(p);
