@@ -414,6 +414,13 @@ body.settlement-active .center-backdrop .evil-tower{display:none!important}
 .board-fullscreen[aria-pressed="true"]{background:var(--teal);border-color:var(--teal);color:#fff}
 .board-panel>.panel-title h2{white-space:nowrap}
 .item-discard-bar{display:none!important}
+
+/* 全螢幕控制只提供給手機橫向介面；桌面版完全隱藏。 */
+.board-fullscreen,
+.party-fullscreen-btn,
+[data-party-fullscreen],
+#fullscreen-btn,
+#mobile-fullscreen-btn{display:none!important}
 /* 手機直向時遮罩，派對棋盤僅支援橫向遊玩。 */
 #landscape-warning{display:none}
 @media screen and (max-width:932px) and (orientation:portrait){
@@ -1138,10 +1145,16 @@ html,body{margin:0}
 /* Phase 2：手機橫向結算畫面與遊戲外全螢幕按鈕。 */
 @media screen and (max-width:932px) and (orientation:landscape){
   .party-fullscreen-btn{
+    display:inline-flex!important;
     min-height:30px;
     padding:5px 8px;
     font-size:10px;
   }
+  .board-fullscreen,
+  [data-party-fullscreen],
+  #fullscreen-btn{display:inline-flex!important}
+  #mobile-fullscreen-btn,
+  .mobile-fullscreen-btn{display:grid!important}
   .home-fullscreen-btn{margin-top:8px}
   .setup-fullscreen-btn{min-width:84px}
   .lobby-top-actions{gap:4px}

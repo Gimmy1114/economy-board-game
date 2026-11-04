@@ -8602,25 +8602,63 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
   const target=Number.isInteger(path[path.length-1])?path[path.length-1]:roll.tileIndex;
   animation={stage:backward?'moving':'rolling',direction:backward?'backward':'forward',playerId,position:Number.isInteger(from)?from:roll.from,value:roll.value,path,visited:new Set(),roll,target};
   pauseTurnClock();
-  render();
+  try{render()}catch(error){
+    console.error('無法建立棋子移動畫面',error);
+    animation=null;
+    cleanupMovingToken();
+    return false;
+  }
+  let finalized=false;
+  let fallbackTimer=null;
+  const finalize=(reason='complete')=>{
+    if(finalized||serial!==animationSerial)return;
+    finalized=true;
+    if(fallbackTimer)clearTimeout(fallbackTimer);
+    cleanupMovingToken();
+    if(animation?.playerId===playerId)animation=null;
+    try{render()}catch(error){console.error(`棋子移動${reason}後重繪失敗`,error)}
+    try{onDone?.()}catch(error){
+      console.error(`棋子移動${reason}後落地結算失敗`,error);
+      // 落地結算失敗時也不能讓 state 永遠停在 moving；保留目前位置，
+      // 推進到可結束回合的階段並廣播這個修正後狀態。
+      if(state?.phase==='moving'){
+        state.phase='resolve';
+        state.pendingLanding=null;
+        if(state.lastRoll)state.lastRoll.resolved=true;
+        try{save();render()}catch(syncError){console.error('移動狀態備援同步失敗',syncError)}
+      }
+    }finally{if(!state?.ext?.vectorPending)resumeTurnClock()}
+  };
+  // 手機瀏覽器可能不送出 transitionend，或在重繪時遺失動畫節點。
+  // 逾時後直接走同一個 finalize，確保落地效果與同步一定會發生。
+  fallbackTimer=setTimeout(()=>finalize('timeout'),1300+path.length*(MOVE_MS+500)+1000);
   void (async()=>{
-    if(!backward){
-      await pause(1300);
-      if(serial!==animationSerial)return;
-      if(interactive)notify(`擲出 ${animation.value} 點`);
-      animation.stage='moving';render();
+    try{
+      if(!backward){
+        await pause(1300);
+        if(serial!==animationSerial||finalized)return;
+        if(interactive)notify(`擲出 ${animation.value} 點`);
+        animation.stage='moving';
+        try{render()}catch(error){console.error('棋子移動階段重繪失敗',error);finalize('render-error');return}
+      }
+      for(const position of path){
+        if(serial!==animationSerial||finalized)return;
+        if(position!==animation.position){
+          animation.position=position;
+          try{moveTokenStep(position)}catch(error){console.error('棋子移動步驟失敗',error)}
+          // moveTokenStep 自己有視覺清理逾時；這裡只等待固定步長，
+          // 不把 transitionend 當成遊戲邏輯的必要條件。
+          await pause(MOVE_MS);
+        }
+      }
+      if(serial!==animationSerial||finalized)return;
+      await pause(260);
+      if(serial!==animationSerial||finalized)return;
+      finalize('complete');
+    }catch(error){
+      console.error('棋子移動動畫例外',error);
+      finalize('error');
     }
-    for(const position of path){
-      if(serial!==animationSerial)return;
-      if(position!==animation.position){animation.position=position;moveTokenStep(position);await pause(MOVE_MS)}
-    }
-    if(serial!==animationSerial)return;
-    await pause(260);
-    if(serial!==animationSerial)return;
-    animation=null;render();
-    if(serial!==animationSerial)return;
-    try{onDone?.()}catch(e){console.error(e)}
-    finally{if(!state?.ext?.vectorPending)resumeTurnClock()}
   })();
   return true;
 }
@@ -8629,8 +8667,18 @@ function finishLanding(before,interactive=true){
   let roll=null;
   // 互動流程先只標記矢量鎖定，等 UI 預警 0.5 秒後再真正傳送與結算格子效果。
   try{roll=resolveLanding(state,{deferVector:true})}catch(e){console.error(e);notify(e.message||'落地效果處理失敗。')}
-  if(!roll)return null;
-  save();render();
+  if(!roll){
+    // 任何落地例外都不能把整局留在 moving；玩家位置已經是引擎寫入的終點，
+    // 先保留該位置並推進到 resolve，讓房主可以同步並結束回合。
+    if(state.phase==='moving'){
+      state.phase='resolve';
+      state.pendingLanding=null;
+      if(state.lastRoll)state.lastRoll.resolved=true;
+    }
+    try{save();render()}catch(error){console.error('落地備援同步失敗',error)}
+    return state.lastRoll||null;
+  }
+  try{save();render()}catch(error){console.error('落地後重繪失敗',error)}
   if(roll.struck&&state.ext?.lastEvent?.type==='ghostStrike'){
     PartyNet.broadcastEvent({type:'GHOST_ATTACK',target:roll.playerId,enraged:Boolean(state.ext.lastEvent.enraged)});
   }
@@ -8657,7 +8705,7 @@ function beginAngryRetreat(){
   const settle=()=>{
     try{resolveLanding(state,{deferVector:true});}
     catch(error){console.error(error);notify(error?.message||'回退落點結算失敗。');state.pendingLanding=null;state.phase='resolve';}
-    save();render();
+    try{save();render()}catch(error){console.error('回退落點同步失敗',error);if(state.phase==='moving')state.phase='resolve'}
     if(before)animateCashChanges(before);
   };
   const started=beginRollAnimation(state.lastRoll,from,player.id,false,settle);
