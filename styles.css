@@ -695,6 +695,25 @@ html,body{margin:0}
   .skill-info-btn{position:absolute;top:2px;right:2px;z-index:2;display:grid;place-items:center;width:15px;height:15px;border:1px solid currentColor;border-radius:50%;font-size:10px;font-weight:900;line-height:1;cursor:pointer;background:#ffffffaa}
   .map-viewport .party-board{width:100%;max-width:100%;margin:0;transform-origin:center center}
   .mobile-map-area .tile,.mobile-map-area .cell{overflow:hidden}
+  /* 幽靈直接掛在目標格內，尺寸與格內棋子同級，避免固定大字元溢出。 */
+  .mobile-map-area .ghost-piece{
+    box-sizing:border-box;
+    width:28%;
+    height:auto;
+    aspect-ratio:1 / 1;
+    max-width:24px;
+    max-height:24px;
+    overflow:hidden;
+    pointer-events:none;
+  }
+  .mobile-map-area .ghost-piece > span{
+    width:100%;
+    height:100%;
+    max-width:100%;
+    max-height:100%;
+    font-size:100%;
+    line-height:1;
+  }
 }
 
 /* Phase 1：手機橫向 viewport 與遊戲外框鎖定。 */

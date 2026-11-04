@@ -52,6 +52,7 @@ let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:30,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
+let movingTokenCleanup=null;
 const MOVE_MS=520;
 try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].includes(view?.tab))tab=view.tab}catch{}
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
@@ -209,7 +210,12 @@ function cancelMapPick(){
 function newGameId(){return globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`}
 function prepareNewSession(game){const previous=syncInfo(state);game.sync={gameId:newGameId(),revision:0,updatedAt:Math.max(Date.now(),(previous?.updatedAt||0)+1,resetAt+1),writerId:tabId}}
 function readStored(){try{const raw=localStorage.getItem(storageKey);if(!raw)return null;const game=importGame(raw);return extEnsureState(game)}catch{return undefined}}
-function cancelAnimation({resumeTimer=true}={}){animationSerial++;animation=null;if(resumeTimer)resumeTurnClock()}
+function cleanupMovingToken(){
+  const cleanup=movingTokenCleanup;
+  movingTokenCleanup=null;
+  try{cleanup?.()}catch(error){console.warn('moving token cleanup failed',error)}
+}
+function cancelAnimation({resumeTimer=true}={}){animationSerial++;cleanupMovingToken();animation=null;if(resumeTimer)resumeTurnClock()}
 function save(){
   if(!state)return;
   if(PartyNet.isClient){$('#save-status').textContent='房主狀態同步中';return}
@@ -421,20 +427,14 @@ function placeGhostPiece(board,piece,{oldRect=null,oldPosition=null}={}){
   if(!board||!piece||!state)return;
   const tile=board.querySelector(`[data-tile-index="${state.ghostPosition}"]`);
   if(!tile)return;
-  const tileRect=tile.getBoundingClientRect(),boardRect=board.getBoundingClientRect();
-  if(!tileRect.width||!boardRect.width)return;
-  piece.style.left=`${tileRect.left-boardRect.left+tileRect.width/2}px`;
-  piece.style.top=`${tileRect.top-boardRect.top+tileRect.height/2}px`;
-  if(oldRect?.width&&oldPosition!==piece.dataset.position&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
-    const trail=state.ghostTrail?.[0]===Number(oldPosition)&&state.ghostTrail.at(-1)===state.ghostPosition?state.ghostTrail:null;
-    const frames=trail?.map((position,i)=>{
-      const r=board.querySelector(`[data-tile-index="${position}"]`)?.getBoundingClientRect();
-      if(!r)return {transform:'translate(-50%,-50%)',offset:i/(trail.length-1)};
-      const dx=r.left+r.width/2-(tileRect.left+tileRect.width/2),dy=r.top+r.height/2-(tileRect.top+tileRect.height/2);
-      return {transform:`translate(${dx}px,${dy}px) translate(-50%,-50%)`,offset:i/(trail.length-1)};
-    })||[{transform:`translate(${oldRect.left-piece.getBoundingClientRect().left}px,${oldRect.top-piece.getBoundingClientRect().top}px) translate(-50%,-50%)`},{transform:'translate(-50%,-50%)'}];
-    piece.animate(frames,{duration:trail?(trail.length-1)*360:850,easing:'ease-in-out'});
-  }
+  // 幽靈是格子的內容，不是棋盤上的浮動大圖。掛回目標格後用格子座標
+  // 定位，這樣手機縮放、重排或重繪時都不會留下錯位／放大的幽靈。
+  if(piece.parentElement!==tile)tile.appendChild(piece);
+  const tileRect=tile.getBoundingClientRect();
+  if(!tileRect.width||!tileRect.height)return;
+  piece.style.left=`${tileRect.width/2}px`;
+  piece.style.top=`${tileRect.height/2}px`;
+  piece.style.transform='translate(-50%,-50%)';
 }
 // 轉向、縮放或視窗尺寸改變時，重新用格子座標擺放幽靈，避免它停在舊的絕對位置。
 let boardLayoutFrame=0;
@@ -451,6 +451,7 @@ function updateBoardLayout(){
   });
 }
 function renderBoard(){
+  cleanupMovingToken();
   const boardData=boardOf(state);
   const gridRows=Math.ceil((boardData.length+4)/4),gridCols=Math.ceil((boardData.length+4)/2-gridRows);
   const cornerMarks=cornerMarksForBoard(boardData.length);
@@ -458,7 +459,9 @@ function renderBoard(){
   const domainOwner=domain?state.players.find(p=>p.id===domain.ownerId):null;
   const domainPosition=domainOwner?(animation?.playerId===domainOwner.id?animation.position:domainOwner.position):null;
   const domainTiles=new Set(domainOwner?[-1,0,1].map(d=>(domainPosition+d+boardData.length)%boardData.length):[]);
-  const pos=state.players.map(p=>({p,index:animation?.playerId===p.id?animation.position:p.position}));
+  const movingId=animation?.playerId||((state.phase==='moving'&&state.lastRoll?.playerId)?state.lastRoll.playerId:null);
+  const movingFrom=state.phase==='moving'&&Number.isInteger(state.lastRoll?.from)?state.lastRoll.from:null;
+  const pos=state.players.map(p=>({p,index:animation?.playerId===p.id?animation.position:(p.id===movingId&&movingFrom!==null?movingFrom:p.position)}));
   const tiles=boardData.map((tile,i)=>{
     const [row,col]=boardCoords(i,boardData.length);
     const occupants=pos.filter(x=>x.index===i);
@@ -481,7 +484,8 @@ function renderBoard(){
   piece.className=`ghost-piece ${angryGhost?'enraged':''}`;
   piece.dataset.position=String(state.ghostPosition);
   piece.setAttribute('aria-label',`罷工幽靈位於第 ${tileNo(state.ghostPosition)} 格${angryGhost?'（憤怒狀態）':''}`);
-  board.appendChild(piece);
+  const ghostTile=board.querySelector(`[data-tile-index="${state.ghostPosition}"]`);
+  if(ghostTile)ghostTile.appendChild(piece);
   placeGhostPiece(board,piece,{oldRect,oldPosition});
 }
 function starTrack(stars){const goal=state?.starGoal||STAR_GOAL;return `<span class="star-track">${Array.from({length:goal},(_,i)=>`<i class="${i<stars?'on':''}">★</i>`).join('')}</span>`}
@@ -599,19 +603,51 @@ function moveTokenStep(position){
   animation?.visited.add(position);
   const token=$('#board .token.moving'),destination=$(`#board [data-tile-index="${position}"] .tile-tokens`);
   if(!token||!destination||tab!=='board'||page!=='game')return;
+  cleanupMovingToken();
+  const board=$('#board'),boardRect=board.getBoundingClientRect();
+  const scaleX=board.offsetWidth?boardRect.width/board.offsetWidth:1;
+  const scaleY=board.offsetHeight?boardRect.height/board.offsetHeight:1;
   const from=token.getBoundingClientRect();
+  const tokenStyle=getComputedStyle(token);
   $('#board .tile-active')?.classList.remove('tile-active');
   destination.closest('.tile').classList.add('tile-active','tile-visited');
+  // 先讓格子排出最終 token 位置，再把 token 提到棋盤層作絕對定位滑行。
   destination.appendChild(token);
   const to=token.getBoundingClientRect();
+  const local=(rect)=>({left:(rect.left-boardRect.left)/scaleX,top:(rect.top-boardRect.top)/scaleY,width:rect.width/scaleX,height:rect.height/scaleY});
+  const fromLocal=local(from),toLocal=local(to);
+  board.appendChild(token);
+  token.style.position='absolute';
+  token.style.left=`${fromLocal.left}px`;
+  token.style.top=`${fromLocal.top}px`;
+  token.style.width=`${fromLocal.width}px`;
+  token.style.height=`${fromLocal.height}px`;
+  token.style.margin='0';
+  token.style.transform='none';
+  token.style.zIndex='20';
+  token.style.display='grid';
+  token.style.placeItems='center';
+  token.style.fontSize=tokenStyle.fontSize;
+  token.style.fontWeight=tokenStyle.fontWeight;
+  token.style.lineHeight=tokenStyle.lineHeight;
   token.style.transition='none';
-  token.style.transform=`translate(${from.left-to.left}px, ${from.top-to.top}px)`;
   token.getBoundingClientRect();
+  let finished=false;
+  const finish=()=>{
+    if(finished)return;
+    finished=true;
+    if(token.isConnected)destination.appendChild(token);
+    ['position','left','top','width','height','margin','transform','z-index','display','place-items','font-size','font-weight','line-height','transition'].forEach(key=>token.style.removeProperty(key));
+    if(movingTokenCleanup===finish)movingTokenCleanup=null;
+  };
+  movingTokenCleanup=finish;
   requestAnimationFrame(()=>{
     if(!token.isConnected)return;
-    token.style.transition=`transform ${MOVE_MS-70}ms linear`;
-    token.style.transform='translate(0,0)';
+    token.style.transition=`left ${MOVE_MS-70}ms linear,top ${MOVE_MS-70}ms linear`;
+    token.style.left=`${toLocal.left}px`;
+    token.style.top=`${toLocal.top}px`;
   });
+  setTimeout(finish,Math.max(80,MOVE_MS-30));
 }
 function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
   if(!state||!roll||state.players[state.turnIndex]?.id!==playerId)return false;
@@ -1074,10 +1110,14 @@ PartyNet.onState = (game,fromPeer) => {
       const starting=incoming.status==='playing'&&(!sameRoom||state?.status!=='playing');
       cancelAnimation();
       if(starting){page='game';tab='board';rememberView();PartyUI.hideLobby?.()}
-      state=incoming;render();
+      state=incoming;
+      // 先建立移動動畫，再繪製畫面。引擎會先把 player.position 寫成終點，
+      // 若先 render，客機會短暫看到終點棋子，接著才跳回起點重播動畫。
+      // beginRollAnimation 會以 lastRoll.from 建立起點 DOM，避免閃爍。
+      const startedMoving=moving&&beginRollAnimation(incoming.lastRoll,from,incoming.lastRoll.playerId,false);
+      if(!startedMoving)render();
       if(starting&&!PartyNet.isHost)PartyUI.onGameStart?.(state,{fromLobby:true});
       if(before)animateCashChanges(before);
-      if(moving)beginRollAnimation(incoming.lastRoll,from,incoming.lastRoll.playerId,false);
       $('#save-status').textContent='房間狀態已同步';
     }
   }catch(e){console.warn('room state rejected',e)}
