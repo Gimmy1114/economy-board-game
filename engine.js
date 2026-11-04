@@ -136,12 +136,12 @@ export function createGame({players,seed=Date.now(),maxRounds=10,startingCash=ST
   return state;
 }
 
-export function addCash(state,player,amount){
+export function addCash(state,player,amount,options={}){
   if(!amount)return 0;
   if(engineHooks.adjustCash)amount=engineHooks.adjustCash(state,player,amount);
   // 全域扣款攔截：贖罪券等被動防禦必須在現金變動前生效，避免先觸發負債淘汰。
   if(amount<0&&engineHooks.beforeCash){
-    const adjusted=engineHooks.beforeCash(state,player,amount);
+    const adjusted=engineHooks.beforeCash(state,player,amount,options);
     if(adjusted===false)return 0;
     if(Number.isFinite(adjusted))amount=adjusted;
     if(!amount)return 0;
@@ -619,7 +619,7 @@ export function buyStar(state){
   const p=currentPlayer(state);
   if(p.stars>=STAR_GOAL)throw Error('已經達成勝利星數。');
   if(p.cash<STAR_COST)throw Error(`購買併購星需要 ${STAR_COST} 總資產。`);
-  addCash(state,p,-STAR_COST);
+  addCash(state,p,-STAR_COST,{source:'buy-star'});
   p.stars+=1;
   log(state,`⭐ ${p.name} 以 ${STAR_COST} 總資產買下第 ${p.stars} 顆併購星。`);
   checkStarWin(state);
@@ -650,7 +650,7 @@ export function acquireTarget(state,targetId){
   if(target.stars>=STAR_GOAL)throw Error('已達勝利星數的玩家無法被併購。');
   const cost=acquisitionCost(state,p,target);
   if(cost>0&&p.cash<cost)throw Error(`併購需要 ${cost} 總資產。`);
-  addCash(state,p,-cost);
+  addCash(state,p,-cost,{source:'acquire'});
   if(cost)addCash(state,target,Math.floor(cost*.25));
   target.parentId=p.id;
   log(state,`🤝 ${p.name} 以 ${cost} 總資產併購 ${target.name}，${target.name} 成為子公司（每回合上繳 40% 收益）。`);
@@ -664,7 +664,7 @@ export function rebel(state){
   if(!p.parentId)throw Error('你不是任何公司的子公司。');
   if(p.cash<REBEL_COST)throw Error(`獨立反撲需要 ${REBEL_COST} 總資產。`);
   const parent=state.players.find(x=>x.id===p.parentId);
-  addCash(state,p,-REBEL_COST);
+  addCash(state,p,-REBEL_COST,{source:'rebel'});
   p.parentId=null;
   log(state,`🕊️ ${p.name} 支付 ${REBEL_COST} 總資產，成功脫離 ${parent?.name||'母公司'} 獨立。`);
   return true;

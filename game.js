@@ -511,12 +511,12 @@ function createGame({players,seed=Date.now(),maxRounds=10,startingCash=START_CAS
   return state;
 }
 
-function addCash(state,player,amount){
+function addCash(state,player,amount,options={}){
   if(!amount)return 0;
   if(engineHooks.adjustCash)amount=engineHooks.adjustCash(state,player,amount);
   // 全域扣款攔截：贖罪券等被動防禦必須在現金變動前生效，避免先觸發負債淘汰。
   if(amount<0&&engineHooks.beforeCash){
-    const adjusted=engineHooks.beforeCash(state,player,amount);
+    const adjusted=engineHooks.beforeCash(state,player,amount,options);
     if(adjusted===false)return 0;
     if(Number.isFinite(adjusted))amount=adjusted;
     if(!amount)return 0;
@@ -994,7 +994,7 @@ function buyStar(state){
   const p=currentPlayer(state);
   if(p.stars>=STAR_GOAL)throw Error('已經達成勝利星數。');
   if(p.cash<STAR_COST)throw Error(`購買併購星需要 ${STAR_COST} 總資產。`);
-  addCash(state,p,-STAR_COST);
+  addCash(state,p,-STAR_COST,{source:'buy-star'});
   p.stars+=1;
   log(state,`⭐ ${p.name} 以 ${STAR_COST} 總資產買下第 ${p.stars} 顆併購星。`);
   checkStarWin(state);
@@ -1025,7 +1025,7 @@ function acquireTarget(state,targetId){
   if(target.stars>=STAR_GOAL)throw Error('已達勝利星數的玩家無法被併購。');
   const cost=acquisitionCost(state,p,target);
   if(cost>0&&p.cash<cost)throw Error(`併購需要 ${cost} 總資產。`);
-  addCash(state,p,-cost);
+  addCash(state,p,-cost,{source:'acquire'});
   if(cost)addCash(state,target,Math.floor(cost*.25));
   target.parentId=p.id;
   log(state,`🤝 ${p.name} 以 ${cost} 總資產併購 ${target.name}，${target.name} 成為子公司（每回合上繳 40% 收益）。`);
@@ -1039,7 +1039,7 @@ function rebel(state){
   if(!p.parentId)throw Error('你不是任何公司的子公司。');
   if(p.cash<REBEL_COST)throw Error(`獨立反撲需要 ${REBEL_COST} 總資產。`);
   const parent=state.players.find(x=>x.id===p.parentId);
-  addCash(state,p,-REBEL_COST);
+  addCash(state,p,-REBEL_COST,{source:'rebel'});
   p.parentId=null;
   log(state,`🕊️ ${p.name} 支付 ${REBEL_COST} 總資產，成功脫離 ${parent?.name||'母公司'} 獨立。`);
   return true;
@@ -1224,6 +1224,8 @@ function importGame(json){
 // ============================================================================
 
 const EXT_VERSION = 4;
+const VOLUNTARY_PAYMENT_SOURCES = new Set(['invest', 'auction', 'buy-star', 'forced-buy-star', 'insider', 'truth-gate', 'acquire', 'rebel']);
+const isVoluntaryPayment = source => VOLUNTARY_PAYMENT_SOURCES.has(String(source || ''));
 const clone = value => JSON.parse(JSON.stringify(value));
 const extMoney = n => Math.round(Number(n) || 0).toLocaleString('zh-TW');
 const extMode = state => GAME_MODES[state?.ext?.mode] || GAME_MODES.star;
@@ -1779,7 +1781,7 @@ function extDamage(state, player, amount, { ignoreShield = false, ignoreRedempti
   }
   // 毀滅日是模式的致命結算，只能由不死圖騰在上層流程抵擋；
   // 這裡也要把來源帶進共用扣款路徑，避免全域贖罪券攔截 addCash()。
-  const bypassRedemption = ignoreRedemption || source === 'doomsday';
+  const bypassRedemption = ignoreRedemption || source === 'doomsday' || isVoluntaryPayment(source);
   if (!bypassRedemption) {
     if (extTryRedeem(state, player, amount, label, { silent })) return 0;
   }
@@ -2041,9 +2043,10 @@ engineHooks.adjustMovePath = (state, player, fullPath, { from } = {}) => {
   return { path: fullPath, meta: { vector: { ownerId: player.id, destination, route, candidates } } };
 };
 
-// 贖罪券全域防禦：連蕭條格、租金、稅金、拍賣等直接扣款也必須先消耗一次。
-engineHooks.beforeCash = (state, player, amount) => {
+// 贖罪券只攔截非自願負面扣款；主動交易會在 addCash() 帶入 source 後略過。
+engineHooks.beforeCash = (state, player, amount, options = {}) => {
   if (!state?.ext || amount >= 0) return amount;
+  if (options?.isVoluntary === true || isVoluntaryPayment(options?.source) || options?.source === 'doomsday') return amount;
   if (extTryRedeem(state, player, -amount, '總資產扣款')) return 0;
   return amount;
 };
@@ -2645,7 +2648,7 @@ function extBuyStar(state) {
   const p = currentOf(state), ext = state.ext;
   const price = check.price;
   const prev = ext.noInflation; ext.noInflation = true;
-  addCash(state, p, -price);
+  addCash(state, p, -price, {source: 'buy-star'});
   ext.noInflation = prev;
   p.stars += 1;
   p.ext.starsBought = (p.ext.starsBought || 0) + 1;
@@ -2689,7 +2692,7 @@ function extForcedBuyStar(state, targetId) {
   const cost = extStarPrice(state) + FORCED_STAR_PREMIUM;
   if (p.cash < cost) throw Error(`強買需要 ${extMoney(cost)} 總資產。`);
   const prev = ext.noInflation; ext.noInflation = true;
-  addCash(state, p, -cost);
+  addCash(state, p, -cost, {source: 'forced-buy-star'});
   ext.noInflation = prev;
   target.stars -= 1;
   p.stars += 1;
@@ -3099,7 +3102,7 @@ function extUseMythic(state, itemId, payload = {}) {
         if (p.ext?.bankai) throw Error('卍解期間禁止獲取新道具。');
         if (!extHasItemSpace(p)) throw Error('道具欄已滿（3 格）。');
         const prev = state.ext.noInflation; state.ext.noInflation = true;
-        addCash(state, p, -1000);
+        addCash(state, p, -1000, {source: 'truth-gate'});
         state.ext.noInflation = prev;
         extAddItem(state, p, id);
         log(state, `🚪 ${p.name} 用真理之門把 1,000 總資產煉成「${itemById(id)?.name || id}」。`);
@@ -3208,7 +3211,7 @@ function extAuctionFinish(state) {
   let gained = false;
   if (winner && a.highestBid > 0) {
     const prev = state.ext.noInflation; state.ext.noInflation = true;
-    addCash(state, winner, -a.highestBid);
+    addCash(state, winner, -a.highestBid, {source: 'auction'});
     state.ext.noInflation = prev;
     if (a.junk) {
       log(state, `🛒 ${winner.name} 以 ${extMoney(a.highestBid)} 得標爛貨，沒有獲得道具。`);
@@ -3291,7 +3294,7 @@ function extInvest(state, accept) {
   if (!accept || !p) return false;
   if (offer.cost <= 0 || p.cash < offer.cost) throw Error('總資產不足，無法投資。');
   const prev = state.ext.noInflation; state.ext.noInflation = true;
-  addCash(state, p, -offer.cost);
+  addCash(state, p, -offer.cost, {source: 'invest'});
   state.ext.noInflation = prev;
   extAddCertificate(state, p, offer.cost);
   log(state, `📈 ${p.name} 投入 ${extMoney(offer.cost)} 取得股票憑證，季末結算。`);
@@ -3328,7 +3331,7 @@ function extInsiderPay(state) {
   if (!p) return null;
   if (p.cash < 100) { log(state, `🌈 ${p.name} 總資產不足 100，無法啟動輪盤。`); return null; }
   const prev = state.ext.noInflation; state.ext.noInflation = true;
-  addCash(state, p, -100);
+  addCash(state, p, -100, {source: 'insider'});
   state.ext.noInflation = prev;
   const result = extPrepareWheel(state, p);
   // 用完後變回普通格，並在隨機普通格生成新的交易格
@@ -3446,7 +3449,7 @@ function extApplyWheel(state, player, effect) {
     case 'discountStar': {
       if (player.cash < 500) return '總資產不足 500，特價星失效。';
       const prev = ext.noInflation; ext.noInflation = true;
-      addCash(state, player, -500);
+      addCash(state, player, -500, {source: 'buy-star'});
       ext.noInflation = prev;
       player.stars += 1;
       extSyncStarBlade(state, player);

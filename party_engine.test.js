@@ -460,6 +460,9 @@ test('投資成功會把股票憑證放進玩家持有清單並扣除本金', ()
   const state = make('star', 77);
   const player = state.players[0];
   player.cash = 2000;
+  extAddMythic(state, player, 'indulgence');
+  const ticket = () => player.mythics.find(entry => entry.id === 'indulgence');
+  assert.equal(ticket().charges, 5);
   const tile = state.board.find(t => t.type === 'invest');
   assert.ok(tile, '測試地圖應包含投資格');
   player.position = tile.index;
@@ -472,6 +475,9 @@ test('投資成功會把股票憑證放進玩家持有清單並扣除本金', ()
   assert.equal(player.ext.certificates.length, 1);
   assert.equal(player.ext.certificates[0].principal, 1000);
   assert.equal(state.ext.certificates.length, 1);
+  assert.equal(player.cash, 1000, '投資本金必須由玩家現金支付');
+  assert.equal(ticket().charges, 5, '主動投資不得消耗贖罪券');
+  assert.equal(state.ext.indulgenceEvent, null, '主動投資不得觸發贖罪券事件');
 });
 
 test('毀滅日前一季投資格直接停擺且不建立投資視窗', () => {
