@@ -278,8 +278,12 @@ body.modal-open #board .ghost-piece {
 }
 .custom-map-button.is-custom { border-color: #e99735; background: #f3a43b; color: #fff; }
 .custom-map-button:hover:not(:disabled) { filter: brightness(.97); }
-.party-tile.blank { background: #474a50; border-color: #36383d; color: #e5e6e8; }
-.party-tile.blank .tile-number,.party-tile.blank .tile-type,.party-tile.blank .tile-value { color: #e1e2e4; }
+.party-tile.blank { background: #fff; background-color: #fff; border-color: #e2e9e5; color: transparent; }
+.party-tile.blank .tile-number,
+.party-tile.blank .tile-icon,
+.party-tile.blank .tile-type,
+.party-tile.blank .tile-value { display: none; }
+.party-tile.blank img { display: none; }
 .custom-map-overlay {
   position: fixed;
   inset: 0;

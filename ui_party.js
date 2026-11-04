@@ -138,11 +138,13 @@ export const PartyUI = (() => {
     mergerStrongPrice: 1000,
     autoEnergy: false,
     isCustomMapEnabled: false,
-    customMap: { enabled: false, counts: { blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 } }
+    customMap: { enabled: false, counts: { blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 } }
   });
-  const customMapDefaults = Object.freeze({ blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 });
+  const CUSTOM_MAP_LIMIT = 24;
+  const CUSTOM_MAP_SLOTS = 48;
+  const customMapDefaults = Object.freeze({ blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 });
   const customMapFields = [
-    ['blank', '空白格'], ['blue', '發財格'], ['red', '蕭條格'], ['yellow', '技能格'], ['green', '事件格'],
+    ['blue', '發財格'], ['red', '蕭條格'], ['yellow', '技能格'], ['green', '事件格'],
     ['market', '黑市格'], ['invest', '投資格'], ['tax', '查稅局'], ['insider', '內線交易格（不計入 48 格）']
   ];
   let advancedSettings = { ...advancedSettingsDefaults, customMap: { enabled: false, counts: { ...customMapDefaults } } };
@@ -760,8 +762,8 @@ export const PartyUI = (() => {
     overlay.innerHTML = `<section class="custom-map-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-map-title">
       <button type="button" class="custom-map-close" aria-label="關閉自訂地圖視窗">×</button>
       <h2 id="custom-map-title">自訂地圖</h2>
-      <p>除固定出發格外，可設定 48 格的種類數量；未填滿的數量會自動補成空白格。內線交易格另計，不納入 48 格合計。</p>
-      <div class="custom-map-grid">${customMapFields.map(([key, label]) => `<label class="custom-map-field ${key === 'blank' ? 'blank' : ''}"><span>${label}</span><input type="number" min="0" max="48" step="1" data-map-count="${key}" value="${Number(current?.[key] ?? customMapDefaults[key])}"></label>`).join('')}</div>
+      <p>除固定出發格外，可設定最多 24 格的種類數量；不足的部分會自動補成空白格（棋盤共 48 格）。內線交易格另計，不納入 48 格合計。</p>
+      <div class="custom-map-grid">${customMapFields.map(([key, label]) => `<label class="custom-map-field"><span>${label}</span><input type="number" min="0" max="${key === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT}" step="1" data-map-count="${key}" value="${Number(current?.[key] ?? customMapDefaults[key])}"></label>`).join('')}</div>
       <p class="custom-map-total" data-map-total></p>
       <p class="custom-map-error" data-map-error role="alert"></p>
       <div class="custom-map-actions"><button type="button" class="custom-map-discard">關閉自訂</button><button type="button" class="custom-map-confirm">確認</button></div>
@@ -771,16 +773,20 @@ export const PartyUI = (() => {
     const total = overlay.querySelector('[data-map-total]');
     const error = overlay.querySelector('[data-map-error]');
     const confirm = overlay.querySelector('.custom-map-confirm');
-    const readCounts = () => Object.fromEntries(countInputs.map(input => [input.dataset.mapCount, Math.max(0, Math.min(48, Math.floor(Number(input.value) || 0)))]));
+    const readCounts = () => Object.fromEntries(countInputs.map(input => {
+      const limit = input.dataset.mapCount === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT;
+      return [input.dataset.mapCount, Math.max(0, Math.min(limit, Math.floor(Number(input.value) || 0)))];
+    }));
     const updateTotal = () => {
       const counts = readCounts();
       const sum = Object.entries(counts).filter(([key]) => key !== 'insider').reduce((n, [, value]) => n + value, 0);
-      total.textContent = `格數合計：${sum} / 48（內線交易格另計）`;
-      error.textContent = sum > 48 ? `目前超出 ${sum - 48} 格，請調整數量後再確認。` : '';
-      confirm.disabled = sum > 48;
+      total.textContent = `格數合計：${sum} / ${CUSTOM_MAP_LIMIT}（不足會補成空白格；內線交易格另計）`;
+      error.textContent = sum > CUSTOM_MAP_LIMIT ? `目前超出 ${sum - CUSTOM_MAP_LIMIT} 格，請調整數量後再確認。` : '';
+      confirm.disabled = sum > CUSTOM_MAP_LIMIT;
     };
     countInputs.forEach(input => input.addEventListener('input', () => {
-      const value = Math.max(0, Math.min(48, Math.floor(Number(input.value) || 0)));
+      const limit = input.dataset.mapCount === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT;
+      const value = Math.max(0, Math.min(limit, Math.floor(Number(input.value) || 0)));
       input.value = String(value);
       updateTotal();
     }));
@@ -790,8 +796,8 @@ export const PartyUI = (() => {
     overlay.querySelector('.custom-map-confirm').onclick = () => {
       const counts = readCounts();
       const sum = Object.entries(counts).filter(([key]) => key !== 'insider').reduce((n, [, value]) => n + value, 0);
-      if (sum > 48) { updateTotal(); return; }
-      counts.blank += 48 - sum;
+      if (sum > CUSTOM_MAP_LIMIT) { updateTotal(); return; }
+      counts.blank = CUSTOM_MAP_SLOTS - sum;
       advancedSettings.isCustomMapEnabled = true;
       advancedSettings.customMap = { enabled: true, counts };
       updateCustomMapButtons();

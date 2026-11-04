@@ -1357,28 +1357,31 @@ function extShuffle(state, list) {
   return a;
 }
 
-const EXT_CUSTOM_MAP_KEYS = ['blank', 'blue', 'red', 'yellow', 'green', 'market', 'invest', 'tax'];
+const EXT_CUSTOM_MAP_LIMIT = 24;
+const EXT_CUSTOM_MAP_SLOTS = 48;
+const EXT_CUSTOM_MAP_CONFIG_KEYS = ['blue', 'red', 'yellow', 'green', 'market', 'invest', 'tax'];
+const EXT_CUSTOM_MAP_KEYS = ['blank', ...EXT_CUSTOM_MAP_CONFIG_KEYS];
 function extCustomMapCounts(advancedSettings) {
   const source = advancedSettings?.customMap?.counts || {};
-  const counts = Object.fromEntries(EXT_CUSTOM_MAP_KEYS.map(key => [key, Math.max(0, Math.min(48, Math.floor(Number(source[key]) || 0)))]));
-  let total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-  if (total > 48) {
-    let overflow = total - 48;
-    for (const key of [...EXT_CUSTOM_MAP_KEYS].reverse()) {
+  const counts = Object.fromEntries(EXT_CUSTOM_MAP_KEYS.map(key => [key, Math.max(0, Math.min(EXT_CUSTOM_MAP_LIMIT, Math.floor(Number(source[key]) || 0)))]));
+  let total = EXT_CUSTOM_MAP_CONFIG_KEYS.reduce((sum, key) => sum + counts[key], 0);
+  if (total > EXT_CUSTOM_MAP_LIMIT) {
+    let overflow = total - EXT_CUSTOM_MAP_LIMIT;
+    for (const key of [...EXT_CUSTOM_MAP_CONFIG_KEYS].reverse()) {
       const take = Math.min(overflow, counts[key]);
       counts[key] -= take;
       overflow -= take;
       if (!overflow) break;
     }
-    total = 48;
+    total = EXT_CUSTOM_MAP_LIMIT;
   }
-  counts.blank += 48 - total;
-  counts.insider = Math.max(0, Math.min(48, Math.floor(Number(source.insider ?? 1) || 0)));
+  counts.blank = EXT_CUSTOM_MAP_SLOTS - total;
+  counts.insider = Math.max(0, Math.min(EXT_CUSTOM_MAP_SLOTS, Math.floor(Number(source.insider ?? 1) || 0)));
   return counts;
 }
 
 function extBuildCustomBoard(state, mode, counts) {
-  const total = 49 + counts.insider; // 出發格 + 48 個自訂格 + 另計的內線交易格。
+  const total = 49 + counts.insider; // 出發格 + 48 個自訂格（最多 24 格可配置，其餘為空白）+ 另計的內線交易格。
   const blueValue = mode === 'tycoon' ? TYCOON_BLUE_REWARD : 300;
   const specials = [];
   const ordinary = [];
@@ -1401,8 +1404,8 @@ function extBuildCustomBoard(state, mode, counts) {
   }
   const normalTypes = extShuffle(state, ordinary);
   let normalIndex = 0;
-  const labels = { blank: '空白', blue: '發財', red: '蕭條', yellow: '技能', green: '事件' };
-  const icons = { blank: '⬛', blue: '💰', red: '📉', yellow: '⚡', green: '❓' };
+  const labels = { blank: '', blue: '發財', red: '蕭條', yellow: '技能', green: '事件' };
+  const icons = { blank: '', blue: '💰', red: '📉', yellow: '⚡', green: '❓' };
   const stays = {
     blank: '空白格：沒有特殊效果', blue: `發財格：獲得 ${blueValue} 總資產`, red: '蕭條格：扣除 150 營運費',
     yellow: '技能格：補充 1 點技能能量', green: '事件格：抽一張即時事件'
@@ -5195,11 +5198,13 @@ const PartyUI = (() => {
     mergerStrongPrice: 1000,
     autoEnergy: false,
     isCustomMapEnabled: false,
-    customMap: { enabled: false, counts: { blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 } }
+    customMap: { enabled: false, counts: { blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 } }
   });
-  const customMapDefaults = Object.freeze({ blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 });
+  const CUSTOM_MAP_LIMIT = 24;
+  const CUSTOM_MAP_SLOTS = 48;
+  const customMapDefaults = Object.freeze({ blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 });
   const customMapFields = [
-    ['blank', '空白格'], ['blue', '發財格'], ['red', '蕭條格'], ['yellow', '技能格'], ['green', '事件格'],
+    ['blue', '發財格'], ['red', '蕭條格'], ['yellow', '技能格'], ['green', '事件格'],
     ['market', '黑市格'], ['invest', '投資格'], ['tax', '查稅局'], ['insider', '內線交易格（不計入 48 格）']
   ];
   let advancedSettings = { ...advancedSettingsDefaults, customMap: { enabled: false, counts: { ...customMapDefaults } } };
@@ -5817,8 +5822,8 @@ const PartyUI = (() => {
     overlay.innerHTML = `<section class="custom-map-dialog" role="dialog" aria-modal="true" aria-labelledby="custom-map-title">
       <button type="button" class="custom-map-close" aria-label="關閉自訂地圖視窗">×</button>
       <h2 id="custom-map-title">自訂地圖</h2>
-      <p>除固定出發格外，可設定 48 格的種類數量；未填滿的數量會自動補成空白格。內線交易格另計，不納入 48 格合計。</p>
-      <div class="custom-map-grid">${customMapFields.map(([key, label]) => `<label class="custom-map-field ${key === 'blank' ? 'blank' : ''}"><span>${label}</span><input type="number" min="0" max="48" step="1" data-map-count="${key}" value="${Number(current?.[key] ?? customMapDefaults[key])}"></label>`).join('')}</div>
+      <p>除固定出發格外，可設定最多 24 格的種類數量；不足的部分會自動補成空白格（棋盤共 48 格）。內線交易格另計，不納入 48 格合計。</p>
+      <div class="custom-map-grid">${customMapFields.map(([key, label]) => `<label class="custom-map-field"><span>${label}</span><input type="number" min="0" max="${key === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT}" step="1" data-map-count="${key}" value="${Number(current?.[key] ?? customMapDefaults[key])}"></label>`).join('')}</div>
       <p class="custom-map-total" data-map-total></p>
       <p class="custom-map-error" data-map-error role="alert"></p>
       <div class="custom-map-actions"><button type="button" class="custom-map-discard">關閉自訂</button><button type="button" class="custom-map-confirm">確認</button></div>
@@ -5828,16 +5833,20 @@ const PartyUI = (() => {
     const total = overlay.querySelector('[data-map-total]');
     const error = overlay.querySelector('[data-map-error]');
     const confirm = overlay.querySelector('.custom-map-confirm');
-    const readCounts = () => Object.fromEntries(countInputs.map(input => [input.dataset.mapCount, Math.max(0, Math.min(48, Math.floor(Number(input.value) || 0)))]));
+    const readCounts = () => Object.fromEntries(countInputs.map(input => {
+      const limit = input.dataset.mapCount === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT;
+      return [input.dataset.mapCount, Math.max(0, Math.min(limit, Math.floor(Number(input.value) || 0)))];
+    }));
     const updateTotal = () => {
       const counts = readCounts();
       const sum = Object.entries(counts).filter(([key]) => key !== 'insider').reduce((n, [, value]) => n + value, 0);
-      total.textContent = `格數合計：${sum} / 48（內線交易格另計）`;
-      error.textContent = sum > 48 ? `目前超出 ${sum - 48} 格，請調整數量後再確認。` : '';
-      confirm.disabled = sum > 48;
+      total.textContent = `格數合計：${sum} / ${CUSTOM_MAP_LIMIT}（不足會補成空白格；內線交易格另計）`;
+      error.textContent = sum > CUSTOM_MAP_LIMIT ? `目前超出 ${sum - CUSTOM_MAP_LIMIT} 格，請調整數量後再確認。` : '';
+      confirm.disabled = sum > CUSTOM_MAP_LIMIT;
     };
     countInputs.forEach(input => input.addEventListener('input', () => {
-      const value = Math.max(0, Math.min(48, Math.floor(Number(input.value) || 0)));
+      const limit = input.dataset.mapCount === 'insider' ? CUSTOM_MAP_SLOTS : CUSTOM_MAP_LIMIT;
+      const value = Math.max(0, Math.min(limit, Math.floor(Number(input.value) || 0)));
       input.value = String(value);
       updateTotal();
     }));
@@ -5847,8 +5856,8 @@ const PartyUI = (() => {
     overlay.querySelector('.custom-map-confirm').onclick = () => {
       const counts = readCounts();
       const sum = Object.entries(counts).filter(([key]) => key !== 'insider').reduce((n, [, value]) => n + value, 0);
-      if (sum > 48) { updateTotal(); return; }
-      counts.blank += 48 - sum;
+      if (sum > CUSTOM_MAP_LIMIT) { updateTotal(); return; }
+      counts.blank = CUSTOM_MAP_SLOTS - sum;
       advancedSettings.isCustomMapEnabled = true;
       advancedSettings.customMap = { enabled: true, counts };
       updateCustomMapButtons();

@@ -74,20 +74,32 @@ test('隨機模式鎖定三種模式的季數、星數、目標與保護費', ()
   }
 });
 
-test('自訂地圖依 48 格分類數量生成，另含出發格與內線交易格', () => {
+test('自訂地圖依 24 格配置生成，其餘位置補成空白格', () => {
   const state = createGame({ players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}], seed: 104, maxRounds: 10 });
-  state.advancedSettings = { isCustomMapEnabled: true, customMap: { enabled: true, counts: { blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 } } };
+  state.advancedSettings = { isCustomMapEnabled: true, customMap: { enabled: true, counts: { blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 } } };
   extInitGame(state, { mode: 'star', debug: true });
   assert.equal(state.board.length, 50);
   assert.equal(state.board.filter(tile => tile.type === 'start').length, 1);
   assert.equal(state.board.filter(tile => tile.type === 'insider').length, 1);
-  for (const [type, expected] of Object.entries({ blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1 })) {
+  for (const [type, expected] of Object.entries({ blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1 })) {
     assert.equal(state.board.filter(tile => tile.type === type).length, expected, `${type} count`);
   }
+  const blank = state.board.find(tile => tile.type === 'blank');
+  assert.equal(blank.icon, '');
+  assert.equal(blank.label, '');
   assert.deepEqual(cornerMarksForBoard(50), { 0: 'red', 12: 'green', 25: 'yellow', 37: 'blue' });
 });
 
-test('自訂地圖少於 48 格時，差額會全部補成空白格', () => {
+test('自訂地圖超過 24 格時引擎會限制種類總數並補空白格', () => {
+  const state = createGame({ players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}], seed: 1041, maxRounds: 10 });
+  state.advancedSettings = { isCustomMapEnabled: true, customMap: { enabled: true, counts: { blue: 24, red: 24, yellow: 24, green: 24, market: 24, invest: 24, tax: 24, insider: 0 } } };
+  extInitGame(state, { mode: 'star', debug: true });
+  const configured = state.board.filter(tile => ['blue', 'red', 'yellow', 'green', 'market', 'invest', 'tax'].includes(tile.type));
+  assert.equal(configured.length, 24);
+  assert.equal(state.board.filter(tile => tile.type === 'blank').length, 24);
+});
+
+test('自訂地圖少於 24 格時，棋盤差額會全部補成空白格', () => {
   const state = createGame({ players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}], seed: 105, maxRounds: 10 });
   state.advancedSettings = { isCustomMapEnabled: true, customMap: { enabled: true, counts: { blank: 0, blue: 1, red: 0, yellow: 0, green: 0, market: 0, invest: 0, tax: 0, insider: 1 } } };
   extInitGame(state, { mode: 'star', debug: true });
@@ -131,7 +143,7 @@ test('攔路鬼會把逐格路徑截在幽靈位置並觸發罷工', () => {
 
 test('內線交易穩定設定會保留用過的格子且不隨機生成新格', () => {
   const state = make('star', 109);
-  state.advancedSettings = { isCustomMapEnabled: true, insiderTradeStable: true, customMap: { counts: { blank: 0, blue: 11, red: 11, yellow: 10, green: 10, market: 3, invest: 2, tax: 1, insider: 1 } } };
+  state.advancedSettings = { isCustomMapEnabled: true, insiderTradeStable: true, customMap: { counts: { blank: 24, blue: 5, red: 5, yellow: 4, green: 5, market: 2, invest: 2, tax: 1, insider: 1 } } };
   extInitGame(state, { mode: 'star' });
   state.ext.insiderOffer = { playerId: state.players[0].id, tileIndex: state.board.find(t => t.type === 'insider').index };
   extInsiderPay(state);

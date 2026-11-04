@@ -161,28 +161,31 @@ function extShuffle(state, list) {
   return a;
 }
 
-const EXT_CUSTOM_MAP_KEYS = ['blank', 'blue', 'red', 'yellow', 'green', 'market', 'invest', 'tax'];
+const EXT_CUSTOM_MAP_LIMIT = 24;
+const EXT_CUSTOM_MAP_SLOTS = 48;
+const EXT_CUSTOM_MAP_CONFIG_KEYS = ['blue', 'red', 'yellow', 'green', 'market', 'invest', 'tax'];
+const EXT_CUSTOM_MAP_KEYS = ['blank', ...EXT_CUSTOM_MAP_CONFIG_KEYS];
 function extCustomMapCounts(advancedSettings) {
   const source = advancedSettings?.customMap?.counts || {};
-  const counts = Object.fromEntries(EXT_CUSTOM_MAP_KEYS.map(key => [key, Math.max(0, Math.min(48, Math.floor(Number(source[key]) || 0)))]));
-  let total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-  if (total > 48) {
-    let overflow = total - 48;
-    for (const key of [...EXT_CUSTOM_MAP_KEYS].reverse()) {
+  const counts = Object.fromEntries(EXT_CUSTOM_MAP_KEYS.map(key => [key, Math.max(0, Math.min(EXT_CUSTOM_MAP_LIMIT, Math.floor(Number(source[key]) || 0)))]));
+  let total = EXT_CUSTOM_MAP_CONFIG_KEYS.reduce((sum, key) => sum + counts[key], 0);
+  if (total > EXT_CUSTOM_MAP_LIMIT) {
+    let overflow = total - EXT_CUSTOM_MAP_LIMIT;
+    for (const key of [...EXT_CUSTOM_MAP_CONFIG_KEYS].reverse()) {
       const take = Math.min(overflow, counts[key]);
       counts[key] -= take;
       overflow -= take;
       if (!overflow) break;
     }
-    total = 48;
+    total = EXT_CUSTOM_MAP_LIMIT;
   }
-  counts.blank += 48 - total;
-  counts.insider = Math.max(0, Math.min(48, Math.floor(Number(source.insider ?? 1) || 0)));
+  counts.blank = EXT_CUSTOM_MAP_SLOTS - total;
+  counts.insider = Math.max(0, Math.min(EXT_CUSTOM_MAP_SLOTS, Math.floor(Number(source.insider ?? 1) || 0)));
   return counts;
 }
 
 function extBuildCustomBoard(state, mode, counts) {
-  const total = 49 + counts.insider; // 出發格 + 48 個自訂格 + 另計的內線交易格。
+  const total = 49 + counts.insider; // 出發格 + 48 個自訂格（最多 24 格可配置，其餘為空白）+ 另計的內線交易格。
   const blueValue = mode === 'tycoon' ? TYCOON_BLUE_REWARD : 300;
   const specials = [];
   const ordinary = [];
@@ -205,8 +208,8 @@ function extBuildCustomBoard(state, mode, counts) {
   }
   const normalTypes = extShuffle(state, ordinary);
   let normalIndex = 0;
-  const labels = { blank: '空白', blue: '發財', red: '蕭條', yellow: '技能', green: '事件' };
-  const icons = { blank: '⬛', blue: '💰', red: '📉', yellow: '⚡', green: '❓' };
+  const labels = { blank: '', blue: '發財', red: '蕭條', yellow: '技能', green: '事件' };
+  const icons = { blank: '', blue: '💰', red: '📉', yellow: '⚡', green: '❓' };
   const stays = {
     blank: '空白格：沒有特殊效果', blue: `發財格：獲得 ${blueValue} 總資產`, red: '蕭條格：扣除 150 營運費',
     yellow: '技能格：補充 1 點技能能量', green: '事件格：抽一張即時事件'

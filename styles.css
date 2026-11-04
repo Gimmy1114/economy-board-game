@@ -197,6 +197,9 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .party-tile.yellow .tile-value{color:#97701f}
 .party-tile.green{background:#eef7ef;border-color:#cee4d2;box-shadow:inset 4px 0 0 #5d9c6b}
 .party-tile.green .tile-value{color:#3f7a4d}
+.party-tile.blank{background:#fff;background-color:#fff;border-color:#e2e9e5;color:transparent}
+.party-tile.blank .tile-number,.party-tile.blank .tile-icon,.party-tile.blank .tile-type,.party-tile.blank .tile-value{display:none}
+.party-tile.blank img{display:none}
 .party-tile.start{background:#ddf0e9;border-color:#c1e3d4;box-shadow:inset 4px 0 0 #0e9186}
 .party-tile.start .tile-type,.party-tile.start .tile-value{color:#0c7167}
 .party-tile.ghost-tile{background:#f5ebfa;border-color:#c9a4dd;box-shadow:inset 4px 0 0 #a36ac8,0 0 14px #a36ac84d}
