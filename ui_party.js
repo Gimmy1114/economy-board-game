@@ -1583,13 +1583,50 @@ export const PartyUI = (() => {
       else await waitDoom(550);
       if (timedOut || !state()?.ext?.doomPending) return;
     })();
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => { timedOut = true; reject(new Error('毀滅日玩家動畫逾時')); }, timeout);
+    // 桌面端維持原本的逾時與錯誤傳播流程；安全推進只在手機分支啟用。
+    if (!isMobileDoomViewport()) {
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => { timedOut = true; reject(new Error('毀滅日玩家動畫逾時')); }, timeout);
+      });
+      try {
+        await Promise.race([animation, timeoutPromise]);
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+      }
+      return;
+    }
+    // 安全計時器可能先完成外層 Promise；仍要接住動畫本身稍後才回傳的例外，
+    // 避免手機瀏覽器把未處理 rejection 當成整頁錯誤。
+    animation.catch(error => {
+      if (!timedOut) console.error('Doom player animation failed', error);
+    });
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        // 行動瀏覽器在雷射元素被重排、背景分頁恢復或 animationend 遺失時，
+        // 可能永遠不會結束 waitDoomAnimation。手機端先釋放該 Promise，
+        // 再強制完成剩餘審判，讓 extFinishDoom() 一定能觸發勝利判定。
+        doomAnimationCancel?.();
+        void finishDoomsday({ force: true, reason: 'mobile-laser-safety-timeout' })
+          .catch(error => console.error('Mobile Doomsday safety timeout failed', error))
+          .finally(() => resolve());
+      }, timeout);
     });
     try {
       await Promise.race([animation, timeoutPromise]);
+    } catch (error) {
+      console.error('Mobile Doomsday animation interrupted', error);
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
+      // 即使雷射／幽靈轉換在 finally 前丟例外，也要把 doomPending
+      // 推進到 extFinishDoom()，由引擎統一執行 extCheckWin()。
+      if (isMobileDoomViewport() && timedOut && state()?.ext?.doomPending) {
+        try {
+          await finishDoomsday({ force: true, reason: 'mobile-laser-finally' });
+        } catch (error) {
+          console.error('Mobile Doomsday final progression failed', error);
+        }
+      }
     }
   }
 

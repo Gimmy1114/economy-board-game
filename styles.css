@@ -1339,3 +1339,70 @@ html,body{margin:0}
   .settlement-overlay .settle-footer{gap:6px;margin-top:6px;padding-top:6px}
   .settlement-overlay .settle-actions button{padding:6px 9px;font-size:10px}
 }
+
+/* 手機橫向勝利／結算畫面：固定在 viewport 內，避免獎盃與文字被裁切。
+   這些規則只在 <=932px 的橫向手機生效，桌面版維持原本尺寸。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .evil-victory-overlay,
+  .ending-overlay,
+  .settlement-overlay{
+    position:fixed!important;
+    top:0!important;
+    left:0!important;
+    width:100vw!important;
+    height:100vh!important;
+    min-width:0!important;
+    min-height:0!important;
+    box-sizing:border-box!important;
+    display:flex!important;
+    flex-direction:column!important;
+    justify-content:center!important;
+    align-items:center!important;
+    padding:8px!important;
+    overflow:hidden!important;
+  }
+  .evil-victory-overlay[hidden],
+  .ending-overlay[hidden],
+  .settlement-overlay[hidden]{display:none!important}
+  .evil-victory-card,
+  .ending-scene,
+  .settlement-card{
+    box-sizing:border-box!important;
+    width:min(92vw,560px)!important;
+    max-width:92vw!important;
+    max-height:calc(100vh - 16px)!important;
+    margin:0!important;
+    padding:clamp(8px,2vh,18px) clamp(10px,2vw,20px)!important;
+    gap:clamp(3px,1vh,8px)!important;
+    overflow:hidden!important;
+  }
+  .evil-victory-card .evil-victory-skull,
+  .ending-scene .ending-orbit,
+  .ending-scene .ending-chart{
+    flex:none!important;
+    max-width:50%!important;
+    max-height:50vh!important;
+  }
+  .evil-victory-card .evil-victory-skull{font-size:clamp(34px,12vh,72px)!important;line-height:1!important}
+  .evil-victory-card .evil-victory-kicker{font-size:clamp(7px,1.5vw,10px)!important;letter-spacing:.12em!important;margin:0!important}
+  .evil-victory-card h2{max-width:100%!important;margin:0!important;font-size:clamp(17px,3.4vw,29px)!important;line-height:1.1!important;overflow-wrap:anywhere!important}
+  .evil-victory-card strong{max-width:100%!important;font-size:clamp(9px,1.8vw,14px)!important;line-height:1.2!important}
+  .ending-scene{gap:clamp(2px,1vh,6px)!important;padding:8px!important}
+  .ending-scene h2{max-width:100%!important;font-size:clamp(18px,4vw,34px)!important;line-height:1.08!important}
+  .ending-scene strong{font-size:clamp(10px,2vw,16px)!important;line-height:1.15!important}
+  .ending-scene small{font-size:clamp(8px,1.4vw,11px)!important;line-height:1.15!important}
+  .ending-scene .ending-orbit{width:min(24vh,120px)!important;height:min(24vh,120px)!important;margin:0!important}
+  .ending-scene .ending-chart{font-size:clamp(38px,12vh,76px)!important;line-height:1!important}
+  .evil-victory-card img,
+  .ending-scene img,
+  .settlement-card img{max-width:50%!important;max-height:50vh!important;object-fit:contain!important}
+  .settlement-card{overflow:auto!important}
+  .settlement-card .settle-head{gap:5px!important;padding-bottom:5px!important}
+  .settlement-card .settle-head h2{font-size:clamp(15px,2.6vw,22px)!important;line-height:1.05!important;margin:0 0 2px!important}
+  .settlement-card .settle-trophy{width:34px!important;height:34px!important;font-size:21px!important;flex:none!important}
+  .settlement-card .settle-tabs{margin:3px 0 5px!important}
+  .settlement-card .settle-tabs button{padding:3px 5px!important;font-size:8px!important}
+  .settlement-card .settle-body{min-height:0!important;max-height:calc(100vh - 92px)!important;overflow:auto!important}
+  .settlement-card .settle-footer{gap:5px!important;margin-top:5px!important;padding-top:5px!important}
+  .settlement-card .settle-actions button{padding:5px 8px!important;font-size:9px!important}
+}
