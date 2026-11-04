@@ -1038,6 +1038,21 @@ test('邪惡企業勝利過場無按鈕、播放通用音效並在三秒後自�
   assert.doesNotMatch(css, /\.evil-survivor-scene\s*\{/);
 });
 
+test('手機毀滅日結算有專屬逾時，退出與結束時清掉箭頭和計時器', async () => {
+  const {readFileSync} = await import('node:fs');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  const wait = ui.slice(ui.indexOf('const DOOM_ANIMATION_FALLBACK_MS'), ui.indexOf('const waitDoom ='));
+  const cleanup = ui.slice(ui.indexOf('function clearDoomsdayAnimations'), ui.indexOf('function showDoomOutcome'));
+  assert.match(wait, /innerWidth\)\s*<=\s*932/);
+  assert.match(wait, /if \(isMobileDoomViewport\(\)\) fallbackTimer = setTimeout\(finish/);
+  assert.match(wait, /MOBILE_DOOM_ANIMATION_FALLBACK_MS\s*=\s*3000/);
+  assert.doesNotMatch(wait, /fallbackTimer = setTimeout\(finish[^\n]*\);\s*\n\s*}\s*\n\s*}\);/);
+  assert.match(cleanup, /clearInterval/);
+  assert.match(cleanup, /querySelectorAll\('\.doom-judgment-arrow, \.doomsday-arrow, \.doom-laser-layer, \.doom-money-loss'\)/);
+  assert.match(ui, /clearDoomsdayAnimations\(\);\s*closeMobilePanel\(\); \$\('#home-btn'\)\?\.click\(\)/);
+  assert.match(ui, /if \(!state\(\)\?\.ext\?\.doomPending\) \{\s*clearDoomsdayAnimations\(\);/);
+});
+
 test('邪惡企業結束畫面使用模式名稱與獲勝玩家姓名', async () => {
   const {readFileSync} = await import('node:fs');
   const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');

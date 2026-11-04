@@ -90,9 +90,13 @@ export const PartyUI = (() => {
   let lastVictoryKey = '';
   let ghostStrikeTimer = null;
   let doomTimers = [];
+  let doomIntervals = [];
   let doomControllerActive = false;
+  let doomSequenceGeneration = 0;
   let doomArrowKey = '';
   let doomArrowTimer = null;
+  let doomAnimationCancel = null;
+  let doomWaitCancel = null;
   const presentedDoomResults = new Set();
   let evilVictoryKey = '';
   let evilVictoryResolve = null;
@@ -212,6 +216,7 @@ export const PartyUI = (() => {
       if (target.closest('[data-mobile-panel="players"]')) showMobilePanel('players');
       if (target.closest('[data-mobile-panel="rules"]')) showMobilePanel('rules');
       if (target.closest('[data-mobile-exit]') && confirm('確定退出目前遊戲並返回首頁？目前對局會保留。')) {
+        clearDoomsdayAnimations();
         closeMobilePanel(); $('#home-btn')?.click();
       }
       if (target.closest('[data-mobile-panel-close]')) closeMobilePanel();
@@ -1180,8 +1185,10 @@ export const PartyUI = (() => {
     ghostStrikeTimer = null;
     clearTimeout(victoryTimer);
     victoryTimer = null;
-    doomTimers.forEach(t => clearTimeout(t));
+    doomTimers.forEach(timer => clearTimeout(timer));
     doomTimers = [];
+    doomIntervals.forEach(interval => clearInterval(interval));
+    doomIntervals = [];
     lastBankaiKey = '';
     lastIceKey = '';
     lastBankruptKey = '';
@@ -1343,6 +1350,25 @@ export const PartyUI = (() => {
     $('#doom-judgment-arrow')?.remove(); doomArrowKey = '';
   }
 
+  // 毀滅日可能在手機背景分頁或離開遊戲時留下計時器與箭頭；集中清理，
+  // 也讓中止中的結算迴圈知道不要再把畫面接回來。
+  function clearDoomsdayAnimations({ cancelSequence = true, removeDom = true } = {}) {
+    if (cancelSequence) doomSequenceGeneration += 1;
+    doomTimers.forEach(timer => clearTimeout(timer));
+    doomTimers = [];
+    doomIntervals.forEach(interval => clearInterval(interval));
+    doomIntervals = [];
+    doomAnimationCancel?.();
+    doomWaitCancel?.();
+    clearTimeout(doomArrowTimer);
+    doomArrowTimer = null;
+    if (removeDom) {
+      document.querySelectorAll('.doom-judgment-arrow, .doomsday-arrow, .doom-laser-layer, .doom-money-loss').forEach(node => node.remove());
+      document.querySelectorAll('.doom-hit').forEach(node => node.classList.remove('doom-hit'));
+      doomArrowKey = '';
+    }
+  }
+
   function showDoomOutcome(result) {
     if (!result?.playerId) return;
     const key = `${result.index}:${result.playerId}:${result.outcome}`;
@@ -1356,13 +1382,13 @@ export const PartyUI = (() => {
         const label = document.createElement('span');
         label.className = 'doom-money-loss'; label.textContent = `−${money(result.amount)}`;
         token.closest('.tile')?.appendChild(label);
-        setTimeout(() => label.remove(), 900);
+        doomTimers.push(setTimeout(() => label.remove(), 900));
       }
       sound('cashLoss');
     } else if (result.outcome === 'executed') {
       if (sub) sub.textContent = `${result.name} 無法支付，雷射處決！`;
       if (fireDoomLaser(result.playerId)) {
-        sound('laser'); setTimeout(() => sound('explosion'), 120);
+        sound('laser'); doomTimers.push(setTimeout(() => sound('explosion'), 120));
       }
     } else if (result.outcome === 'resisted') {
       if (sub) sub.textContent = `${result.name} 以不死圖騰擋下處決`;
@@ -1371,7 +1397,9 @@ export const PartyUI = (() => {
   }
 
   const DOOM_ANIMATION_FALLBACK_MS = 3500;
-  function waitDoomAnimation(element, timeout = DOOM_ANIMATION_FALLBACK_MS) {
+  const MOBILE_DOOM_ANIMATION_FALLBACK_MS = 3000;
+  const isMobileDoomViewport = () => typeof window !== 'undefined' && Number(window.innerWidth) <= 932;
+  function waitDoomAnimation(element, timeout = MOBILE_DOOM_ANIMATION_FALLBACK_MS) {
     return new Promise(resolve => {
       let settled = false;
       let fallbackTimer = null;
@@ -1379,31 +1407,49 @@ export const PartyUI = (() => {
         if (settled) return;
         settled = true;
         if (fallbackTimer) clearTimeout(fallbackTimer);
+        if (doomAnimationCancel === finish) doomAnimationCancel = null;
         element?.removeEventListener?.('animationend', finish);
         element?.removeEventListener?.('transitionend', finish);
         resolve();
       };
       element?.addEventListener?.('animationend', finish, { once: true });
       element?.addEventListener?.('transitionend', finish, { once: true });
-      fallbackTimer = setTimeout(finish, Math.max(0, Number(timeout) || 0));
+      doomAnimationCancel = finish;
+      // 手機瀏覽器在元素被隱藏或重排時可能完全不送出事件；桌面端維持原本
+      // 只依賴 animationend/transitionend 的流程，不增加逾時分支。
+      if (isMobileDoomViewport()) fallbackTimer = setTimeout(finish, Math.max(0, Number(timeout) || 0));
     });
   }
-  const waitDoom = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const waitDoom = ms => new Promise(resolve => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (doomWaitCancel === finish) doomWaitCancel = null;
+      resolve();
+    };
+    doomWaitCancel = finish;
+    timer = setTimeout(finish, ms);
+  });
   async function runDoomSequence() {
     const game = state(), pending = game?.ext?.doomPending;
     if (!pending || doomControllerActive) return;
     const net = app()?.PartyNet;
     if (net?.active && !net.isHost) return;
     doomControllerActive = true;
+    const sequenceGeneration = doomSequenceGeneration;
     settlementLockUntil = Number.POSITIVE_INFINITY;
     sound('doom');
     try {
-      while (state()?.ext?.doomPending) {
+      while (sequenceGeneration === doomSequenceGeneration && state()?.ext?.doomPending) {
         const current = state().ext.doomPending.entries[state().ext.doomPending.index];
         showDoomOverlay(state().ext.doomPending);
         if (!current) break;
         placeDoomArrow(current.playerId);
         await waitDoom(1000);
+        if (sequenceGeneration !== doomSequenceGeneration) return;
         const latest = state()?.ext?.doomPending;
         if (!latest || latest.entries[latest.index]?.playerId !== current.playerId) continue;
         const beforeIndex = latest.index;
@@ -1415,8 +1461,10 @@ export const PartyUI = (() => {
         showDoomOutcome(result);
         if (result?.outcome === 'executed') {
           await waitDoomAnimation($('#board .doom-laser-layer'));
+          if (sequenceGeneration !== doomSequenceGeneration) return;
         } else {
           await waitDoom(550);
+          if (sequenceGeneration !== doomSequenceGeneration) return;
         }
       }
       const pendingAtFinish = state()?.ext?.doomPending;
@@ -1431,8 +1479,8 @@ export const PartyUI = (() => {
       app()?.notify('保護費審判中斷，請重新整理後繼續。');
     } finally {
       doomControllerActive = false;
-      clearTimeout(doomArrowTimer); doomArrowTimer = null;
       if (!state()?.ext?.doomPending) {
+        clearDoomsdayAnimations();
         removeDoomArrow();
         const el = $('#doom-sequence');
         if (el) { el.hidden = true; el.className = 'doom-sequence'; }
@@ -2477,6 +2525,7 @@ export const PartyUI = (() => {
       syncDoomPresentation(p.ext.doomPending);
       void runDoomSequence();
     } else {
+      clearDoomsdayAnimations();
       removeDoomArrow();
       document.body.classList.remove('doom-resolving');
       const doomOverlay = $('#doom-sequence');
