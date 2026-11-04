@@ -7,9 +7,9 @@ import {
   extTriggerDoom, extResolveDoomPlayer, extFinishDoom, extResolveReplace, extSettlementData, extCheckBankruptcy, extCheckWin,
   extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extPrepareWheel, extResolveWheel,
   extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath,
-  extEnsureStartSubsidy, extPlayerStatusMetric
+  extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice
 } from './party_engine.js';
-import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS} from './party_data.js';
+import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS, SPECIAL_ITEMS, FATE_DICE_ID} from './party_data.js';
 
 const make = (mode = 'star', seed = 42, extra = {}) => {
   const state = createGame({
@@ -28,6 +28,47 @@ const resolveAllDoom = state => {
   }
   return extFinishDoom(state);
 };
+
+test('命運骰子是特殊道具，規則資料包含首富競爭取得條件', () => {
+  const dice = SPECIAL_ITEMS.find(item => item.id === FATE_DICE_ID);
+  assert.equal(dice?.category, '特殊道具');
+  assert.equal(dice?.desc, '(首富競爭模式限定) 能夠精準掌控命運的神祕道具，在連續三季最後一名時自動獲得。');
+});
+
+test('首富競爭連續三季墊底會自動取得命運骰子', () => {
+  const state = make('tycoon');
+  const [last, leader] = state.players;
+  last.cash = 100;
+  leader.cash = 5000;
+  last.items = ['shield', 'dice123', 'swap'];
+  for (let season = 0; season < 3; season++) extTycoonComeback(state);
+  assert.ok(last.specials.includes(FATE_DICE_ID));
+  assert.ok(last.items.length + last.mythics.length + last.specials.length <= 3);
+  assert.equal(state.ext.tycoonStreaks[last.id], 3);
+});
+
+test('測試模式可直接取得並使用命運骰子', () => {
+  const state = make('tycoon');
+  const player = state.players[state.turnIndex];
+  extDebugGive(state, 'special', FATE_DICE_ID);
+  assert.ok(player.specials.includes(FATE_DICE_ID));
+  extPrepareFateDice(state);
+  assert.equal(extUseFateDice(state, 4), 4);
+  assert.equal(player.specials.includes(FATE_DICE_ID), false);
+});
+
+test('首頁與遊戲內規則說明共用同一個動態模板', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  assert.match(app, /function getRulesHTML\(\)/);
+  assert.match(app, /function renderRulesContent\(container\)/);
+  assert.match(app, /renderRulesContent\(\$\('#home-rules-accordion'\)\)/);
+  assert.match(html, /id="home-rules-disclosure"/);
+  assert.match(html, /id="home-rules-accordion"/);
+  assert.match(html, /id="rules-content"/);
+  assert.doesNotMatch(html, /id="rules-items"/);
+});
 
 test('玩家資訊欄依模式顯示星數、資產名次與目標差額', () => {
   const state = make('star');

@@ -2392,7 +2392,7 @@ export const PartyUI = (() => {
     if (p.phase !== 'roll') { app()?.notify('神話道具只能在擲骰前使用。'); return; }
     const player = p.players[p.turnIndex];
     const entry = player?.mythics?.find(x => x.id === 'truthGate');
-    const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden);
+    const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden && i.category !== '特殊道具');
     const mythics = (window.__partyData?.MYTHIC_ITEMS || []).filter(i => !i.hidden);
     const inventoryCount = (player?.items?.length || 0) + (player?.mythics?.length || 0);
     const cashOk = (player?.cash || 0) >= 1000;
@@ -2426,18 +2426,20 @@ export const PartyUI = (() => {
     const p = state();
     if (!p) return;
     if (!canUseLocalAction(p)) { app()?.notify('現在不是你的回合，請等待其他玩家。'); return; }
-    const { ITEMS = [], MYTHIC_ITEMS = [] } = window.__partyData || {};
-    const normal = ITEMS;
+    const { ITEMS = [], MYTHIC_ITEMS = [], SPECIAL_ITEMS = [] } = window.__partyData || {};
+    const normal = ITEMS.filter(i => i.category !== '特殊道具');
     const mythics = MYTHIC_ITEMS;
+    const specials = SPECIAL_ITEMS.filter(i => i.category === '特殊道具');
     const showNormal = kind !== 'mythic';
     const showMythic = kind !== 'normal';
     const entries = [
       ...(showNormal ? normal.map(i => ({ kind: 'normal', meta: i, hidden: false })) : []),
-      ...(showMythic ? mythics.map(i => ({ kind: 'mythic', meta: i, hidden: Boolean(i.hidden) })) : [])
+      ...(showMythic ? mythics.map(i => ({ kind: 'mythic', meta: i, hidden: Boolean(i.hidden) })) : []),
+      ...(kind === 'all' ? specials.map(i => ({ kind: 'special', meta: i, hidden: false })) : [])
     ];
     updateExtModal({
       kicker: 'DEBUG · 測試模式', icon: '🧪', title: '新增道具', type: 'debug-items',
-      text: '點擊即可直接加入目前玩家的道具欄（含一般與隱藏道具）。道具欄已滿時會自動開啟替換視窗。',
+      text: '點擊即可直接加入目前玩家的道具欄（含一般、隱藏與特殊道具）。道具欄已滿時會自動替換一件道具。',
       body: `<div class="debug-item-grid">${entries.map(e => `<button type="button" class="debug-item ${e.kind}" data-give-kind="${e.kind}" data-give-id="${e.meta.id}"><span>${e.meta.icon}</span><strong>${h(e.meta.name)}${e.hidden ? '（隱藏）' : ''}</strong><small>${h(e.meta.desc)}</small></button>`).join('') || '<div class="empty-state">目前沒有可新增的道具。</div>'}</div>`,
       actions: `<button class="secondary" data-truth="close">取消</button>`
     });
@@ -2472,8 +2474,8 @@ export const PartyUI = (() => {
       side.appendChild(panel);
     }
     panel.innerHTML = `<div class="panel-title"><h3>🧪 測試工具</h3><span class="pill">DEBUG</span></div>
-      <p class="debug-hint">點「新增道具」可獲得一般或隱藏道具；先點玩家或幽靈，再點格子即可瞬移。</p>
-      <div class="debug-buttons"><button class="quiet" data-debug-action="add">➕ 新增道具</button><button class="quiet" data-debug-action="end-turn" ${app()?.isAnimating?.() || p.status !== 'playing' ? 'disabled' : ''}>⏭️ 結束回合</button></div>
+      <p class="debug-hint">點「新增道具」可獲得一般或隱藏道具；「取得命運骰子」會直接放入目前玩家背包。先點玩家或幽靈，再點格子即可瞬移。</p>
+      <div class="debug-buttons"><button class="quiet" data-debug-action="add">➕ 新增道具</button><button class="quiet" data-debug-action="fate-dice">🎲 取得命運骰子</button><button class="quiet" data-debug-action="end-turn" ${app()?.isAnimating?.() || p.status !== 'playing' ? 'disabled' : ''}>⏭️ 結束回合</button></div>
       <p class="debug-selected">${debugSelected ? `已選：${debugSelected.type === 'ghost' ? '👻 幽靈' : h(p.players.find(x => x.id === debugSelected.id)?.name || '玩家')} → 點格子傳送` : '尚未選擇傳送目標'}</p>`;
   }
 
@@ -3013,6 +3015,7 @@ export const PartyUI = (() => {
         if (act === 'add') openDebugItemPicker('all');
         else if (act === 'item') openDebugItemPicker('normal');
         else if (act === 'mythic') openDebugItemPicker('mythic');
+        else if (act === 'fate-dice') { closeExtModal(); app()?.debugGive?.('special', 'fateDice'); }
         else if (act === 'end-turn') { closeExtModal(); app()?.debugEndTurn?.(); }
         return;
       }

@@ -11,6 +11,11 @@ export const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 export const round2=n=>Math.round((n+Number.EPSILON)*100)/100;
 export const roleById=id=>ROLES.find(r=>r.id===id);
 export const itemById=id=>ITEMS.find(x=>x.id===id);
+const randomItemPool=()=>ITEMS.filter(x=>x?.category!=='特殊道具');
+export function getRandomItem(state){
+  const pool=randomItemPool();
+  return pool.length?pick(state,pool):null;
+}
 const eventById=id=>PARTY_EVENTS.find(e=>e.id===id);
 export const nextRandom=state=>{let x=state.rng|0;x^=x<<13;x^=x>>>17;x^=x<<5;state.rng=x|0;return (x>>>0)/4294967296};
 export const pick=(state,items)=>items[Math.floor(nextRandom(state)*items.length)];
@@ -158,7 +163,8 @@ export function consumeShield(state,target,label){
 export function drawItem(state,player){
   if(engineHooks.canDrawItem&&!engineHooks.canDrawItem(state,player))return null;
   if(player.items.length>=3)return null;
-  const item=pick(state,ITEMS);
+  const item=getRandomItem(state);
+  if(!item)return null;
   player.items.push(item.id);
   if(engineHooks.itemAcquired)engineHooks.itemAcquired(state,player,item.id);
   log(state,`${player.name} 在回合開始抽到道具「${item.icon} ${item.name}」。`);

@@ -204,11 +204,11 @@ export const MYTHIC_ITEMS = [
 
 export const MYTHIC_BY_ID = Object.fromEntries(MYTHIC_ITEMS.map(x => [x.id, x]));
 
-// 系統特殊道具：獨立於普通道具與黑市神話道具，不列入遊戲規則說明書。
+// 系統特殊道具：獨立於普通道具與黑市神話道具，不會進入一般隨機道具池。
 export const SPECIAL_ITEMS = [
   {
-    id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true,
-    desc: '使用後展開 2×3 骰面，自選 1–6 步強制前進；使用一次後消失。'
+    id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true, category: '特殊道具',
+    desc: '(首富競爭模式限定) 能夠精準掌控命運的神祕道具，在連續三季最後一名時自動獲得。'
   }
 ];
 

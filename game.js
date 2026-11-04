@@ -266,11 +266,11 @@ const MYTHIC_ITEMS = [
 
 const MYTHIC_BY_ID = Object.fromEntries(MYTHIC_ITEMS.map(x => [x.id, x]));
 
-// 系統特殊道具：獨立於普通道具與黑市神話道具，不列入遊戲規則說明書。
+// 系統特殊道具：獨立於普通道具與黑市神話道具，不會進入一般隨機道具池。
 const SPECIAL_ITEMS = [
   {
-    id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true,
-    desc: '使用後展開 2×3 骰面，自選 1–6 步強制前進；使用一次後消失。'
+    id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true, category: '特殊道具',
+    desc: '(首富競爭模式限定) 能夠精準掌控命運的神祕道具，在連續三季最後一名時自動獲得。'
   }
 ];
 
@@ -386,6 +386,11 @@ const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
 const round2=n=>Math.round((n+Number.EPSILON)*100)/100;
 const roleById=id=>ROLES.find(r=>r.id===id);
 const itemById=id=>ITEMS.find(x=>x.id===id);
+const randomItemPool=()=>ITEMS.filter(x=>x?.category!=='特殊道具');
+function getRandomItem(state){
+  const pool=randomItemPool();
+  return pool.length?pick(state,pool):null;
+}
 const eventById=id=>PARTY_EVENTS.find(e=>e.id===id);
 const nextRandom=state=>{let x=state.rng|0;x^=x<<13;x^=x>>>17;x^=x<<5;state.rng=x|0;return (x>>>0)/4294967296};
 const pick=(state,items)=>items[Math.floor(nextRandom(state)*items.length)];
@@ -533,7 +538,8 @@ function consumeShield(state,target,label){
 function drawItem(state,player){
   if(engineHooks.canDrawItem&&!engineHooks.canDrawItem(state,player))return null;
   if(player.items.length>=3)return null;
-  const item=pick(state,ITEMS);
+  const item=getRandomItem(state);
+  if(!item)return null;
   player.items.push(item.id);
   if(engineHooks.itemAcquired)engineHooks.itemAcquired(state,player,item.id);
   log(state,`${player.name} 在回合開始抽到道具「${item.icon} ${item.name}」。`);
@@ -1998,8 +2004,12 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
   const ext = state.ext;
   if (!tile?.special) return;
   if (tile.type === 'market') {
-    const pool = MYTHIC_ITEMS.filter(x => !x.hidden && (!x.mode || x.mode === ext.mode));
-    const item = pool[Math.floor(nextRandom(state) * pool.length)] || MYTHIC_ITEMS[0];
+    const pool = MYTHIC_ITEMS.filter(x => x.category !== '特殊道具' && !x.hidden && (!x.mode || x.mode === ext.mode));
+    if (!pool.length) {
+      effects.push({ icon: '🛒', text: '黑市目前沒有可拍賣的神話道具。', tone: 'event' });
+      return;
+    }
+    const item = pool[Math.floor(nextRandom(state) * pool.length)];
     const order = state.players.filter(p => !p.ext?.eliminated).map(p => p.id);
     const startIndex = Math.max(0, order.indexOf(player.id));
     const settings = state.advancedSettings || {};
@@ -2789,7 +2799,7 @@ function extAddMythic(state, player, id, { silent = false } = {}) {
 
 function extAddItem(state, player, itemId) {
   const item = itemById(itemId);
-  if (!item) return false;
+  if (!item || item.category === '特殊道具') return false;
   if (player.ext?.bankai) { log(state, `🌀 ${player.name} 的卍解禁止獲取新道具。`); return false; }
   if (!extHasItemSpace(player)) return false;
   player.items.push(itemId);
@@ -2799,13 +2809,20 @@ function extAddItem(state, player, itemId) {
 }
 
 // 系統特殊道具獨立於普通與神話道具，但仍與道具欄共用 3 格。
-function extAddSpecial(state, player, id, { silent = false } = {}) {
+function extAddSpecial(state, player, id, { silent = false, force = false } = {}) {
   const meta = SPECIAL_ITEM_BY_ID[id];
   if (!meta) return null;
   extPlayerExt(player);
-  if (player.ext?.bankai) {
+  if (player.ext?.bankai && !force) {
     if (!silent) log(state, `🌀 ${player.name} 的卍解禁止獲取新道具（含特殊道具）。`);
     return null;
+  }
+  if (!extHasItemSpace(player) && force) {
+    // 特殊條件與測試快捷鍵都必須立即給予道具；滿格時優先替換普通道具，
+    // 再替換神話道具，最後才移除既有特殊道具，維持背包最多 3 格。
+    if (player.items?.length) player.items.pop();
+    else if (player.mythics?.length) player.mythics.pop();
+    else if (player.specials?.length) player.specials.pop();
   }
   if (!extHasItemSpace(player)) {
     if (!silent) log(state, `🎒 ${player.name} 的道具欄已滿（3 格），無法取得「${meta.name}」。`);
@@ -2835,7 +2852,7 @@ function extGrantFateDice(state, player) {
     const id = player.items.pop();
     replaced = itemById(id)?.name || id;
   }
-  const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true });
+  const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true, force: true });
   if (!meta) return null;
   if (replaced) {
     log(state, `✨ ${player.name} 的落後補償生效：將本季獲得的「${replaced}」替換為特殊道具「${meta.icon} ${meta.name}」。`);
@@ -2973,7 +2990,7 @@ function extUseMythic(state, itemId, payload = {}) {
         }
       } else {
         const id = payload.itemId;
-        if (payload.mythic || MYTHIC_BY_ID[id] || !itemById(id)) throw Error('金錢轉道具只能煉成普通道具。');
+        if (payload.mythic || MYTHIC_BY_ID[id] || !itemById(id) || itemById(id).category === '特殊道具') throw Error('金錢轉道具只能煉成普通道具。');
         if (p.cash < 1000) throw Error('需要 1,000 總資產才能煉成道具。');
         if (p.ext?.bankai) throw Error('卍解期間禁止獲取新道具。');
         if (!extHasItemSpace(p)) throw Error('道具欄已滿（3 格）。');
@@ -3295,7 +3312,7 @@ function extApplyWheel(state, player, effect) {
       return `抽到 ${n} 個道具${n < 2 ? '（道具欄已滿）' : ''}。`;
     }
     case 'darkweb': {
-      const pool = MYTHIC_ITEMS.filter(x => !x.hidden && (!x.mode || x.mode === ext.mode) && !extHasMythic(player, x.id));
+      const pool = MYTHIC_ITEMS.filter(x => x.category !== '特殊道具' && !x.hidden && (!x.mode || x.mode === ext.mode) && !extHasMythic(player, x.id));
       if (!pool.length) return '暗網沒有新的神話道具可賣。';
       const item = pool[Math.floor(nextRandom(state) * pool.length)];
       if (!extAddMythic(state, player, item.id)) return '道具欄已滿（3 格），暗網商品無法帶走。';
@@ -3426,12 +3443,20 @@ function extDebugGive(state, kind, id) {
   if (!state.ext?.debug) throw Error('只有測試模式可以使用。');
   const p = currentOf(state);
   const isMythic = kind === 'mythic';
-  const meta = isMythic ? MYTHIC_BY_ID[id] : itemById(id);
+  const isSpecial = kind === 'special';
+  const meta = isMythic ? MYTHIC_BY_ID[id] : isSpecial ? SPECIAL_ITEM_BY_ID[id] : itemById(id);
   if (!meta) throw Error(isMythic ? '神話道具不存在。' : '道具不存在。');
+  if (!isMythic && !isSpecial && meta.category === '特殊道具') throw Error('特殊道具請使用特殊道具測試入口。');
   extPlayerExt(p);
-  const existing = isMythic ? extMythicEntry(p, id) : null;
+  const existing = isMythic ? extMythicEntry(p, id) : isSpecial ? extHasSpecial(p, id) : null;
   if (existing && meta.charges) {
     log(state, `🧪 測試模式：${p.name} 已持有「${meta.name}」，不補充使用次數。`);
+    return { gained: true, itemId: id, itemKind: kind };
+  }
+  if (isSpecial) {
+    const gained = extAddSpecial(state, p, id, { force: true });
+    if (!gained) throw Error(`無法取得特殊道具「${meta.name}」。`);
+    log(state, `🧪 測試模式：${p.name} 取得特殊道具「${meta.icon} ${meta.name}」。`);
     return { gained: true, itemId: id, itemKind: kind };
   }
   if (!extHasItemSpace(p)) {
@@ -7452,7 +7477,7 @@ const PartyUI = (() => {
     if (p.phase !== 'roll') { app()?.notify('神話道具只能在擲骰前使用。'); return; }
     const player = p.players[p.turnIndex];
     const entry = player?.mythics?.find(x => x.id === 'truthGate');
-    const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden);
+    const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden && i.category !== '特殊道具');
     const mythics = (window.__partyData?.MYTHIC_ITEMS || []).filter(i => !i.hidden);
     const inventoryCount = (player?.items?.length || 0) + (player?.mythics?.length || 0);
     const cashOk = (player?.cash || 0) >= 1000;
@@ -7486,18 +7511,20 @@ const PartyUI = (() => {
     const p = state();
     if (!p) return;
     if (!canUseLocalAction(p)) { app()?.notify('現在不是你的回合，請等待其他玩家。'); return; }
-    const { ITEMS = [], MYTHIC_ITEMS = [] } = window.__partyData || {};
-    const normal = ITEMS;
+    const { ITEMS = [], MYTHIC_ITEMS = [], SPECIAL_ITEMS = [] } = window.__partyData || {};
+    const normal = ITEMS.filter(i => i.category !== '特殊道具');
     const mythics = MYTHIC_ITEMS;
+    const specials = SPECIAL_ITEMS.filter(i => i.category === '特殊道具');
     const showNormal = kind !== 'mythic';
     const showMythic = kind !== 'normal';
     const entries = [
       ...(showNormal ? normal.map(i => ({ kind: 'normal', meta: i, hidden: false })) : []),
-      ...(showMythic ? mythics.map(i => ({ kind: 'mythic', meta: i, hidden: Boolean(i.hidden) })) : [])
+      ...(showMythic ? mythics.map(i => ({ kind: 'mythic', meta: i, hidden: Boolean(i.hidden) })) : []),
+      ...(kind === 'all' ? specials.map(i => ({ kind: 'special', meta: i, hidden: false })) : [])
     ];
     updateExtModal({
       kicker: 'DEBUG · 測試模式', icon: '🧪', title: '新增道具', type: 'debug-items',
-      text: '點擊即可直接加入目前玩家的道具欄（含一般與隱藏道具）。道具欄已滿時會自動開啟替換視窗。',
+      text: '點擊即可直接加入目前玩家的道具欄（含一般、隱藏與特殊道具）。道具欄已滿時會自動替換一件道具。',
       body: `<div class="debug-item-grid">${entries.map(e => `<button type="button" class="debug-item ${e.kind}" data-give-kind="${e.kind}" data-give-id="${e.meta.id}"><span>${e.meta.icon}</span><strong>${h(e.meta.name)}${e.hidden ? '（隱藏）' : ''}</strong><small>${h(e.meta.desc)}</small></button>`).join('') || '<div class="empty-state">目前沒有可新增的道具。</div>'}</div>`,
       actions: `<button class="secondary" data-truth="close">取消</button>`
     });
@@ -7532,8 +7559,8 @@ const PartyUI = (() => {
       side.appendChild(panel);
     }
     panel.innerHTML = `<div class="panel-title"><h3>🧪 測試工具</h3><span class="pill">DEBUG</span></div>
-      <p class="debug-hint">點「新增道具」可獲得一般或隱藏道具；先點玩家或幽靈，再點格子即可瞬移。</p>
-      <div class="debug-buttons"><button class="quiet" data-debug-action="add">➕ 新增道具</button><button class="quiet" data-debug-action="end-turn" ${app()?.isAnimating?.() || p.status !== 'playing' ? 'disabled' : ''}>⏭️ 結束回合</button></div>
+      <p class="debug-hint">點「新增道具」可獲得一般或隱藏道具；「取得命運骰子」會直接放入目前玩家背包。先點玩家或幽靈，再點格子即可瞬移。</p>
+      <div class="debug-buttons"><button class="quiet" data-debug-action="add">➕ 新增道具</button><button class="quiet" data-debug-action="fate-dice">🎲 取得命運骰子</button><button class="quiet" data-debug-action="end-turn" ${app()?.isAnimating?.() || p.status !== 'playing' ? 'disabled' : ''}>⏭️ 結束回合</button></div>
       <p class="debug-selected">${debugSelected ? `已選：${debugSelected.type === 'ghost' ? '👻 幽靈' : h(p.players.find(x => x.id === debugSelected.id)?.name || '玩家')} → 點格子傳送` : '尚未選擇傳送目標'}</p>`;
   }
 
@@ -8073,6 +8100,7 @@ const PartyUI = (() => {
         if (act === 'add') openDebugItemPicker('all');
         else if (act === 'item') openDebugItemPicker('normal');
         else if (act === 'mythic') openDebugItemPicker('mythic');
+        else if (act === 'fate-dice') { closeExtModal(); app()?.debugGive?.('special', 'fateDice'); }
         else if (act === 'end-turn') { closeExtModal(); app()?.debugEndTurn?.(); }
         return;
       }
@@ -8182,7 +8210,7 @@ globalThis.PartyUI = PartyUI;
 
 
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
-globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
+globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
 globalThis.__partyEngine={
   extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
@@ -8598,14 +8626,32 @@ function animateCashChanges(before){
 }
 function renderHomeRoles(){  $('#home-roles').innerHTML=PARTY_ROLES.map(r=>`<article class="home-role party-role"><div class="home-role-title"><span class="home-role-icon" aria-hidden="true">${r.icon}</span><div><span class="home-role-sector">${h(r.sector)} · 起始總資產 ${money(1200)}</span><h3>${h(r.name)}</h3></div></div><p class="home-role-story">${h(roleStories[r.id])}</p><div class="home-role-skill"><span class="skill-icon" aria-hidden="true">${r.skill.icon}</span><div><small>專屬技能 · 消耗 1 能量</small><strong>${h(r.skill.name)}</strong><p>${h(r.skill.desc)}</p></div></div></article>`).join('');
 }
-function renderRules(){
-  $('#rules-items').innerHTML=ITEMS.map(x=>`<div class="rule-item"><span>${x.icon}</span><div><strong>${h(x.name)}</strong><p>${h(x.desc)}</p></div></div>`).join('');
-  $('#rules-skills').innerHTML=PARTY_ROLES.map(r=>`<div class="rule-skill"><span>${r.icon}</span><div><small>${h(r.name)} · ${h(r.sector)}</small><strong>${r.skill.icon} ${h(r.skill.name)}</strong><p>${h(r.skill.desc)}</p></div></div>`).join('');
-  const mythics=$('#rules-mythics');
-  if(mythics)mythics.innerHTML=MYTHIC_ITEMS.filter(x=>!x.hidden).map(x=>`<div class="rule-item mythic-rule"><span>${x.icon}</span><div><strong>${h(x.name)}${x.mode?`（${h(GAME_MODES[x.mode]?.name||x.mode)}限定）`:''}</strong><p>${h(x.desc)}</p></div></div>`).join('');
-  const decisions=$('#rules-decisions');
-  if(decisions)decisions.innerHTML=QUICK_DECISIONS.map(x=>`<div class="rule-item decision-rule"><span>${x.icon}</span><div><strong>${h(x.name)}</strong>${x.options.map(o=>`<p>${o.icon} <b>${h(o.label)}</b>：${h(o.desc)}</p>`).join('')}</div></div>`).join('');
+function getRulesHTML(){return `<div class="rules-grid">
+  <article class="rule-block"><span class="rule-icon">🎲</span><h3>骰子與移動</h3><ul><li>廢除舊版雙輪 0–6 拉霸，改為單顆六面骰，點數 1–6。</li><li>點「擲骰」後方塊旋轉 1–2 秒，停定後棋子逐格移動。</li><li>在地圖四個角落取得所有顏色記號後，經過出發點即可領取1000元補助金，領取後記號將重置。</li><li>123／456 骰子會覆蓋先前的變骰效果；緊縮銀根強制只走 1 格。</li></ul></article>
+  <article class="rule-block"><span class="rule-icon">🧱</span><h3>格子效果</h3><ul><li><b class="tag blue">發財</b>獲得 300 總資產。</li><li><b class="tag red">蕭條</b>扣除 150 營運費。</li><li><b class="tag yellow">技能</b>獲得 1 點技能能量。</li><li><b class="tag green">事件</b>抽即時事件：全體 +400、全體 −200、個人補助等。</li><li><b class="tag ghost">幽靈</b>只有「踩在幽靈格」才觸發：直接扣 1,000 總資產並隨機沒收 1 個道具；幽靈格顯示灰色斜線，滑鼠移上去可看效果。</li></ul></article>
+  <article class="rule-block"><span class="rule-icon">🛡️</span><h3>道具系統</h3><p>每回合開始自動抽 1 個道具，普通道具與黑市神話道具共用 3 格；滿了必須先丟棄才能取得新道具。擲骰前可無限次使用，點擊即發動並消耗；道具欄旁的 🗑️ 可直接丟棄。</p><div class="rules-items" data-rules-items="normal"></div></article>
+  <article class="rule-block wide special-rules-block"><span class="rule-icon">🎲</span><h3>特殊道具</h3><div class="rules-items" data-rules-items="special"></div></article>
+  <article class="rule-block"><span class="rule-icon">⭐</span><h3>勝利條件</h3><ul><li><b>企業之星</b>：起步後每次經過或停留在起點格，都能購買星星；每賣出 1 顆星星，起點星價就上漲。任意玩家獲得 3 顆星會在當季結算，星數最高者獲勝。</li><li><b>首富競爭</b>：總資產率先達到 8,000 獲勝；季數過半通膨 ×2，倒數兩季 ×4。</li><li><b>邪惡企業</b>：每 5 季毀滅日收保護費，付不出來化為藍色罷工幽靈，最後存活者獲勝；保護費每次收取後都會漲價。</li><li>企業之星／首富競爭第一名平手時觸發驟死賽：憤怒幽靈移動 ×1.5、扣錢 ×2。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">🎮</span><h3>模式與連線大廳</h3><ul><li>建立對局可選企業之星、首富競爭、邪惡企業或隨機模式；隨機模式開局從三種模式中抽一種，並套用固定預設數值。</li><li>多人房間以 5 碼房間代碼建立（也可以掃大廳的 QR Code 加入）；大廳可選 10 家企業或「未定新創集團 🎲」，後者開局隨機分配企業。</li><li>支援 2–8 人；WebRTC DataChannel 為主，同瀏覽器與 HTTP 伺服器另有備援通道。</li><li>結算後每位玩家按「確認結果」，畫面顯示等待確認比例（例如 2/8）；全員確認後統一回到同一個大廳。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">🗺️</span><h3>動態地圖與特殊格</h3><ul><li>每局隨機生成 24 格；黑市 ×3、投資 ×2、查稅局 ×1、內線交易 ×1，所有特殊格絕對不相鄰。</li><li><b>黑市</b>：神話道具起標 1,000，每次抬價 250，輪流詢問到最後一人得標。</li><li><b>投資</b>：投入 50% 總資產換股票憑證；季末大牛市 3 倍（10%）、平穩期 1.5 倍（40%）、龐氏騙局歸零（50%）。</li><li><b>查稅局</b>：繳 50% 總資產，或接受 2 回合羈押；贖罪券可全額抵銷稅金。</li><li><b>內線交易</b>：花 100 轉命運輪盤，用完變回普通格並在別的普通格重生。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">🗿</span><h3>八款神話道具</h3><p>黑市限定，部分道具受模式限制；被動道具會自動觸發。</p><div class="rules-items" data-rules-items="mythics"></div></article>
+  <article class="rule-block wide"><span class="rule-icon">🤔</span><h3>六種隨機快速決策</h3><p>每次停在普通格後抽一則二選一情境，立刻生效；總資產不足的選項會自動鎖定。</p><div class="rules-items" data-rules-items="decisions"></div></article>
+  <article class="rule-block wide"><span class="rule-icon">⚡</span><h3>十大企業專屬技能</h3><p>技能限自己回合、擲骰前發動，每次消耗 1 點能量。被護盾擋下時效果歸零。</p><div class="rules-skills" data-rules-items="skills"></div></article>
+  <article class="rule-block wide"><span class="rule-icon">🤝</span><h3>惡意併購與傀儡子公司</h3><ul><li>總資產滿 2,000 可併購一位對手；若目標總資產為負，收購價降為 1,000。雙方總資產都為負時，可發動 0 元代價的負債反噬併購。</li><li>被併購者不會淘汰，成為「子公司」，每回合收益的 40% 自動上繳母公司。每位母公司同時只能有一家子公司。</li><li>子公司總資產存到 1,000，可在自己回合花 1,000 發動「獨立反撲」脫離控制。</li><li>已達 3 顆星的玩家不能被併購。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">💾</span><h3>存檔與連線</h3><ul><li>遊戲自動存到瀏覽器，維持原本的「匯出存檔／匯入存檔」功能；存檔包含總資產、星數、能量、道具、護盾、子公司與所有狀態。</li><li>同一瀏覽器開啟相同網址的多個頁籤會即時同步；也可按右上角「開啟同步頁籤」。</li><li>第 1 版財務存檔可直接匯入，系統會自動轉換為派對棋盤並保留玩家總資產。</li></ul></article>
+</div>`}
+function renderRulesContent(container){
+  if(!container)return;
+  container.innerHTML=getRulesHTML();
+  const find=key=>container.querySelector(`[data-rules-items="${key}"]`);
+  find('normal').innerHTML=ITEMS.map(x=>`<div class="rule-item"><span>${x.icon}</span><div><strong>${h(x.name)}</strong><p>${h(x.desc)}</p></div></div>`).join('');
+  find('special').innerHTML=`<p class="special-rules-note">此道具只能透過特殊隱藏條件觸發，無法透過一般「抽道具、黑市拍買、事件獎勵」等一般隨機道具池取得。</p>${SPECIAL_ITEMS.filter(x=>x.category==='特殊道具').map(x=>`<div class="rule-item special-rule"><span>${x.icon}</span><div><strong>${h(x.name)}</strong><p>${h(x.desc)}</p></div></div>`).join('')}`;
+  find('skills').innerHTML=PARTY_ROLES.map(r=>`<div class="rule-skill"><span>${r.icon}</span><div><small>${h(r.name)} · ${h(r.sector)}</small><strong>${r.skill.icon} ${h(r.skill.name)}</strong><p>${h(r.skill.desc)}</p></div></div>`).join('');
+  find('mythics').innerHTML=MYTHIC_ITEMS.filter(x=>!x.hidden).map(x=>`<div class="rule-item mythic-rule"><span>${x.icon}</span><div><strong>${h(x.name)}${x.mode?`（${h(GAME_MODES[x.mode]?.name||x.mode)}限定）`:''}</strong><p>${h(x.desc)}</p></div></div>`).join('');
+  find('decisions').innerHTML=QUICK_DECISIONS.map(x=>`<div class="rule-item decision-rule"><span>${x.icon}</span><div><strong>${h(x.name)}</strong>${x.options.map(o=>`<p>${o.icon} <b>${h(o.label)}</b>：${h(o.desc)}</p>`).join('')}</div></div>`).join('');
+  container.dataset.rulesRendered='true';
 }
+function renderRules(){renderRulesContent($('#rules-content'))}
 function renderSetup(){
   $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{const c=colorMeta(p.color??i);return `<div class="setup-player"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`}).join('');
   $('#add-player').disabled=setupPlayers.length>=8;
@@ -9365,6 +9411,9 @@ function returnToLobby(lobby){
 }
 $('#home-btn').addEventListener('click',()=>{page='home';closeModal();render();window.scrollTo({top:0,behavior:'smooth'})});
 $('#home-play-btn').addEventListener('click',()=>{page='game';render();window.scrollTo({top:0,behavior:'smooth'})});
+$('#home-rules-disclosure')?.addEventListener('toggle',event=>{
+  if(event.target.open)renderRulesContent($('#home-rules-accordion'));
+});
 window.addEventListener('beforeinstallprompt',event=>{event.preventDefault();deferredInstallPrompt=event});
 window.addEventListener('appinstalled',()=>{deferredInstallPrompt=null});
 if('serviceWorker' in navigator&&location.protocol!=='file:')window.addEventListener('load',()=>{navigator.serviceWorker.register('./sw.js').catch(()=>{})});

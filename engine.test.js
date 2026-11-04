@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH} from './data.js';
-import {createGame,currentOf,movementPath,rollDie,chooseDecision,useItem,useSkill,buyStar,acquireTarget,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame} from './engine.js';
+import {createGame,currentOf,movementPath,rollDie,chooseDecision,useItem,useSkill,buyStar,acquireTarget,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,getRandomItem} from './engine.js';
 
 const game=(seed=42)=>createGame({players:[{name:'甲',roleId:'auto'},{name:'乙',roleId:'technology'}],seed});
 const fourPlayerGame=(seed=7)=>createGame({players:[
@@ -26,6 +26,16 @@ test('棋盤資料符合派對規格',()=>{
   assert.equal(STAR_GOAL,3);assert.equal(STAR_COST,1000);
   assert.equal(ACQUIRE_COST,2000);assert.equal(ACQUIRE_DISCOUNT_COST,1000);assert.equal(REBEL_COST,1000);
   assert.equal(START_CASH,1200);
+});
+
+test('一般隨機道具池會排除特殊道具',()=>{
+  const special={id:'test-special',name:'測試特殊道具',icon:'🧪',category:'特殊道具'};
+  const length=ITEMS.length;
+  ITEMS.push(special);
+  try{
+    const state=game(77);
+    for(let i=0;i<40;i++)assert.notEqual(getRandomItem(state)?.category,'特殊道具');
+  }finally{ITEMS.splice(length)}
 });
 
 test('只能 2 至 8 位玩家，角色與名稱不可重複',()=>{

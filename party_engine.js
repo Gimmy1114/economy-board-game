@@ -802,8 +802,12 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
   const ext = state.ext;
   if (!tile?.special) return;
   if (tile.type === 'market') {
-    const pool = MYTHIC_ITEMS.filter(x => !x.hidden && (!x.mode || x.mode === ext.mode));
-    const item = pool[Math.floor(nextRandom(state) * pool.length)] || MYTHIC_ITEMS[0];
+    const pool = MYTHIC_ITEMS.filter(x => x.category !== '特殊道具' && !x.hidden && (!x.mode || x.mode === ext.mode));
+    if (!pool.length) {
+      effects.push({ icon: '🛒', text: '黑市目前沒有可拍賣的神話道具。', tone: 'event' });
+      return;
+    }
+    const item = pool[Math.floor(nextRandom(state) * pool.length)];
     const order = state.players.filter(p => !p.ext?.eliminated).map(p => p.id);
     const startIndex = Math.max(0, order.indexOf(player.id));
     const settings = state.advancedSettings || {};
@@ -1593,7 +1597,7 @@ export function extAddMythic(state, player, id, { silent = false } = {}) {
 
 export function extAddItem(state, player, itemId) {
   const item = itemById(itemId);
-  if (!item) return false;
+  if (!item || item.category === '特殊道具') return false;
   if (player.ext?.bankai) { log(state, `🌀 ${player.name} 的卍解禁止獲取新道具。`); return false; }
   if (!extHasItemSpace(player)) return false;
   player.items.push(itemId);
@@ -1603,13 +1607,20 @@ export function extAddItem(state, player, itemId) {
 }
 
 // 系統特殊道具獨立於普通與神話道具，但仍與道具欄共用 3 格。
-export function extAddSpecial(state, player, id, { silent = false } = {}) {
+export function extAddSpecial(state, player, id, { silent = false, force = false } = {}) {
   const meta = SPECIAL_ITEM_BY_ID[id];
   if (!meta) return null;
   extPlayerExt(player);
-  if (player.ext?.bankai) {
+  if (player.ext?.bankai && !force) {
     if (!silent) log(state, `🌀 ${player.name} 的卍解禁止獲取新道具（含特殊道具）。`);
     return null;
+  }
+  if (!extHasItemSpace(player) && force) {
+    // 特殊條件與測試快捷鍵都必須立即給予道具；滿格時優先替換普通道具，
+    // 再替換神話道具，最後才移除既有特殊道具，維持背包最多 3 格。
+    if (player.items?.length) player.items.pop();
+    else if (player.mythics?.length) player.mythics.pop();
+    else if (player.specials?.length) player.specials.pop();
   }
   if (!extHasItemSpace(player)) {
     if (!silent) log(state, `🎒 ${player.name} 的道具欄已滿（3 格），無法取得「${meta.name}」。`);
@@ -1639,7 +1650,7 @@ function extGrantFateDice(state, player) {
     const id = player.items.pop();
     replaced = itemById(id)?.name || id;
   }
-  const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true });
+  const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true, force: true });
   if (!meta) return null;
   if (replaced) {
     log(state, `✨ ${player.name} 的落後補償生效：將本季獲得的「${replaced}」替換為特殊道具「${meta.icon} ${meta.name}」。`);
@@ -1777,7 +1788,7 @@ export function extUseMythic(state, itemId, payload = {}) {
         }
       } else {
         const id = payload.itemId;
-        if (payload.mythic || MYTHIC_BY_ID[id] || !itemById(id)) throw Error('金錢轉道具只能煉成普通道具。');
+        if (payload.mythic || MYTHIC_BY_ID[id] || !itemById(id) || itemById(id).category === '特殊道具') throw Error('金錢轉道具只能煉成普通道具。');
         if (p.cash < 1000) throw Error('需要 1,000 總資產才能煉成道具。');
         if (p.ext?.bankai) throw Error('卍解期間禁止獲取新道具。');
         if (!extHasItemSpace(p)) throw Error('道具欄已滿（3 格）。');
@@ -2099,7 +2110,7 @@ export function extApplyWheel(state, player, effect) {
       return `抽到 ${n} 個道具${n < 2 ? '（道具欄已滿）' : ''}。`;
     }
     case 'darkweb': {
-      const pool = MYTHIC_ITEMS.filter(x => !x.hidden && (!x.mode || x.mode === ext.mode) && !extHasMythic(player, x.id));
+      const pool = MYTHIC_ITEMS.filter(x => x.category !== '特殊道具' && !x.hidden && (!x.mode || x.mode === ext.mode) && !extHasMythic(player, x.id));
       if (!pool.length) return '暗網沒有新的神話道具可賣。';
       const item = pool[Math.floor(nextRandom(state) * pool.length)];
       if (!extAddMythic(state, player, item.id)) return '道具欄已滿（3 格），暗網商品無法帶走。';
@@ -2230,12 +2241,20 @@ export function extDebugGive(state, kind, id) {
   if (!state.ext?.debug) throw Error('只有測試模式可以使用。');
   const p = currentOf(state);
   const isMythic = kind === 'mythic';
-  const meta = isMythic ? MYTHIC_BY_ID[id] : itemById(id);
+  const isSpecial = kind === 'special';
+  const meta = isMythic ? MYTHIC_BY_ID[id] : isSpecial ? SPECIAL_ITEM_BY_ID[id] : itemById(id);
   if (!meta) throw Error(isMythic ? '神話道具不存在。' : '道具不存在。');
+  if (!isMythic && !isSpecial && meta.category === '特殊道具') throw Error('特殊道具請使用特殊道具測試入口。');
   extPlayerExt(p);
-  const existing = isMythic ? extMythicEntry(p, id) : null;
+  const existing = isMythic ? extMythicEntry(p, id) : isSpecial ? extHasSpecial(p, id) : null;
   if (existing && meta.charges) {
     log(state, `🧪 測試模式：${p.name} 已持有「${meta.name}」，不補充使用次數。`);
+    return { gained: true, itemId: id, itemKind: kind };
+  }
+  if (isSpecial) {
+    const gained = extAddSpecial(state, p, id, { force: true });
+    if (!gained) throw Error(`無法取得特殊道具「${meta.name}」。`);
+    log(state, `🧪 測試模式：${p.name} 取得特殊道具「${meta.icon} ${meta.name}」。`);
     return { gained: true, itemId: id, itemKind: kind };
   }
   if (!extHasItemSpace(p)) {
