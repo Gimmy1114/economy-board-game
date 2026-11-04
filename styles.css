@@ -408,6 +408,50 @@ body.settlement-active .center-backdrop .evil-tower{display:none!important}
 
 }
 
+/* 遊戲外仍允許捲動：全螢幕只鎖定真正顯示棋盤的 #game。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  html:has(#game[hidden]),
+  body:has(#game[hidden]){
+    position:relative!important;
+    width:100%!important;
+    height:auto!important;
+    min-height:100%!important;
+    max-height:none!important;
+    overflow-x:hidden!important;
+    overflow-y:auto!important;
+    overscroll-behavior-y:auto!important;
+  }
+  body:has(#game[hidden]) .app-shell,
+  body:has(#game[hidden]) main,
+  body:has(#game[hidden]) #home,
+  body:has(#game[hidden]) #setup{
+    position:relative!important;
+    width:100%!important;
+    height:auto!important;
+    min-height:100vh!important;
+    max-height:none!important;
+    overflow:visible!important;
+    transform:none!important;
+  }
+  html:fullscreen:has(#game[hidden]),
+  body:fullscreen:has(#game[hidden]){
+    position:relative!important;
+    height:auto!important;
+    max-height:none!important;
+    overflow-x:hidden!important;
+    overflow-y:auto!important;
+  }
+  html:fullscreen:has(#game[hidden]) .app-shell,
+  body:fullscreen:has(#game[hidden]) .app-shell{
+    position:relative!important;
+    height:auto!important;
+    min-height:100vh!important;
+    max-height:none!important;
+    overflow:visible!important;
+    transform:none!important;
+  }
+}
+
 .board-panel-tools{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .board-fullscreen{font-size:12.5px;font-weight:800;line-height:1;border:1px solid #d7e3df;background:#f4f8f6;color:#2f625c;padding:8px 10px;border-radius:7px;white-space:nowrap}
 .board-fullscreen:hover{background:#e7f1ed;color:var(--ink)}

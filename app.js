@@ -49,19 +49,20 @@ let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
 let state=null,page='home',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
 let deferredInstallPrompt=null;
-let turnClock={key:'',playerId:'',deadline:0,seconds:30,interval:null,expiring:false,paused:false,remaining:0};
+let turnClock={key:'',playerId:'',deadline:0,seconds:60,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
 let movingTokenCleanup=null;
+let uiRecoveryInProgress=false;
 const MOVE_MS=520;
 try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].includes(view?.tab))tab=view.tab}catch{}
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
 
 function notify(message){const el=$('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3400)}
-const turnDurationSeconds=()=>Math.max(1,Math.min(3600,Math.round(Number(state?.advancedSettings?.turnTimerSeconds)||30)));
+const turnDurationSeconds=()=>Math.max(1,Math.min(3600,Math.round(Number(state?.advancedSettings?.turnTimerSeconds)||60)));
 function clearTurnClock(){
   clearInterval(turnClock.interval);
-  turnClock={key:'',playerId:'',deadline:0,seconds:30,interval:null,expiring:false,paused:false,remaining:0};
+  turnClock={key:'',playerId:'',deadline:0,seconds:60,interval:null,expiring:false,paused:false,remaining:0};
   PartyUI.setTurnTimer(null);
 }
 function turnClockKey(){
@@ -227,6 +228,58 @@ function save(){
   try{localStorage.setItem(storageKey,exportGame(state));$('#save-status').textContent=state.net?'房間即時同步中':'多頁籤已同步'}catch{$('#save-status').textContent=channel?'即時同步中；請匯出備份':'本機儲存不可用，請匯出備份'}
   try{channel?.postMessage({type:'state',writerId:tabId,game:state})}catch{}
   try{PartyNet.publish(state)}catch(e){console.warn('room publish failed',e)}
+}
+// UI rendering is optional; the landed position and turn state are authoritative.
+// If a mobile browser cannot mount a special-cell modal, clear only that pending
+// interaction, persist the already-landed position, and leave the turn operable.
+function recoverAfterUiError(error){
+  if(uiRecoveryInProgress||!state)return false;
+  uiRecoveryInProgress=true;
+  try{
+    console.error('特殊格 UI 備援收束',error);
+    const ext=state.ext||{};
+    try{PartyUI.closeExtModal?.()}catch(closeError){console.error('特殊格 Modal 關閉失敗',closeError)}
+    if(PartyNet.isClient){
+      const ownerId=ext.auction?.currentId||ext.replaceOffer?.playerId||ext.starOffer?.playerId||ext.investOffer?.playerId||ext.taxChoice?.playerId||ext.insiderOffer?.playerId||ext.eventPrompt?.playerId;
+      if(ownerId===PartyNet.myPlayerId){
+        const fallbackAction=ext.auction?{type:'AUCTION_ACTION',action:'pass'}
+          :ext.replaceOffer?{type:'REPLACE_ITEM',dropNew:true}
+          :ext.starOffer?{type:'STAR_OFFER',buy:false}
+          :ext.investOffer?{type:'INVEST',yes:false}
+          :ext.taxChoice?{type:'TAX',action:'detain'}
+          :ext.insiderOffer?{type:'INSIDER',yes:false}
+          :ext.eventPrompt?{type:'CLEAR_EVENT_PROMPT'}:null;
+        if(fallbackAction)PartyNet.sendAction({...fallbackAction,playerId:ownerId});
+      }
+    }
+    if(ext.auction){
+      try{extAuctionFinish(state)}catch(finishError){console.error('黑市拍賣備援結算失敗',finishError);ext.auction=null}
+    }
+    // A failed replacement/investment/tax prompt must not hold the active player.
+    ext.replaceOffer=null;
+    ext.starOffer=null;
+    ext.investOffer=null;
+    ext.taxChoice=null;
+    ext.insiderOffer=null;
+    ext.eventPrompt=null;
+    ext.wheelPending=null;
+    state.pendingDecision=null;
+    if(state.phase==='moving'||state.phase==='decision'){
+      state.phase='resolve';
+      state.pendingLanding=null;
+      if(state.lastRoll)state.lastRoll.resolved=true;
+    }
+    save();
+    try{render()}catch(renderError){console.error('特殊格 UI 備援重繪失敗',renderError)}
+    notify('特殊格視窗無法顯示，已同步落點並解除回合鎖定。');
+    return true;
+  }catch(recoveryError){
+    console.error('特殊格 UI 備援失敗',recoveryError);
+    return false;
+  }finally{
+    uiRecoveryInProgress=false;
+    if(!state?.ext?.vectorPending)resumeTurnClock();
+  }
 }
 function clearSave(){
   const updatedAt=Math.max(Date.now(),(syncInfo(state)?.updatedAt||0)+1,resetAt+1);
@@ -721,6 +774,17 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
 }
 function finishLanding(before,interactive=true){
   if(!state)return null;
+  // rollDie() normally writes the destination before the animation starts.  Re-assert
+  // and publish it before any landing UI is rendered so a mobile DOM failure cannot
+  // make a later state update restore the old square.
+  const pending=state.pendingLanding;
+  const landingPlayer=pending?.playerId&&state.players.find(player=>player.id===pending.playerId);
+  const landingPath=Array.isArray(pending?.path)&&pending.path.length?pending.path:(Array.isArray(state.lastRoll?.path)?state.lastRoll.path:[]);
+  const landingTarget=landingPath.length?landingPath[landingPath.length-1]:state.lastRoll?.tileIndex;
+  if(landingPlayer&&Number.isInteger(landingTarget)){
+    landingPlayer.position=landingTarget;
+    try{save()}catch(error){console.error('落地位置同步失敗',error)}
+  }
   let roll=null;
   // 互動流程先只標記矢量鎖定，等 UI 預警 0.5 秒後再真正傳送與結算格子效果。
   try{roll=resolveLanding(state,{deferVector:true})}catch(e){console.error(e);notify(e.message||'落地效果處理失敗。')}
@@ -1291,7 +1355,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
-  cashSnapshot, animateCashChanges,
+  cashSnapshot, animateCashChanges, recoverAfterUiError,
   resumeTurnClock,
   buyStar:()=>runAction({type:'BUY_STAR'},()=>extBuyStar(state)),
   useMythic:(id,payload)=>runAction({type:'USE_MYTHIC',id,payload},()=>extUseMythic(state,id,payload)),

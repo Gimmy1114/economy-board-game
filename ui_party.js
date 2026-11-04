@@ -116,7 +116,7 @@ export const PartyUI = (() => {
   let lobbyNameSubmitting = false;
   let colorPickerState = null;
   const advancedSettingsDefaults = Object.freeze({
-    turnTimerSeconds: 30,
+    turnTimerSeconds: 60,
     startingAssets: 2000,
     blackMarketTransparent: false,
     blackMarketBidIncrement: 250,
@@ -468,7 +468,7 @@ export const PartyUI = (() => {
     turnTimer = {
       key: timer.key,
       playerId: timer.playerId,
-      seconds: Math.max(0, Math.min(30, Math.floor(timer.seconds))),
+      seconds: Math.max(0, Math.min(3600, Math.floor(timer.seconds))),
       paused,
       receivedAt: performance.now()
     };
@@ -1911,14 +1911,21 @@ export const PartyUI = (() => {
   function openExtModal({ kicker = '', icon = '✦', title = '', text = '', body = '', actions = '', type = 'info' }) {
     ensureRoot();
     const el = $('#ext-modal');
-    if (!el) return;
+    if (!el) throw new Error('特殊格 Modal 節點不存在');
+    const kickerEl = el.querySelector('.ext-kicker');
+    const iconEl = el.querySelector('.ext-icon');
+    const titleEl = el.querySelector('.ext-title');
+    const textEl = el.querySelector('.ext-text');
+    const bodyEl = el.querySelector('.ext-body');
+    const actionsEl = el.querySelector('.ext-actions');
+    if (!kickerEl || !iconEl || !titleEl || !textEl || !bodyEl || !actionsEl) throw new Error('特殊格 Modal 結構不完整');
     el.hidden = false;
-    el.querySelector('.ext-kicker').textContent = kicker;
-    el.querySelector('.ext-icon').textContent = icon;
-    el.querySelector('.ext-title').textContent = title;
-    el.querySelector('.ext-text').textContent = text;
-    el.querySelector('.ext-body').innerHTML = body;
-    el.querySelector('.ext-actions').innerHTML = actions;
+    kickerEl.textContent = kicker;
+    iconEl.textContent = icon;
+    titleEl.textContent = title;
+    textEl.textContent = text;
+    bodyEl.innerHTML = body;
+    actionsEl.innerHTML = actions;
     el.dataset.type = type;
     const closeButton = el.querySelector('.ext-modal-close');
     const mandatoryDecision = ['auction', 'invest', 'tax', 'insider'].includes(type);
@@ -2062,6 +2069,16 @@ export const PartyUI = (() => {
   }
 
   function afterSpecialChange() {
+    try {
+      afterSpecialChangeUnsafe();
+    } catch (error) {
+      // A missing/partially mounted mobile modal must never leave the turn locked.
+      console.error('特殊格視窗渲染失敗，啟用狀態備援', error);
+      app()?.recoverAfterUiError?.(error);
+    }
+  }
+
+  function afterSpecialChangeUnsafe() {
     const p = state();
     if (!p) return;
     if (p.status !== 'playing') {
