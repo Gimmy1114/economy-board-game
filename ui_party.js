@@ -92,6 +92,7 @@ export const PartyUI = (() => {
   let vectorLockTimer = null;
   let lastVictoryKey = '';
   let ghostStrikeTimer = null;
+  let lastGhostCollisionToast = 0;
   let doomTimers = [];
   let doomIntervals = [];
   let doomControllerActive = false;
@@ -2436,7 +2437,7 @@ export const PartyUI = (() => {
     const p = state();
     if (!p) return;
     if (!canUseLocalAction(p)) { app()?.notify('現在不是你的回合，請等待其他玩家。'); return; }
-    if (p.phase !== 'roll') { app()?.notify('神話道具只能在擲骰前使用。'); return; }
+    if (p.phase !== 'roll' && !p.ext?.debug) { app()?.notify('神話道具只能在擲骰前使用。'); return; }
     const player = p.players[p.turnIndex];
     const entry = player?.mythics?.find(x => x.id === 'truthGate');
     const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden && i.category !== '特殊道具');
@@ -2761,7 +2762,15 @@ export const PartyUI = (() => {
       else if (ev.type === 'iceMushroom') { if (recentAt(ev.at)) flashFrozen(ev); }
       else if (ev.type === 'bankai') { if (recentAt(ev.at)) flashBankai(); }
       else if (ev.type === 'bankrupt') { if (recentAt(ev.at)) flashBankrupt(ev); }
-      else if (ev.type === 'ghostStrike' && !net?.active) { if (recentAt(ev.at)) flashGhostInterference(ev); }
+      else if (ev.type === 'ghostStrike') {
+        if (recentAt(ev.at)) {
+          if (!net?.active) flashGhostInterference(ev);
+          if (Number(ev.at) !== lastGhostCollisionToast) {
+            lastGhostCollisionToast = Number(ev.at);
+            app()?.notify?.('撞見幽靈！員工嚇到罷工了！');
+          }
+        }
+      }
     }
     const totem = p.ext?.totemEvent;
     if (totem?.at && String(totem.at) !== lastTotemKey) {

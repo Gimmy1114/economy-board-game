@@ -736,8 +736,8 @@ function inventorySlots(p){
 }
 function itemBarMarkup(p,{interactive=true}={}){
   const chips=statusChips(state,p);
-  const blocked=Boolean(p?.ext?.eliminated)||chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
-  const usable=interactive&&state.phase==='roll'&&!animation&&!blocked;
+  const blocked=Boolean(p?.isGhost||p?.ext?.eliminated)||chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
+  const usable=interactive&&(state.phase==='roll'||state.ext?.debug)&&!animation&&!blocked;
   const inventory=inventorySlots(p);
   const slots=Array.from({length:3},(_,i)=>{
     const slot=inventory[i];
@@ -747,7 +747,7 @@ function itemBarMarkup(p,{interactive=true}={}){
     if(kind==='mythic')return `<span class="item-slot-wrap"><button type="button" class="item-slot filled mythic-slot" data-mythic-id="${meta.id}" ${usable&&meta.kind!=='passive'?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}${entry.charges>1?` ×${entry.charges}`:''}</span></button><button type="button" class="discard-btn" data-discard-kind="mythic" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
     return `<span class="item-slot-wrap"><button type="button" class="item-slot filled" data-item-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="normal" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
   }).join('');
-  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>只可在投擲骰子前使用。</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false">🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
+  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>${state.ext?.debug?'測試模式：擲骰後仍可無限使用道具。':'只可在投擲骰子前使用。'}</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false">🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
 }
 function setItemDiscardMode(bar, enabled){
   if(!bar)return;
@@ -1080,10 +1080,10 @@ function openTarget(action,itemId=null){
 function targetOptions(){
   const p=activePlayer();
   if(modal.action==='skill'){
-    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&(role(p.roleId).skill.id!=='obsolete'||x.items?.length||x.mythics?.length)).map(x=>{const r=role(x.roleId);return {id:x.id,label:x.name,icon:r.icon,desc:`${r.name} · ${x.stars}★ · ${money(x.cash)} 總資產`}});
+    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&!x.isGhost&&(role(p.roleId).skill.id!=='obsolete'||x.items?.length||x.mythics?.length)).map(x=>{const r=role(x.roleId);return {id:x.id,label:x.name,icon:r.icon,desc:`${r.name} · ${x.stars}★ · ${money(x.cash)} 總資產`}});
   }
   if(modal.action==='item'){
-    return state.players.filter(x=>x.id!==p.id).map(x=>({id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`第 ${tileNo(x.position)} 格 · ${x.stars}★ · ${money(x.cash)} 總資產`}));
+    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&!x.isGhost).map(x=>({id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`第 ${tileNo(x.position)} 格 · ${x.stars}★ · ${money(x.cash)} 總資產`}));
   }
   if(modal.action==='acquire'){
     return state.players.filter(x=>canAcquire(state,p,x)).map(x=>{const cost=acquisitionCost(state,p,x);return {id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`併購價 ${money(cost)} · 目標總資產 ${money(x.cash)}`}});

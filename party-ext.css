@@ -1481,6 +1481,13 @@ body.opening-active #board .ghost-piece {
   font-size: 100%;
   line-height: 1;
 }
+.ghost-piece,
+.ghost-piece > span,
+.ghost-piece img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain;
+}
 /* 測試模式：地圖幽靈可像棋子一樣被點選傳送。 */
 body.debug-mode .ghost-piece {
   pointer-events: auto;
@@ -1516,6 +1523,14 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
 .party-player-card.eliminated { opacity: .72; background: #f3f7fd; border-top-color: #5f8ec4; }
 .party-player-card.eliminated h3 { color: #4e729c; }
 .token.ghost-player { background: #5f8ec4 !important; box-shadow: 0 0 0 2px rgba(95, 142, 196, .35); }
+.token.ghost-player { width: 100% !important; height: 100% !important; object-fit: contain; }
+#board > .token.ghost-player.moving,
+.mobile-map-area .token.ghost-player.moving {
+  width: 30px !important; height: 30px !important;
+  min-width: 30px !important; min-height: 30px !important;
+  max-width: 30px !important; max-height: 30px !important;
+  object-fit: contain;
+}
 .party-player-card .star-track { display: flex; gap: 1px; margin-top: 3px; }
 .star-track i { font-style: normal; font-size: 12.5px; color: #d7ded9; }
 .star-track i.on { color: #e5b445; text-shadow: 0 0 6px rgba(229, 180, 69, .45); }
@@ -1876,7 +1891,7 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
   .dice3d .face-4 { transform: rotateX(-90deg) translateZ(25px); }
   .dice3d .face-5 { transform: rotateY(-90deg) translateZ(25px); }
   .dice3d .face-6 { transform: rotateY(180deg) translateZ(25px); }
-  .ghost-piece { width: 19px; height: 19px; font-size: 17.5px; }
+  .ghost-piece { width: 30px !important; height: 30px !important; min-width: 30px; min-height: 30px; max-width: 30px; max-height: 30px; font-size: 17.5px; }
   .item-slot { min-height: 41px; padding: 4px 5px; }
   .item-slot .item-name { font-size: 8.5px; }
   .discard-btn { opacity: 1; width: 15px; height: 15px; font-size: 9px; }

@@ -22,6 +22,7 @@ export const pick=(state,items)=>items[Math.floor(nextRandom(state)*items.length
 const ghostSeed=seed=>((Number(seed)|0)^0x6d2b79f5)||1;
 const nextGhostRandom=state=>{let x=state.ghostRng|0;x^=x<<13;x^=x>>>17;x^=x<<5;state.ghostRng=x|0;return (x>>>0)/4294967296};
 const currentPlayer=state=>state.players[state.turnIndex];
+const isGhostPlayer=player=>Boolean(player?.isGhost||player?.ext?.eliminated||player?.ext?.ghostRole);
 
 export function log(state,text){state.log.unshift(`第 ${state.round} 季｜${text}`);if(state.log.length>200)state.log.length=200}
 
@@ -243,6 +244,8 @@ function tileEffect(state,player,{leverage=false,noReward=false,forcedRed=false}
   const tile=board[player.position];
   const effects=[];
   const push=(icon,text,tone='neutral')=>effects.push({icon,text,tone});
+  // 幽靈玩家只是地圖陷阱，不會取得任何普通格或特殊格效果。
+  if(isGhostPlayer(player)) return effects;
   // 派對擴充：電商「購物節狂歡」的無敵狀態可讓本回合所有踩格效果失效。
   if(player.ext?.immune){
     push('✨','無敵狀態：本回合所有踩格效果無效化','good');
@@ -316,6 +319,7 @@ function tileEffect(state,player,{leverage=false,noReward=false,forcedRed=false}
 export function resolveTileFor(state,player,opts={}){
   const effects=[];
   if(!state||!player)return effects;
+  if(isGhostPlayer(player)) return effects;
   if(state.ghostPosition===player.position){
     if(engineHooks.ghostStrike)engineHooks.ghostStrike(state,player,effects);
     else{
@@ -392,6 +396,7 @@ export function resolveLanding(state,options={}){
   if(!roll||roll.resolved)return roll||null;
   const player=state.players.find(p=>p.id===roll.playerId);
   if(!player)return roll;
+  const ghostPlayer=isGhostPlayer(player);
   const pending=state.pendingLanding&&state.pendingLanding.playerId===player.id?state.pendingLanding:null;
   const board=boardOf(state);
   const leverage=pending?Boolean(pending.leverage):Boolean(player.leverage);
@@ -399,9 +404,9 @@ export function resolveLanding(state,options={}){
   const forcedRed=pending?Boolean(pending.forcedRed):Boolean(player.forcedRed);
   const effects=Array.isArray(roll.effects)?roll.effects:[];
   roll.effects=effects;
-  applyCornerProgress(state,player,roll.path,{passedStart:Boolean(roll.passedStart),effects});
+  if(!ghostPlayer) applyCornerProgress(state,player,roll.path,{passedStart:Boolean(roll.passedStart),effects});
   // 新版規則：只有「踩在幽靈格」才觸發，路過不算。
-  const struck=player.position===state.ghostPosition;
+  const struck=!ghostPlayer&&player.position===state.ghostPosition;
   roll.struck=struck;
   roll.tileIndex=player.position;
   roll.tileType=board[player.position]?.type;
@@ -413,7 +418,7 @@ export function resolveLanding(state,options={}){
       effects.push({icon:'👻',text:`踩中罷工幽靈，扣除 ${penalty} 營運費`,tone:'bad'});
     }
     log(state,`${player.name} 擲出 ${roll.value}，在第 ${tileNo(player.position)} 格踩中罷工幽靈。`);
-  }else{
+  }else if(!ghostPlayer){
     for(const e of tileEffect(state,player,{leverage,noReward,forcedRed}))effects.push(e);
     log(state,`${player.name} 擲出 ${roll.value}，停在「${board[player.position].label}」格${effects.length?`：${effects.map(e=>e.text.replace(/。$/,'')).join('；')}`:''}。`);
   }
@@ -426,7 +431,7 @@ export function resolveLanding(state,options={}){
   state.pendingLanding=null;
   if(engineHooks.afterRoll)engineHooks.afterRoll(state,player,roll,options);
   if(state.status==='playing'&&state.phase==='roll'){
-    if(!struck){
+    if(!struck&&!ghostPlayer){
       const decision={playerId:player.id,kind:'landing',options:DECISION_OPTIONS.map(x=>({...x,available:x.id!=='invest'||player.cash>=300}))};
       state.pendingDecision=engineHooks.prepareDecision?engineHooks.prepareDecision(state,decision,player)||decision:decision;
       state.phase='decision';
@@ -461,15 +466,15 @@ export function chooseDecision(state,optionId){
 
 export function useItem(state,itemId,targetId){
   if(state.status!=='playing')throw Error('遊戲已結束。');
-  if(state.phase!=='roll')throw Error('道具只能在擲骰前使用。');
+  if(state.phase!=='roll'&&!state.ext?.debug)throw Error('道具只能在擲骰前使用。');
   const p=currentPlayer(state),index=p.items.indexOf(itemId);
   if(engineHooks.canUse&&!engineHooks.canUse(state,p,'item',itemId))throw Error(engineHooks.blockedReason?.(state,p,'item',itemId)||'目前無法使用道具。');
   if(index===-1)throw Error('你沒有這個道具。');
   const item=itemById(itemId),target=state.players.find(x=>x.id===targetId);
   if(!item)throw Error('道具不存在。');
-  const opponents=state.players.filter(x=>x.id!==p.id);
+  const opponents=state.players.filter(x=>x.id!==p.id&&!isGhostPlayer(x));
   if(itemId==='swap'){
-    if(!target||target.id===p.id)throw Error('請選擇一位對手交換位置。');
+    if(!target||target.id===p.id||isGhostPlayer(target))throw Error('請選擇一位正常玩家交換位置。');
     const from=p.position,to=target.position;
     p.position=to;target.position=from;
     applyCornerProgress(state,p,[to]);
@@ -512,9 +517,9 @@ export function useSkill(state,targetId,sector){
   if(p.energy<1)throw Error('技能能量不足，請先踩技能格或使用道具補充。');
   const role=roleById(p.roleId);
   if(!role)throw Error('企業角色無效。');
-  const others=state.players.filter(x=>x.id!==p.id);
+  const others=state.players.filter(x=>x.id!==p.id&&!isGhostPlayer(x));
   const needTarget=role.skill.target==='opponent';
-  if(needTarget&&(!target||target.id===p.id))throw Error('請選擇一位對手作為技能目標。');
+  if(needTarget&&(!target||target.id===p.id||isGhostPlayer(target)))throw Error('請選擇一位正常玩家作為技能目標。');
   if(role.skill.target==='sector'&&!SECTORS.includes(sector))throw Error('請選擇一個產業。');
   const result=[];
   switch(p.roleId){
@@ -639,7 +644,7 @@ export function acquireTarget(state,targetId){
   if(state.status!=='playing')throw Error('遊戲已結束。');
   if(!['roll','resolve'].includes(state.phase))throw Error('現在無法發動併購。');
   const p=currentPlayer(state),target=state.players.find(x=>x.id===targetId);
-  if(!target||target.id===p.id)throw Error('請選擇一位對手。');
+  if(!target||target.id===p.id||isGhostPlayer(target))throw Error('請選擇一位正常玩家。');
   if(target.parentId)throw Error('該玩家已是其他公司的子公司。');
   if(state.players.some(x=>x.parentId===p.id))throw Error('你已有一家子公司，無法再併購。');
   if(target.stars>=STAR_GOAL)throw Error('已達勝利星數的玩家無法被併購。');
@@ -796,7 +801,7 @@ export function statusChips(state,player){
 }
 
 export function canAcquire(state,player,target){
-  if(!player||!target||player.id===target.id)return false;
+  if(!player||!target||player.id===target.id||isGhostPlayer(target))return false;
   if(target.parentId||state.players.some(x=>x.parentId===player.id))return false;
   if(target.stars>=STAR_GOAL)return false;
   if(!state?.advancedSettings||(!Object.prototype.hasOwnProperty.call(state.advancedSettings,'mergerPrice')&&!Object.prototype.hasOwnProperty.call(state.advancedSettings,'mergerStrongPrice'))){

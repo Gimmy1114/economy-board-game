@@ -7,6 +7,7 @@ import {
   extTriggerDoom, extResolveDoomPlayer, extFinishDoom, extResolveReplace, extSettlementData, extCheckBankruptcy, extCheckWin,
   extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extAuctionId, extPrepareWheel, extResolveWheel,
   extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath, extInvest, extIsDoomApproaching,
+  extTargets, extIsGhost, extAllowsPostRollItems,
   extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice
 } from './party_engine.js';
 import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS, SPECIAL_ITEMS, FATE_DICE_ID} from './party_data.js';
@@ -471,6 +472,79 @@ test('邪惡企業也會顯示股票憑證季末結算面板', async () => {
   assert.match(app, /const investment=visibleInvestmentSettlement\(state\.ext\?\.investmentSettlement\)/);
   assert.match(ui, /const investment = app\(\)\?\.visibleInvestmentSettlement/);
   assert.match(ui.slice(ui.indexOf('async function runDoomSequence'), ui.indexOf('function syncDoomPresentation')), /for \(const current of sequence\)/);
+});
+
+test('測試模式擲骰後仍可使用普通道具與神話道具', () => {
+  const state = make('star', 80, {debug: true});
+  const player = state.players[0];
+  player.items = ['shield', 'leverage'];
+  state.phase = 'resolve';
+  assert.equal(extAllowsPostRollItems(state), true);
+  useItem(state, 'shield');
+  useItem(state, 'leverage');
+  assert.equal(player.shields, 1);
+  assert.equal(player.leverage, true);
+  extAddMythic(state, player, 'vector');
+  assert.doesNotThrow(() => extUseMythic(state, 'vector', {tileIndex: 3}));
+});
+
+test('幽靈玩家不觸發落地格效果，也不會取得命運骰子或成為技能目標', () => {
+  const state = make('star', 81, {debug: true});
+  const ghost = state.players[0];
+  const normal = state.players[1];
+  ghost.ext.eliminated = true;
+  ghost.ext.ghostRole = true;
+  ghost.isGhost = true;
+  ghost.position = state.board.find(tile => tile.type === 'invest').index;
+  state.phase = 'roll';
+  state.turnIndex = 0;
+  const beforeCash = ghost.cash;
+  rollDie(state, 1);
+  assert.equal(ghost.cash, beforeCash, '幽靈踩格不應取得或扣除格子效果');
+  assert.equal(state.ext.investOffer, null);
+  assert.equal(state.pendingDecision, null);
+  assert.equal(extIsGhost(ghost), true);
+  assert.deepEqual(extTargets(state, normal.id), [], '目標清單不得包含幽靈');
+
+  const tycoon = createGame({
+    players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}, {name: '丙', roleId: 'hardware'}],
+    seed: 82, maxRounds: 10
+  });
+  extInitGame(tycoon, {mode: 'tycoon', debug: true});
+  const tycoonGhost = tycoon.players[0];
+  tycoonGhost.ext.eliminated = true; tycoonGhost.ext.ghostRole = true; tycoonGhost.isGhost = true;
+  tycoonGhost.cash = -10000;
+  tycoon.players.slice(1).forEach(player => { player.cash = 1000; });
+  for (let i = 0; i < 3; i++) extTycoonComeback(tycoon);
+  assert.deepEqual(tycoonGhost.specials, [], '幽靈不得獲得命運骰子');
+});
+
+test('幽靈玩家與正常玩家同格時，雙向移動都會觸發罷工碰撞', () => {
+  const state = createGame({
+    players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}, {name: '丙', roleId: 'hardware'}],
+    seed: 83, maxRounds: 10
+  });
+  extInitGame(state, {mode: 'star', debug: true});
+  state.advancedSettings = {ghostExorcismAssets: 100, ghostExorcismEnergy: 0};
+  const [normal, other, ghost] = state.players;
+  ghost.ext.eliminated = true; ghost.ext.ghostRole = true; ghost.isGhost = true;
+  state.ghostPosition = 20;
+  state.board[1] = {...state.board[1], type: 'blank', special: false, value: 0};
+  state.board[2] = {...state.board[2], type: 'blank', special: false, value: 0};
+  normal.position = 0; ghost.position = 1;
+  state.turnIndex = 0; state.phase = 'roll';
+  const beforeNormal = normal.cash;
+  rollDie(state, 1);
+  assert.equal(normal.position, ghost.position);
+  assert.equal(normal.cash, beforeNormal - 100);
+  assert.match(state.lastRoll.effects.map(effect => effect.text).join(' '), /撞見幽靈！員工嚇到罷工了！/);
+
+  normal.position = 2; other.position = 3; ghost.position = 1; state.turnIndex = 2; state.phase = 'roll';
+  const beforeSecond = normal.cash;
+  rollDie(state, 1);
+  assert.equal(ghost.position, normal.position);
+  assert.equal(normal.cash, beforeSecond - 100);
+  assert.equal(state.ext.lastEvent.type, 'ghostStrike');
 });
 
 test('季末毀滅日逐名額結算完成前不推進到下一季', () => {

@@ -397,6 +397,7 @@ const pick=(state,items)=>items[Math.floor(nextRandom(state)*items.length)];
 const ghostSeed=seed=>((Number(seed)|0)^0x6d2b79f5)||1;
 const nextGhostRandom=state=>{let x=state.ghostRng|0;x^=x<<13;x^=x>>>17;x^=x<<5;state.ghostRng=x|0;return (x>>>0)/4294967296};
 const currentPlayer=state=>state.players[state.turnIndex];
+const isGhostPlayer=player=>Boolean(player?.isGhost||player?.ext?.eliminated||player?.ext?.ghostRole);
 
 function log(state,text){state.log.unshift(`第 ${state.round} 季｜${text}`);if(state.log.length>200)state.log.length=200}
 
@@ -618,6 +619,8 @@ function tileEffect(state,player,{leverage=false,noReward=false,forcedRed=false}
   const tile=board[player.position];
   const effects=[];
   const push=(icon,text,tone='neutral')=>effects.push({icon,text,tone});
+  // 幽靈玩家只是地圖陷阱，不會取得任何普通格或特殊格效果。
+  if(isGhostPlayer(player)) return effects;
   // 派對擴充：電商「購物節狂歡」的無敵狀態可讓本回合所有踩格效果失效。
   if(player.ext?.immune){
     push('✨','無敵狀態：本回合所有踩格效果無效化','good');
@@ -691,6 +694,7 @@ function tileEffect(state,player,{leverage=false,noReward=false,forcedRed=false}
 function resolveTileFor(state,player,opts={}){
   const effects=[];
   if(!state||!player)return effects;
+  if(isGhostPlayer(player)) return effects;
   if(state.ghostPosition===player.position){
     if(engineHooks.ghostStrike)engineHooks.ghostStrike(state,player,effects);
     else{
@@ -767,6 +771,7 @@ function resolveLanding(state,options={}){
   if(!roll||roll.resolved)return roll||null;
   const player=state.players.find(p=>p.id===roll.playerId);
   if(!player)return roll;
+  const ghostPlayer=isGhostPlayer(player);
   const pending=state.pendingLanding&&state.pendingLanding.playerId===player.id?state.pendingLanding:null;
   const board=boardOf(state);
   const leverage=pending?Boolean(pending.leverage):Boolean(player.leverage);
@@ -774,9 +779,9 @@ function resolveLanding(state,options={}){
   const forcedRed=pending?Boolean(pending.forcedRed):Boolean(player.forcedRed);
   const effects=Array.isArray(roll.effects)?roll.effects:[];
   roll.effects=effects;
-  applyCornerProgress(state,player,roll.path,{passedStart:Boolean(roll.passedStart),effects});
+  if(!ghostPlayer) applyCornerProgress(state,player,roll.path,{passedStart:Boolean(roll.passedStart),effects});
   // 新版規則：只有「踩在幽靈格」才觸發，路過不算。
-  const struck=player.position===state.ghostPosition;
+  const struck=!ghostPlayer&&player.position===state.ghostPosition;
   roll.struck=struck;
   roll.tileIndex=player.position;
   roll.tileType=board[player.position]?.type;
@@ -788,7 +793,7 @@ function resolveLanding(state,options={}){
       effects.push({icon:'👻',text:`踩中罷工幽靈，扣除 ${penalty} 營運費`,tone:'bad'});
     }
     log(state,`${player.name} 擲出 ${roll.value}，在第 ${tileNo(player.position)} 格踩中罷工幽靈。`);
-  }else{
+  }else if(!ghostPlayer){
     for(const e of tileEffect(state,player,{leverage,noReward,forcedRed}))effects.push(e);
     log(state,`${player.name} 擲出 ${roll.value}，停在「${board[player.position].label}」格${effects.length?`：${effects.map(e=>e.text.replace(/。$/,'')).join('；')}`:''}。`);
   }
@@ -801,7 +806,7 @@ function resolveLanding(state,options={}){
   state.pendingLanding=null;
   if(engineHooks.afterRoll)engineHooks.afterRoll(state,player,roll,options);
   if(state.status==='playing'&&state.phase==='roll'){
-    if(!struck){
+    if(!struck&&!ghostPlayer){
       const decision={playerId:player.id,kind:'landing',options:DECISION_OPTIONS.map(x=>({...x,available:x.id!=='invest'||player.cash>=300}))};
       state.pendingDecision=engineHooks.prepareDecision?engineHooks.prepareDecision(state,decision,player)||decision:decision;
       state.phase='decision';
@@ -836,15 +841,15 @@ function chooseDecision(state,optionId){
 
 function useItem(state,itemId,targetId){
   if(state.status!=='playing')throw Error('遊戲已結束。');
-  if(state.phase!=='roll')throw Error('道具只能在擲骰前使用。');
+  if(state.phase!=='roll'&&!state.ext?.debug)throw Error('道具只能在擲骰前使用。');
   const p=currentPlayer(state),index=p.items.indexOf(itemId);
   if(engineHooks.canUse&&!engineHooks.canUse(state,p,'item',itemId))throw Error(engineHooks.blockedReason?.(state,p,'item',itemId)||'目前無法使用道具。');
   if(index===-1)throw Error('你沒有這個道具。');
   const item=itemById(itemId),target=state.players.find(x=>x.id===targetId);
   if(!item)throw Error('道具不存在。');
-  const opponents=state.players.filter(x=>x.id!==p.id);
+  const opponents=state.players.filter(x=>x.id!==p.id&&!isGhostPlayer(x));
   if(itemId==='swap'){
-    if(!target||target.id===p.id)throw Error('請選擇一位對手交換位置。');
+    if(!target||target.id===p.id||isGhostPlayer(target))throw Error('請選擇一位正常玩家交換位置。');
     const from=p.position,to=target.position;
     p.position=to;target.position=from;
     applyCornerProgress(state,p,[to]);
@@ -887,9 +892,9 @@ function useSkill(state,targetId,sector){
   if(p.energy<1)throw Error('技能能量不足，請先踩技能格或使用道具補充。');
   const role=roleById(p.roleId);
   if(!role)throw Error('企業角色無效。');
-  const others=state.players.filter(x=>x.id!==p.id);
+  const others=state.players.filter(x=>x.id!==p.id&&!isGhostPlayer(x));
   const needTarget=role.skill.target==='opponent';
-  if(needTarget&&(!target||target.id===p.id))throw Error('請選擇一位對手作為技能目標。');
+  if(needTarget&&(!target||target.id===p.id||isGhostPlayer(target)))throw Error('請選擇一位正常玩家作為技能目標。');
   if(role.skill.target==='sector'&&!SECTORS.includes(sector))throw Error('請選擇一個產業。');
   const result=[];
   switch(p.roleId){
@@ -1014,7 +1019,7 @@ function acquireTarget(state,targetId){
   if(state.status!=='playing')throw Error('遊戲已結束。');
   if(!['roll','resolve'].includes(state.phase))throw Error('現在無法發動併購。');
   const p=currentPlayer(state),target=state.players.find(x=>x.id===targetId);
-  if(!target||target.id===p.id)throw Error('請選擇一位對手。');
+  if(!target||target.id===p.id||isGhostPlayer(target))throw Error('請選擇一位正常玩家。');
   if(target.parentId)throw Error('該玩家已是其他公司的子公司。');
   if(state.players.some(x=>x.parentId===p.id))throw Error('你已有一家子公司，無法再併購。');
   if(target.stars>=STAR_GOAL)throw Error('已達勝利星數的玩家無法被併購。');
@@ -1171,7 +1176,7 @@ function statusChips(state,player){
 }
 
 function canAcquire(state,player,target){
-  if(!player||!target||player.id===target.id)return false;
+  if(!player||!target||player.id===target.id||isGhostPlayer(target))return false;
   if(target.parentId||state.players.some(x=>x.parentId===player.id))return false;
   if(target.stars>=STAR_GOAL)return false;
   if(!state?.advancedSettings||(!Object.prototype.hasOwnProperty.call(state.advancedSettings,'mergerPrice')&&!Object.prototype.hasOwnProperty.call(state.advancedSettings,'mergerStrongPrice'))){
@@ -1246,6 +1251,9 @@ function extMythicEntry(player, id) {
 function extHasMythic(player, id) { return Boolean(extMythicEntry(player, id)); }
 function extHasSpecial(player, id) { return (player?.specials || []).includes(id); }
 function extSpecialEntry(player, id) { return extHasSpecial(player, id) ? SPECIAL_ITEM_BY_ID[id] : null; }
+function extIsGhost(player) {
+  return Boolean(player?.isGhost || player?.ext?.eliminated || player?.ext?.ghostRole);
+}
 function extItemCount(player) {
   return (player?.items?.length || 0) + (player?.mythics?.length || 0) + (player?.specials?.length || 0);
 }
@@ -1324,6 +1332,7 @@ function extPlayerExt(p) {
   }
   p.ext.eliminated = Boolean(p.ext.eliminated);
   p.ext.ghostRole = Boolean(p.ext.ghostRole);
+  if (p.ext.eliminated || p.ext.ghostRole) p.isGhost = true;
   p.ext.frozen = Number.isInteger(p.ext.frozen) ? p.ext.frozen : 0;
   p.ext.iceLock = Number.isInteger(p.ext.iceLock) ? p.ext.iceLock : 0;
   p.ext.burn = Number.isInteger(p.ext.burn) ? p.ext.burn : 0;
@@ -1600,6 +1609,9 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
   };
   for (const p of state.players) {
     extPlayerExt(p);
+    p.ext.eliminated = false;
+    p.ext.ghostRole = false;
+    p.isGhost = false;
     p.items = [];
     p.mythics = [];
     p.specials = [];
@@ -1718,6 +1730,7 @@ function extPlayerStatusMetric(state, player) {
   return { mode: 'star', label: '⭐ 星數', value: Number(player.stars || 0), detail: state.starGoal || STAR_GOAL, tone: '' };
 }
 function extIsDebug(state) { return Boolean(state?.ext?.debug); }
+function extAllowsPostRollItems(state) { return Boolean(state?.ext?.debug); }
 
 // 回合移動提示使用 0-based 位置計算終點；UI 再用 tileNo 轉成 1-based 格數。
 function extMovementTarget(position, steps, boardLength) {
@@ -1789,11 +1802,11 @@ function extShieldBlock(state, target, source, label = '負面效果') {
 }
 
 function extTargets(state, excludeId) {
-  return state.players.filter(p => p.id !== excludeId && !p.ext?.eliminated);
+  return state.players.filter(p => p.id !== excludeId && !extIsGhost(p));
 }
 
 function extSurvivors(state) {
-  return state.players.filter(p => !p.ext?.eliminated);
+  return state.players.filter(p => !extIsGhost(p));
 }
 
 function extStatusChips(state, player) {
@@ -1898,7 +1911,7 @@ function extCaptureRollSnapshot(state, player) {
       id: p.id, cash: p.cash, stars: p.stars, energy: p.energy, shields: p.shields, items: p.items,
       mythics: p.mythics, marks: p.marks, position: p.position, skipTurns: p.skipTurns, parentId: p.parentId, rentTo: p.rentTo,
       rentTurns: p.rentTurns, leverage: p.leverage, bankLock: p.bankLock, noReward: p.noReward,
-      forcedRed: p.forcedRed, forcedSteps: p.forcedSteps, ext: p.ext
+      forcedRed: p.forcedRed, forcedSteps: p.forcedSteps, isGhost: p.isGhost, ext: p.ext
     }))
   });
   return state.ext.turnSnapshot;
@@ -1969,7 +1982,7 @@ engineHooks.startTurn = (state, player) => {
 
 engineHooks.canUse = (state, player, kind, itemId) => {
   const ext = extPlayerExt(player);
-  if (ext.eliminated) return false;
+  if (extIsGhost(player)) return false;
   if (ext.frozen > 0) return false;
   if (ext.iceLock > 0) return false;
   if (state.ext.domain) {
@@ -1983,7 +1996,7 @@ engineHooks.canUse = (state, player, kind, itemId) => {
 };
 engineHooks.blockedReason = (state, player, kind, itemId) => {
   const ext = extPlayerExt(player);
-  if (ext.eliminated) return '罷工團幽靈無法使用技能或道具。';
+  if (extIsGhost(player)) return '罷工團幽靈無法使用技能或道具。';
   if (ext.frozen > 0) return `被凍結中，還剩 ${ext.frozen} 回合。`;
   if (ext.iceLock > 0) return `被寒冰蘑菇封印中，還剩 ${ext.iceLock} 回合無法使用技能與道具。`;
   if (state.ext.domain && state.ext.domain.ownerId !== player.id && extDomainTiles(state).includes(player.position)) return '弱者的領域內禁用技能與道具。';
@@ -2057,6 +2070,7 @@ engineHooks.prepareDecision = (state, decision, player) => {
 engineHooks.resolveTile = (state, player, opts, effects) => {
   const tile = boardOf(state)[player.position];
   const ext = state.ext;
+  if (extIsGhost(player)) return;
   if (!tile?.special) return;
   if (tile.type === 'market') {
     const pool = MYTHIC_ITEMS.filter(x => x.category !== '特殊道具' && !x.hidden && (!x.mode || x.mode === ext.mode));
@@ -2065,7 +2079,7 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
       return;
     }
     const item = pool[Math.floor(nextRandom(state) * pool.length)];
-    const order = state.players.filter(p => !p.ext?.eliminated).map(p => p.id);
+    const order = state.players.filter(p => !extIsGhost(p)).map(p => p.id);
     const startIndex = Math.max(0, order.indexOf(player.id));
     const settings = state.advancedSettings || {};
     const basePrice = Math.max(0, Math.round(Number(settings.blackMarketStartingPrice ?? 1000)));
@@ -2210,6 +2224,25 @@ function extEnsureStartSubsidy(state, player, roll) {
   return Boolean(applyCornerProgress(state, player, [0], { passedStart: true, effects }));
 }
 
+function extGhostCollision(state, mover, effects) {
+  if (!state?.players || !mover) return false;
+  const ghostMover = extIsGhost(mover);
+  const victims = ghostMover
+    ? state.players.filter(p => p.id !== mover.id && !extIsGhost(p) && p.position === mover.position)
+    : state.players.filter(p => extIsGhost(p) && p.position === mover.position).length ? [mover] : [];
+  if (!victims.length) return false;
+  for (const victim of victims) {
+    const strikeEffects = [];
+    engineHooks.ghostStrike(state, victim, strikeEffects);
+    const detail = strikeEffects.map(e => e.text).filter(Boolean).join(' ');
+    effects.push({ icon: '👻', text: `撞見幽靈！員工嚇到罷工了！強制觸發罷工。${detail ? ` ${detail}` : ''}`, tone: 'bad' });
+    log(state, ghostMover
+      ? `👻 ${mover.name} 的幽靈纏上 ${victim.name}，員工嚇到罷工。`
+      : `👻 ${victim.name} 撞見幽靈，員工嚇到罷工。`);
+  }
+  return true;
+}
+
 engineHooks.afterRoll = (state, player, roll, options = {}) => {
   const ext = state.ext;
   if (!ext || state.status !== 'playing') return;
@@ -2243,18 +2276,8 @@ engineHooks.afterRoll = (state, player, roll, options = {}) => {
     ext.lastEvent = { type: 'domainHit', playerId: player.id, ownerId: owner?.id, amount: lost, at: Date.now() };
     if (state.status !== 'playing') return;
   }
-  // 罷工幽靈移動後與存活玩家同格：強制該存活玩家觸發罷工。
-  if (player.ext?.eliminated) {
-    const victims = state.players.filter(p => p.id !== player.id && !p.ext?.eliminated && p.position === player.position);
-    for (const victim of victims) {
-      const strikeEffects = [];
-      engineHooks.ghostStrike(state, victim, strikeEffects);
-      const detail = strikeEffects.map(e => e.text).join(' ');
-      roll.effects.push({ icon: '👻', text: `${player.name} 的幽靈與 ${victim.name} 同格，強制觸發罷工！${detail ? ` ${detail}` : ''}`, tone: 'bad' });
-      log(state, `👻 ${player.name} 的幽靈纏上 ${victim.name}，強制觸發罷工。`);
-      if (state.status !== 'playing') return;
-    }
-  }
+  // 幽靈玩家與正常玩家在同一格時，無論誰主動移動都觸發碰撞。
+  if (extGhostCollision(state, player, roll.effects) && state.status !== 'playing') return;
   // 起點買星只認「本次移動經過或踩中」；開局站在原地不會建立邀請。
   const touchedStart = Boolean(roll.passedStart) || (Array.isArray(roll.path) && roll.path.includes(0));
   if (ext.mode === 'star' && !rewound && touchedStart && !player.ext?.bankFreeze && !player.ext?.eliminated) {
@@ -2263,7 +2286,7 @@ engineHooks.afterRoll = (state, player, roll, options = {}) => {
     ext.starOffer = null;
   }
   const tile = boardOf(state)[roll.tileIndex];
-  if (roll.struck || tile?.special) {
+  if (extIsGhost(player) || roll.struck || tile?.special) {
     state.pendingDecision = null;
     state.phase = 'resolve';
   } else {
@@ -2299,7 +2322,7 @@ engineHooks.ghostStrike = (state, player, effects) => {
         items: clone(saved.items), mythics: clone(saved.mythics), marks: clone(saved.marks), position: saved.position,
         skipTurns: saved.skipTurns, parentId: saved.parentId, rentTo: saved.rentTo, rentTurns: saved.rentTurns,
         leverage: saved.leverage, bankLock: saved.bankLock, noReward: saved.noReward,
-        forcedRed: saved.forcedRed, forcedSteps: saved.forcedSteps, ext: clone(saved.ext)
+        forcedRed: saved.forcedRed, forcedSteps: saved.forcedSteps, isGhost: saved.isGhost, ext: clone(saved.ext)
       });
     }
     state.ghostPosition = snap.ghostPosition;
@@ -2490,11 +2513,12 @@ function extCheckBankruptcy(state, changed) {
   if (!state?.ext || state.status !== 'playing') return [];
   const eliminated = [];
   for (const p of state.players) {
-    if (p.ext?.eliminated) continue;
+    if (extIsGhost(p)) continue;
     if (Number(p.cash) > -1000) continue;
     extPlayerExt(p);
     p.ext.eliminated = true;
     p.ext.ghostRole = true;
+    p.isGhost = true;
     p.ext.oneStepLock = false;
     p.ext.forceOneNext = false;
     if (state.ext.domain?.ownerId === p.id) state.ext.domain = null;
@@ -2535,12 +2559,12 @@ function extCheckWin(state, { settle = false } = {}) {
   let reason = null;
   let target = 0;
   if (ext.mode === 'star') {
-    qualified = state.players.filter(p => !p.ext?.eliminated && p.stars >= (state.starGoal || STAR_GOAL));
+    qualified = state.players.filter(p => !extIsGhost(p) && p.stars >= (state.starGoal || STAR_GOAL));
     reason = 'stars';
     target = state.starGoal || STAR_GOAL;
   } else if (ext.mode === 'tycoon') {
     target = Number(ext.target) || TYCOON_TARGET;
-    qualified = state.players.filter(p => !p.ext?.eliminated && p.cash >= target);
+    qualified = state.players.filter(p => !extIsGhost(p) && p.cash >= target);
     reason = 'target';
   }
   if (!qualified.length) {
@@ -2584,7 +2608,7 @@ function extMaybeForcedStar(state) {
   if (!ext || ext.mode !== 'star') return;
   const p = currentOf(state);
   if (p.ext?.eliminated) { ext.forcedStarOffer = null; return; }
-  const stars = state.players.find(x => x.id !== p.id && !x.ext?.eliminated && x.position === p.position && x.stars > 0);
+  const stars = state.players.find(x => x.id !== p.id && !extIsGhost(x) && x.position === p.position && x.stars > 0);
   ext.forcedStarOffer = stars ? { playerId: p.id, targetId: stars.id, cost: ext.starPrice + FORCED_STAR_PREMIUM } : null;
 }
 
@@ -2655,7 +2679,7 @@ function extForcedStarInfo(state) {
 function extForcedBuyStar(state, targetId) {
   const ext = state.ext;
   if (!ext || ext.mode !== 'star') throw Error('只有企業之星模式可以強買星星。');
-  const p = currentOf(state), target = state.players.find(x => x.id === targetId);
+  const p = currentOf(state), target = state.players.find(x => x.id === targetId && !extIsGhost(x));
   if (!target || target.id === p.id) throw Error('請選擇持有星星的對手。');
   if (target.position !== p.position || target.stars <= 0) throw Error('必須與持有星星的玩家同格。');
   const cost = extStarPrice(state) + FORCED_STAR_PREMIUM;
@@ -2685,7 +2709,7 @@ function extUseSkill(state, targetId, sectorOrTile) {
   if (engineHooks.canUse && !engineHooks.canUse(state, p, 'skill')) throw Error(engineHooks.blockedReason?.(state, p, 'skill') || '目前無法使用技能。');
   if (p.energy < 1) throw Error('技能能量不足，請先踩技能格或使用道具補充。');
   const role = extRoleOf(p), skill = role.skill;
-  const target = state.players.find(x => x.id === targetId);
+  const target = state.players.find(x => x.id === targetId && !extIsGhost(x));
   const others = extTargets(state, p.id);
   if (skill.target === 'opponent' && !target) throw Error('請選擇一位對手作為技能目標。');
   if (skill.target === 'tile' && !Number.isInteger(Number(sectorOrTile))) throw Error('請選擇一個格子。');
@@ -2904,6 +2928,7 @@ function extAddSpecial(state, player, id, { silent = false, force = false } = {}
 // 落後補償：優先替換該玩家本季剛抽到的普通道具，否則在空位放入或替換最後一個普通道具。
 function extGrantFateDice(state, player) {
   extPlayerExt(player);
+  if (extIsGhost(player)) return null;
   let replaced = null;
   const roundItems = player.ext?.itemRound?.round === state.round ? player.ext.itemRound.ids : [];
   for (let i = roundItems.length - 1; i >= 0; i -= 1) {
@@ -2931,14 +2956,14 @@ function extGrantFateDice(state, player) {
 function extTycoonComeback(state) {
   const ext = state.ext;
   if (!ext || ext.mode !== 'tycoon') return;
-  const alive = state.players.filter(p => !p.ext?.eliminated);
+  const alive = state.players.filter(p => !extIsGhost(p));
   if (alive.length < 2) return;
   const lowestCash = Math.min(...alive.map(p => Number(p.cash) || 0));
   const lowest = alive.filter(p => (Number(p.cash) || 0) === lowestCash);
   const streaks = ext.tycoonStreaks && typeof ext.tycoonStreaks === 'object' ? ext.tycoonStreaks : (ext.tycoonStreaks = {});
   for (const p of state.players) {
     const previous = Math.max(0, Number(streaks[p.id]) || 0);
-    if (p.ext?.eliminated) streaks[p.id] = 0;
+    if (extIsGhost(p)) streaks[p.id] = 0;
     else if (lowest.some(x => x.id === p.id)) streaks[p.id] = previous + 1;
     else streaks[p.id] = 0;
   }
@@ -2960,7 +2985,7 @@ function extTycoonComeback(state) {
 // 命運骰子：先展開自選面板，玩家選定 1–6 後才消耗道具並由 UI 觸發擲骰。
 function extPrepareFateDice(state) {
   if (state.status !== 'playing') throw Error('遊戲已結束。');
-  if (state.phase !== 'roll') throw Error('命運骰子只能在擲骰前使用。');
+  if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('命運骰子只能在擲骰前使用。');
   const p = currentOf(state);
   if (!extHasSpecial(p, FATE_DICE_ID)) throw Error('你沒有命運骰子。');
   if (engineHooks.canUse && !engineHooks.canUse(state, p, 'item', FATE_DICE_ID)) {
@@ -2983,7 +3008,7 @@ function extUseFateDice(state, value) {
   const step = Number(value);
   if (!Number.isInteger(step) || step < 1 || step > 6) throw Error('命運骰子只能選擇 1–6。');
   if (state.status !== 'playing') throw Error('遊戲已結束。');
-  if (state.phase !== 'roll') throw Error('命運骰子只能在擲骰前使用。');
+  if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('命運骰子只能在擲骰前使用。');
   const p = currentOf(state);
   if (state.ext?.fateDice && state.ext.fateDice.playerId !== p.id) throw Error('現在不是你的命運骰子選擇。');
   const index = (p.specials || []).indexOf(FATE_DICE_ID);
@@ -3017,7 +3042,7 @@ function extDiscard(state, player, kind, index) {
 
 function extUseMythic(state, itemId, payload = {}) {
   if (state.status !== 'playing') throw Error('遊戲已結束。');
-  if (state.phase !== 'roll') throw Error('神話道具只能在擲骰前使用。');
+  if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('神話道具只能在擲骰前使用。');
   const p = currentOf(state);
   extPlayerExt(p);
   if (!extMythicEntry(p, itemId)) throw Error('你沒有這個神話道具。');
@@ -3428,7 +3453,7 @@ function extApplyWheel(state, player, effect) {
     }
     case 'sucker': {
       if (player.stars <= 0) return '自己沒有星星，無法送出。';
-      const candidates = state.players.filter(p => p.id !== player.id && !p.ext?.eliminated);
+      const candidates = state.players.filter(p => p.id !== player.id && !extIsGhost(p));
       if (!candidates.length) return '沒有其他玩家。';
       const lowest = Math.min(...candidates.map(p => p.stars));
       const target = candidates.filter(p => p.stars === lowest)[0];
@@ -3449,7 +3474,7 @@ function extTriggerDoom(state, early = false) {
   if (!ext || ext.mode !== 'evil') return;
   if (ext.doomPending) return ext.doomPending;
   const fee = ext.doomPrice;
-  const entries = state.players.filter(p => !p.ext?.eliminated)
+  const entries = state.players.filter(p => !extIsGhost(p))
     .map((player, order) => ({ playerId: player.id, name: player.name, cashAtStart: player.cash, order }))
     .sort((a, b) => b.cashAtStart - a.cashAtStart || a.order - b.order)
     .map(({ order, ...entry }) => entry);
@@ -3482,7 +3507,7 @@ function extResolveDoomPlayer(state, playerId) {
       state.ext.totemEvent = { playerId: player.id, at: Date.now() };
       log(state, `🗿 ${player.name} 的不死圖騰擋下雷射處決！`);
     } else {
-      player.ext.eliminated = true; player.ext.ghostRole = true;
+      player.ext.eliminated = true; player.ext.ghostRole = true; player.isGhost = true;
       player.ext.aliveSeasons = player.ext.aliveSeasons || 0;
       player.ext.oneStepLock = false; player.ext.forceOneNext = false;
       if (state.ext.domain?.ownerId === player.id) state.ext.domain = null;
@@ -3558,14 +3583,17 @@ function extDebugTeleport(state, playerId, tileIndex) {
   const len = boardOf(state).length;
   if (!p || !Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= len) throw Error('傳送目標無效。');
   p.position = tileIndex;
-  applyCornerProgress(state,p,[tileIndex]);
+  if (!extIsGhost(p)) applyCornerProgress(state,p,[tileIndex]);
   log(state, `🧪 測試模式：${p.name} 被傳送到第 ${tileNo(tileIndex)} 格。`);
-  if (tileIndex === state.ghostPosition) {
-    const effects = [];
+  const effects = [];
+  if (!extIsGhost(p) && tileIndex === state.ghostPosition) {
     engineHooks.ghostStrike(state, p, effects);
+  }
+  extGhostCollision(state, p, effects);
+  if (effects.length) {
     state.lastRoll = { playerId: p.id, value: 0, from: tileIndex, path: [tileIndex], tileIndex, tileType: 'ghost', struck: true, effects };
     state.phase = 'resolve';
-    log(state, `🧪 ${p.name} 被丟到幽靈身上，觸發罷工。`);
+    log(state, `🧪 ${p.name} 被傳送到幽靈所在位置，觸發罷工。`);
     extCheckWin(state);
   }
 }
@@ -5254,6 +5282,7 @@ const PartyUI = (() => {
   let vectorLockTimer = null;
   let lastVictoryKey = '';
   let ghostStrikeTimer = null;
+  let lastGhostCollisionToast = 0;
   let doomTimers = [];
   let doomIntervals = [];
   let doomControllerActive = false;
@@ -7598,7 +7627,7 @@ const PartyUI = (() => {
     const p = state();
     if (!p) return;
     if (!canUseLocalAction(p)) { app()?.notify('現在不是你的回合，請等待其他玩家。'); return; }
-    if (p.phase !== 'roll') { app()?.notify('神話道具只能在擲骰前使用。'); return; }
+    if (p.phase !== 'roll' && !p.ext?.debug) { app()?.notify('神話道具只能在擲骰前使用。'); return; }
     const player = p.players[p.turnIndex];
     const entry = player?.mythics?.find(x => x.id === 'truthGate');
     const normal = (window.__partyData?.ITEMS || []).filter(i => !i.hidden && i.category !== '特殊道具');
@@ -7923,7 +7952,15 @@ const PartyUI = (() => {
       else if (ev.type === 'iceMushroom') { if (recentAt(ev.at)) flashFrozen(ev); }
       else if (ev.type === 'bankai') { if (recentAt(ev.at)) flashBankai(); }
       else if (ev.type === 'bankrupt') { if (recentAt(ev.at)) flashBankrupt(ev); }
-      else if (ev.type === 'ghostStrike' && !net?.active) { if (recentAt(ev.at)) flashGhostInterference(ev); }
+      else if (ev.type === 'ghostStrike') {
+        if (recentAt(ev.at)) {
+          if (!net?.active) flashGhostInterference(ev);
+          if (Number(ev.at) !== lastGhostCollisionToast) {
+            lastGhostCollisionToast = Number(ev.at);
+            app()?.notify?.('撞見幽靈！員工嚇到罷工了！');
+          }
+        }
+      }
     }
     const totem = p.ext?.totemEvent;
     if (totem?.at && String(totem.at) !== lastTotemKey) {
@@ -9054,8 +9091,8 @@ function inventorySlots(p){
 }
 function itemBarMarkup(p,{interactive=true}={}){
   const chips=statusChips(state,p);
-  const blocked=Boolean(p?.ext?.eliminated)||chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
-  const usable=interactive&&state.phase==='roll'&&!animation&&!blocked;
+  const blocked=Boolean(p?.isGhost||p?.ext?.eliminated)||chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
+  const usable=interactive&&(state.phase==='roll'||state.ext?.debug)&&!animation&&!blocked;
   const inventory=inventorySlots(p);
   const slots=Array.from({length:3},(_,i)=>{
     const slot=inventory[i];
@@ -9065,7 +9102,7 @@ function itemBarMarkup(p,{interactive=true}={}){
     if(kind==='mythic')return `<span class="item-slot-wrap"><button type="button" class="item-slot filled mythic-slot" data-mythic-id="${meta.id}" ${usable&&meta.kind!=='passive'?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}${entry.charges>1?` ×${entry.charges}`:''}</span></button><button type="button" class="discard-btn" data-discard-kind="mythic" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
     return `<span class="item-slot-wrap"><button type="button" class="item-slot filled" data-item-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="normal" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
   }).join('');
-  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>只可在投擲骰子前使用。</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false">🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
+  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>${state.ext?.debug?'測試模式：擲骰後仍可無限使用道具。':'只可在投擲骰子前使用。'}</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false">🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
 }
 function setItemDiscardMode(bar, enabled){
   if(!bar)return;
@@ -9398,10 +9435,10 @@ function openTarget(action,itemId=null){
 function targetOptions(){
   const p=activePlayer();
   if(modal.action==='skill'){
-    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&(role(p.roleId).skill.id!=='obsolete'||x.items?.length||x.mythics?.length)).map(x=>{const r=role(x.roleId);return {id:x.id,label:x.name,icon:r.icon,desc:`${r.name} · ${x.stars}★ · ${money(x.cash)} 總資產`}});
+    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&!x.isGhost&&(role(p.roleId).skill.id!=='obsolete'||x.items?.length||x.mythics?.length)).map(x=>{const r=role(x.roleId);return {id:x.id,label:x.name,icon:r.icon,desc:`${r.name} · ${x.stars}★ · ${money(x.cash)} 總資產`}});
   }
   if(modal.action==='item'){
-    return state.players.filter(x=>x.id!==p.id).map(x=>({id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`第 ${tileNo(x.position)} 格 · ${x.stars}★ · ${money(x.cash)} 總資產`}));
+    return state.players.filter(x=>x.id!==p.id&&!x.ext?.eliminated&&!x.isGhost).map(x=>({id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`第 ${tileNo(x.position)} 格 · ${x.stars}★ · ${money(x.cash)} 總資產`}));
   }
   if(modal.action==='acquire'){
     return state.players.filter(x=>canAcquire(state,p,x)).map(x=>{const cost=acquisitionCost(state,p,x);return {id:x.id,label:x.name,icon:role(x.roleId).icon,desc:`併購價 ${money(cost)} · 目標總資產 ${money(x.cash)}`}});
