@@ -1417,3 +1417,65 @@ html,body{margin:0}
   .settlement-card .settle-footer{gap:5px!important;margin-top:5px!important;padding-top:5px!important}
   .settlement-card .settle-actions button{padding:5px 8px!important;font-size:9px!important}
 }
+
+/* 手機橫向最終壓縮：縮小地圖中央資訊並隱藏測試工具面板。 */
+@media screen and (max-width:932px) and (orientation:landscape){
+  .mobile-map-area .board-center.party-center{
+    box-sizing:border-box;
+    padding:4px!important;
+    transform:scale(.84);
+    transform-origin:center center;
+  }
+  .mobile-map-area .party-center .center-backdrop .star-price-backdrop{
+    top:4px!important;
+    min-width:0!important;
+    width:max-content;
+    max-width:72%;
+    padding:3px 7px!important;
+    gap:0!important;
+    border-radius:6px;
+    line-height:1;
+  }
+  .mobile-map-area .party-center .center-backdrop .star-price-backdrop span{
+    font-size:clamp(6px,1vw,8px)!important;
+    line-height:1.05;
+  }
+  .mobile-map-area .party-center .center-backdrop .star-price-backdrop strong{
+    font-size:clamp(12px,1.8vw,16px)!important;
+    line-height:1.05;
+  }
+  .mobile-map-area .party-center .center-backdrop .star-price-backdrop small{
+    font-size:clamp(5px,.85vw,7px)!important;
+    line-height:1.05;
+  }
+  .mobile-map-area .party-center .center-foreground{
+    max-width:88%!important;
+    padding:2px 4px 28px!important;
+    gap:1px!important;
+    line-height:1.05!important;
+  }
+  .mobile-map-area .party-center .center-foreground h3{
+    margin:0!important;
+    font-size:clamp(10px,1.6vw,14px)!important;
+    line-height:1.05!important;
+  }
+  .mobile-map-area .party-center .center-foreground p,
+  .mobile-map-area .party-center .center-foreground small,
+  .mobile-map-area .party-center .center-foreground .card-hint,
+  .mobile-map-area .party-center .center-foreground .market-phase{
+    margin:0!important;
+    font-size:clamp(6px,1vw,8px)!important;
+    line-height:1.05!important;
+  }
+  .mobile-map-area .party-center .center-foreground .debug-chip{
+    margin-top:2px!important;
+    padding:2px 5px!important;
+    font-size:clamp(6px,.95vw,8px)!important;
+    line-height:1!important;
+  }
+
+  #debug-panel,
+  .mobile-control-area #debug-panel{
+    display:none!important;
+  }
+}
