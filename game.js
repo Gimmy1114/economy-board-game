@@ -8484,6 +8484,42 @@ try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
 
 function notify(message){const el=$('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3400)}
+function enableDeveloperMode(){
+  try{
+    const url=new URL(window.location.href);
+    if(url.searchParams.get('dev')==='true'){
+      localStorage.setItem('is_developer','true');
+      url.searchParams.delete('dev');
+      history.replaceState(null,'',`${url.pathname}${url.search}${url.hash}`);
+    }
+    return localStorage.getItem('is_developer')==='true';
+  }catch{return false}
+}
+function showDeveloperUpdateToast(){
+  document.querySelector('.developer-update-toast')?.remove();
+  const toast=document.createElement('div');
+  toast.className='developer-update-toast';
+  toast.textContent='*版本已經更新';
+  document.body.append(toast);
+  requestAnimationFrame(()=>toast.classList.add('is-visible'));
+  setTimeout(()=>{
+    toast.classList.remove('is-visible');
+    setTimeout(()=>toast.remove(),500);
+  },4000);
+}
+function checkDeveloperUpdate(){
+  if(!enableDeveloperMode())return;
+  const currentUrl=`${window.location.pathname}?t=${Date.now()}`;
+  fetch(currentUrl,{method:'HEAD'})
+    .then(response=>{
+      const latestDeployTime=response.headers.get('Last-Modified')||response.headers.get('ETag');
+      if(!latestDeployTime)return;
+      const savedDeployTime=localStorage.getItem('last_deploy_time');
+      if(savedDeployTime&&savedDeployTime!==latestDeployTime)showDeveloperUpdateToast();
+      localStorage.setItem('last_deploy_time',latestDeployTime);
+    })
+    .catch(error=>console.warn('Update check failed',error));
+}
 const turnDurationSeconds=()=>Math.max(1,Math.min(3600,Math.round(Number(state?.advancedSettings?.turnTimerSeconds)||60)));
 function clearTurnClock(){
   clearInterval(turnClock.interval);
@@ -10027,4 +10063,4 @@ if(savedAtStart){
     save();
   }
 }
-renderHomeRoles();renderRules();render();PartyUI.init?.();
+renderHomeRoles();renderRules();render();PartyUI.init?.();checkDeveloperUpdate();

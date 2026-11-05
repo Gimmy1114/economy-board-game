@@ -153,6 +153,7 @@ PeerJS 1.5.2 與 QR Code 產生器（qrcode-generator 1.4.4，以 SRI 驗證）�
 - `audio_system.js`：WebAudio 音效管理。
 - `serve.mjs`：靜態檔案＋多人訊號伺服器（`PORT`、`HOST` 可覆寫）。
 - `game.js`：供直接開啟 HTML 的合併腳本。
+- 開發者更新提示：第一次用網址的 `?dev=true` 開啟後會記住開發者標記；之後每次載入只在開發者模式以避開快取的 `HEAD` 請求檢查部署時間或 ETag，偵測到新部署時顯示一次提示。一般玩家不會執行這項檢查。
 
 修改來源後執行 `node build.mjs`；沒有 Node.js 時可執行 `powershell -ExecutionPolicy Bypass -File .\build.ps1` 更新 `game.js`。規則、派對擴充與同步測試以 `node --test` 執行（`engine.test.js`、`party_engine.test.js`、`sync.test.js`）。
 
