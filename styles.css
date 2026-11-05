@@ -1008,6 +1008,17 @@ html,body{margin:0}
     overflow:hidden;
     text-overflow:ellipsis;
   }
+
+  /* 首頁／建立棋局沿用桌面版灰白背景與深色文字；只有進入棋盤時才使用深色外框。 */
+  html:has(#game[hidden]),
+  body:has(#game[hidden]),
+  body:has(#game[hidden]) .app-shell,
+  body:has(#game[hidden]) main,
+  body:has(#game[hidden]) #home,
+  body:has(#game[hidden]) #setup{
+    background-color:var(--bg);
+    color:var(--ink);
+  }
 }
 
 /* Phase 1：手機橫向地圖中央與格子內容的尺寸約束。 */
