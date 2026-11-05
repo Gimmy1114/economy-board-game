@@ -499,7 +499,8 @@ export const PartyUI = (() => {
   function mapPointerUp(e) { if (mapDrag?.id === e.pointerId) mapDrag = null; }
 
   function setTurnTimer(timer, force = false) {
-    if (!timer?.key || !timer.playerId || !Number.isFinite(timer.seconds)) {
+    const infinite = timer?.infinite === true;
+    if (!timer?.key || !timer.playerId || (!infinite && !Number.isFinite(timer.seconds))) {
       turnTimer = null;
       clearInterval(turnClockInterval);
       turnClockInterval = null;
@@ -507,15 +508,18 @@ export const PartyUI = (() => {
       return;
     }
     const paused = Boolean(timer.paused);
-    if (turnTimer?.key === timer.key && turnTimer.paused === paused && !force) return;
+    if (turnTimer?.key === timer.key && turnTimer.paused === paused && turnTimer.infinite === infinite && !force) return;
+    clearInterval(turnClockInterval);
+    turnClockInterval = null;
     turnTimer = {
       key: timer.key,
       playerId: timer.playerId,
-      seconds: Math.max(0, Math.min(3600, Math.floor(timer.seconds))),
+      seconds: infinite ? Infinity : Math.max(0, Math.min(3600, Math.floor(timer.seconds))),
+      infinite,
       paused,
       receivedAt: performance.now()
     };
-    if (!turnClockInterval) turnClockInterval = setInterval(updateTurnTimerDisplay, 250);
+    if (!infinite) turnClockInterval = setInterval(updateTurnTimerDisplay, 250);
     updateTurnTimerDisplay();
   }
 
@@ -525,6 +529,7 @@ export const PartyUI = (() => {
       return;
     }
     if (event?.type === 'TURN_TIMEOUT') {
+      if (state()?.ext?.debug) return;
       turnNoticePlayerId = event.playerId || '';
       turnNoticeUntil = Date.now() + 4000;
       updateTurnTimerDisplay();
@@ -544,6 +549,7 @@ export const PartyUI = (() => {
 
   function turnSeconds(playerId) {
     if (!turnTimer || turnTimer.playerId !== playerId) return 0;
+    if (turnTimer.infinite) return Infinity;
     // 骰子動畫期間由房主暫停，畫面停在當下的秒數不再往下扣。
     if (turnTimer.paused) return turnTimer.seconds;
     const elapsed = Math.floor((performance.now() - turnTimer.receivedAt) / 1000);
@@ -569,6 +575,12 @@ export const PartyUI = (() => {
       && activePlayer?.id === turnTimer.playerId && localId === turnTimer.playerId);
     node.hidden = !visible;
     if (!visible) return;
+    if (turnTimer.infinite) {
+      value.textContent = '∞';
+      node.classList.remove('expired');
+      node.setAttribute('aria-label', '回合不限時');
+      return;
+    }
     const seconds = turnSeconds(turnTimer.playerId);
     value.textContent = String(seconds).padStart(2, '0');
     node.classList.toggle('expired', seconds === 0);

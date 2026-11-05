@@ -139,6 +139,8 @@ function extPlayerExt(p) {
   p.ext.forceOneNext = Boolean(p.ext.forceOneNext);
   p.ext.noDiceItems = Boolean(p.ext.noDiceItems);
   p.ext.oneStepLock = Boolean(p.ext.oneStepLock);
+  p.isMoving = Boolean(p.isMoving);
+  p.isHandlingEvent = Boolean(p.isHandlingEvent);
   p.ext.domainUsedRound = Number(p.ext.domainUsedRound) || 0;
   p.ext.starsBought = Number(p.ext.starsBought) || 0;
   if (!p.ext.itemGets || typeof p.ext.itemGets !== 'object') p.ext.itemGets = {};
@@ -1816,10 +1818,11 @@ export function extUseFateDice(state, value) {
   if (engineHooks.canUse && !engineHooks.canUse(state, p, 'item', FATE_DICE_ID)) {
     throw Error(engineHooks.blockedReason?.(state, p, 'item', FATE_DICE_ID) || '目前無法使用。');
   }
-  const testMode = extAllowsPostRollItems(state);
-  if (testMode) {
+  const isTestMode = extAllowsPostRollItems(state);
+  if (isTestMode) {
     // 測試模式可在同一回合反覆使用命運骰子；清掉上一個落地決策，
     // 讓 app.js 接著呼叫 rollDie() 時不會再次被 phase='roll' 擋住。
+    p.isMoving = false;
     state.phase = 'roll';
     state.pendingDecision = null;
     state.pendingLanding = null;
@@ -1827,7 +1830,7 @@ export function extUseFateDice(state, value) {
     p.specials.splice(index, 1);
   }
   state.ext.fateDice = null;
-  log(state, `🎲 ${p.name} ${testMode ? '在測試模式重複使用' : '使用'}命運骰子，鎖定前進 ${step} 步。`);
+  log(state, `🎲 ${p.name} ${isTestMode ? '在測試模式重複使用' : '使用'}命運骰子，鎖定前進 ${step} 步。`);
   return step;
 }
 
@@ -2431,6 +2434,11 @@ export function extDebugRollAgain(state) {
 export function extForceEndTurn(state, reason = '行動時間結束') {
   if (!state || state.status !== 'playing') throw Error('遊戲已結束。');
   if (state.phase === 'moving') throw Error('棋子移動中，請稍候再結束回合。');
+  const player = currentOf(state);
+  if (player) {
+    player.isMoving = false;
+    player.isHandlingEvent = false;
+  }
   const ext = state.ext || (state.ext = {});
   state.pendingDecision = null;
   state.pendingLanding = null;

@@ -1418,13 +1418,11 @@ html,body{margin:0}
   .settlement-card .settle-actions button{padding:5px 8px!important;font-size:9px!important}
 }
 
-/* 手機橫向最終壓縮：縮小地圖中央資訊並隱藏測試工具面板。 */
+/* 手機橫向最終調整：保留地圖中央內部資訊的縮小規則並隱藏測試工具面板。 */
 @media screen and (max-width:932px) and (orientation:landscape){
   .mobile-map-area .board-center.party-center{
     box-sizing:border-box;
     padding:4px!important;
-    transform:scale(.84);
-    transform-origin:center center;
   }
   .mobile-map-area .party-center .center-backdrop .star-price-backdrop{
     top:4px!important;

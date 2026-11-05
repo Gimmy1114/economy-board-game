@@ -49,7 +49,7 @@ let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
 let state=null,page='home',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
 let deferredInstallPrompt=null;
-let turnClock={key:'',playerId:'',deadline:0,seconds:60,interval:null,expiring:false,paused:false,remaining:0};
+let turnClock={key:'',playerId:'',deadline:0,seconds:60,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
 let animation=null,animationSerial=0,modal=null,mapPick=null,ghostSkillPicking=false;
 let movingTokenCleanup=null;
@@ -105,9 +105,10 @@ function checkDeveloperUpdate(){
     .catch(error=>console.warn('Update check failed',error));
 }
 const turnDurationSeconds=()=>Math.max(1,Math.min(3600,Math.round(Number(state?.advancedSettings?.turnTimerSeconds)||60)));
+const isTestMode=()=>Boolean(state?.ext?.debug);
 function clearTurnClock(){
   clearInterval(turnClock.interval);
-  turnClock={key:'',playerId:'',deadline:0,seconds:60,interval:null,expiring:false,paused:false,remaining:0};
+  turnClock={key:'',playerId:'',deadline:0,seconds:60,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
   PartyUI.setTurnTimer(null);
 }
 function turnClockKey(){
@@ -119,6 +120,17 @@ function turnClockKey(){
 // 把目前的計時狀態（含暫停）同步給房間裡的每一台裝置。
 function publishTurnClock(){
   if(!state?.net||!turnClock.key)return;
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    turnClock.infinite=true;
+    turnClock.seconds=Infinity;
+    const timer={key:turnClock.key,playerId:turnClock.playerId,deadlineAt:0,seconds:0,infinite:true,paused:false};
+    state.net.turnTimer=timer;
+    PartyNet.broadcastEvent({type:'TURN_TIMER',...timer});
+    try{PartyUI.setTurnTimer(timer,true)}catch{}
+    return;
+  }
   const remaining=turnClock.paused?turnClock.remaining:Math.max(0,turnClock.deadline-Date.now());
   const seconds=Math.max(0,Math.ceil(remaining/1000));
   turnClock.seconds=seconds;
@@ -128,6 +140,14 @@ function publishTurnClock(){
 }
 // 骰子旋轉與棋子逐格移動期間暫停倒數，避免動畫吃掉玩家的行動時間。
 function pauseTurnClock(){
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    turnClock.paused=false;
+    turnClock.infinite=true;
+    publishTurnClock();
+    return false;
+  }
   if(!PartyNet.isHost||!state?.net||!turnClock.key||turnClock.paused)return false;
   turnClock.remaining=Math.max(0,turnClock.deadline-Date.now());
   turnClock.paused=true;
@@ -138,6 +158,14 @@ function pauseTurnClock(){
 }
 // 棋子停穩、格子效果（含彈窗）觸發後，用剩下的秒數繼續倒數。
 function resumeTurnClock(){
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    turnClock.paused=false;
+    turnClock.infinite=true;
+    publishTurnClock();
+    return false;
+  }
   if(!PartyNet.isHost||!state?.net||!turnClock.key||!turnClock.paused)return false;
   turnClock.deadline=Date.now()+turnClock.remaining;
   turnClock.paused=false;
@@ -150,6 +178,11 @@ function resumeTurnClock(){
   return true;
 }
 function expireTurn(key){
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    return;
+  }
   if(turnClock.expiring||turnClock.paused||!PartyNet.isHost||!state?.net||turnClock.key!==key||state.status!=='playing')return;
   if(animation||state.phase==='moving')return;
   turnClock.expiring=true;
@@ -172,6 +205,13 @@ function expireTurn(key){
   }
 }
 function tickTurnClock(now=Date.now()){
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    turnClock.infinite=true;
+    turnClock.seconds=Infinity;
+    return;
+  }
   if(!PartyNet.isHost||!state?.net||!turnClock.key||turnClock.paused)return;
   const key=turnClockKey();
   if(key!==turnClock.key){syncTurnClock();return}
@@ -194,10 +234,21 @@ function syncTurnClock(){
   }
   const key=turnClockKey();
   if(!key)return;
+  if(isTestMode()){
+    clearInterval(turnClock.interval);
+    const playerId=activePlayer().id;
+    const changed=turnClock.key!==key||!turnClock.infinite||turnClock.playerId!==playerId;
+    turnClock={key,playerId,deadline:0,seconds:Infinity,infinite:true,interval:null,expiring:false,paused:false,remaining:0};
+    const timer={key,playerId,deadlineAt:0,seconds:0,infinite:true,paused:false};
+    state.net.turnTimer=timer;
+    if(changed)PartyNet.broadcastEvent({type:'TURN_TIMER',...timer});
+    try{PartyUI.setTurnTimer(timer,true)}catch{}
+    return;
+  }
   if(turnClock.key===key)return;
   clearInterval(turnClock.interval);
   const playerId=activePlayer().id,seconds=turnDurationSeconds(),deadline=Date.now()+seconds*1000;
-  turnClock={key,playerId,deadline,seconds,interval:null,expiring:false,paused:false,remaining:0};
+  turnClock={key,playerId,deadline,seconds,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
   state.net.turnTimer={key,playerId,deadlineAt:deadline,seconds};
   PartyNet.broadcastEvent({type:'TURN_TIMER',key,playerId,seconds});
   turnClock.interval=setInterval(()=>tickTurnClock(),1000);
@@ -360,15 +411,19 @@ function armAuctionResolutionTimeout(){
 // 這兩個判斷集中管理「主動玩家正在移動／處理落地事件」的狀態。
 // 不依賴 DOM，手機重排或 modal 暫時不存在時仍能保護遊戲狀態。
 function isMoving(playerId=activePlayer()?.id){
+  const player=state?.players?.find(entry=>entry.id===playerId);
   return Boolean(playerId&&(
+    player?.isMoving===true||
     animation?.playerId===playerId||
     (state?.phase==='moving'&&state.lastRoll?.playerId===playerId)
   ));
 }
 function isHandlingEvent(playerId=activePlayer()?.id){
   if(!state?.ext||!playerId)return false;
+  const player=state.players?.find(entry=>entry.id===playerId);
   const ext=state.ext;
   return Boolean(
+    player?.isHandlingEvent===true||
     ext.eventPrompt?.playerId===playerId||
     ext.auction?.currentId===playerId||
     ext.replaceOffer?.playerId===playerId||
@@ -513,6 +568,7 @@ async function run(fn,options={}){
     before=cashSnapshot();
     const auctionBefore=state?.ext?.auction;
     fn();
+    if(options.clearTurnInteractions)PartyUI.clearTurnInteractions?.();
     save();
     render();
     if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore);
@@ -1309,7 +1365,7 @@ $('#game').addEventListener('click',e=>{
     runAction({type:'END_TURN'},()=>{
       const result=endTurn(state);
       if(result){notify(result.finished?'對局結束，正在播放結算動畫…':result.suddenDeath?'第一名平手，驟死賽啟動！':`第 ${result.round} 季已結算。`);if(!result.finished)SoundManager.play('slide');}
-    });
+    },{clearTurnInteractions:true});
     return;
   }
   if(action==='debug-end-turn'){
@@ -1317,7 +1373,7 @@ $('#game').addEventListener('click',e=>{
       const result=extDebugEndTurn(state);
       if(result){notify(result.finished?'對局結束，正在播放結算動畫…':result.suddenDeath?'第一名平手，驟死賽啟動！':`測試模式：已切換到第 ${state.round} 季。`);if(!result.finished)SoundManager.play('slide');}
       else notify('測試模式：已結束目前回合。');
-    });
+    },{clearTurnInteractions:true});
     return;
   }
 });
@@ -1446,6 +1502,8 @@ PartyNet.onState = (game,fromPeer) => {
     if(incoming.net?.roomCode===PartyNet.code&&incoming.net?.hostId===PartyNet.hostId&&(!sameRoom||isNewerGame(incoming,state))){
       const localId=localActivePlayerId();
       const incomingActiveId=incoming.players?.[incoming.turnIndex]?.id;
+      const currentActiveId=state?.players?.[state.turnIndex]?.id;
+      const turnChanged=Boolean(currentActiveId&&incomingActiveId&&incomingActiveId!==currentActiveId);
       const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
       const incomingAuctionResolved=Boolean(state?.ext?.auction&&!incoming.ext?.auction);
       // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
@@ -1471,6 +1529,7 @@ PartyNet.onState = (game,fromPeer) => {
       const before=cashSnapshot();
       const starting=incoming.status==='playing'&&(!sameRoom||state?.status!=='playing');
       cancelAnimation();
+      if(turnChanged)PartyUI.clearTurnInteractions?.();
       if(starting){page='game';tab='board';rememberView();PartyUI.hideLobby?.()}
       state=incoming;
       // 先建立移動動畫，再繪製畫面。引擎會先把 player.position 寫成終點，
@@ -1535,9 +1594,9 @@ PartyNet.onAction = (action,fromPeer) => {
     case 'REBEL':
       execute(()=>rebel(state));return;
     case 'END_TURN':
-      execute(()=>endTurn(state));return;
+      execute(()=>endTurn(state),{clearTurnInteractions:true});return;
     case 'DEBUG_END_TURN':
-      execute(()=>extDebugEndTurn(state));return;
+      execute(()=>extDebugEndTurn(state),{clearTurnInteractions:true});return;
     case 'DECISION':
       execute(()=>chooseDecision(state,action.optionId));return;
     case 'CLEAR_EVENT_PROMPT':
@@ -1575,7 +1634,7 @@ PartyNet.onEvent = event => {
     forceCloseAuctionWaitingUI({resolved:true,reason:'remote'});
   }
   if(event?.type==='TURN_TIMER'||event?.type==='TURN_TIMEOUT')PartyUI.updateTurnTimer?.(event);
-  if(event?.type==='TURN_TIMEOUT')notify('行動時間結束');
+  if(event?.type==='TURN_TIMEOUT'&&!isTestMode())notify('行動時間結束');
   if(event?.type==='PLAYER_KICKED')notify(`${event.name||'玩家'} 已被房主移出對局。`);
   if(event?.type==='GHOST_ATTACK')PartyUI.playGhostInterference?.(event);
   if(event?.type==='SKILL_TRIGGERED')PartyUI.playSkillCue?.(event);
@@ -1631,7 +1690,7 @@ window.PartyApp={
     const result=extDebugEndTurn(state);
     if(result)notify(result.finished?'對局結束，正在播放結算動畫…':result.suddenDeath?'第一名平手，驟死賽啟動！':`第 ${result.round} 季已結算。`);
     else notify('測試模式：已結束目前回合。');
-  }),
+  },{clearTurnInteractions:true}),
   spinWheel:()=>PartyUI.openWheel(),
   fateDiceRoll,
   openSettlement:()=>PartyUI.openSettlement(state)

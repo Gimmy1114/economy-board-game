@@ -23,6 +23,11 @@ const ghostSeed=seed=>((Number(seed)|0)^0x6d2b79f5)||1;
 const nextGhostRandom=state=>{let x=state.ghostRng|0;x^=x<<13;x^=x>>>17;x^=x<<5;state.ghostRng=x|0;return (x>>>0)/4294967296};
 const currentPlayer=state=>state.players[state.turnIndex];
 const isGhostPlayer=player=>Boolean(player?.isGhost||player?.ext?.eliminated||player?.ext?.ghostRole);
+const releaseTurnState=player=>{
+  if(!player)return;
+  player.isMoving=false;
+  player.isHandlingEvent=false;
+};
 
 export function log(state,text){state.log.unshift(`第 ${state.round} 季｜${text}`);if(state.log.length>200)state.log.length=200}
 
@@ -107,6 +112,8 @@ function ensurePartyState(state){
     p.noReward=Boolean(p.noReward);
     p.forcedRed=Boolean(p.forcedRed);
     p.forcedSteps=['low','high'].includes(p.forcedSteps)?p.forcedSteps:null;
+    p.isMoving=Boolean(p.isMoving);
+    p.isHandlingEvent=Boolean(p.isHandlingEvent);
     if(!Number.isInteger(p.color))p.color=state.players.indexOf(p);
   }
   ensureGhostState(state);
@@ -125,7 +132,7 @@ export function createGame({players,seed=Date.now(),maxRounds=10,startingCash=ST
   if(!Number.isInteger(limit)||limit<2||limit>30)throw Error('季數上限須為 2–30。');
   if(!Number.isFinite(cash)||cash<0)throw Error('玩家初始總資產須為 0 以上。');
   const state={version:2,mode:'party',board:BOARD.map(t=>({...t})),net:null,round:1,maxRounds:limit,starGoal:STAR_GOAL,turnIndex:0,phase:'roll',rng:n|0||1,seed:n,
-    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null})),
+    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
     ghostRng:ghostSeed(n),ghostPosition:0,ghostTrail:[],
     effects:{},turnGains:{},lastRoll:null,pendingDecision:null,pendingLanding:null,
     log:[],status:'playing',resultReason:null,winnerIds:[],sync:null,ext:null,cornerSubsidyEvent:null};
@@ -201,6 +208,7 @@ export function moveGhost(state){
 export function startTurn(state){
   if(state.status!=='playing')return;
   const p=currentPlayer(state);
+  releaseTurnState(p);
   state.turnGains[p.id]=0;
   p.leverage=false;
   p.forcedSteps=null;
@@ -675,6 +683,7 @@ export function endTurn(state){
   if(state.phase==='decision'||state.phase==='roll')throw Error('請先完成擲骰與決策。');
   if(!['resolve','skipped'].includes(state.phase))throw Error('現在無法結束回合。');
   const p=currentPlayer(state);
+  releaseTurnState(p);
   if(engineHooks.beforeEndTurn)engineHooks.beforeEndTurn(state,p);
   const gain=Math.max(0,state.turnGains[p.id]||0);
   if(p.parentId&&gain>0){
