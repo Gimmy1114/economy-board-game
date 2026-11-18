@@ -83,12 +83,13 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 #pwa-install-btn{display:none}
 .pwa-install-btn{margin-top:12px;padding:12px 17px}
 .home-status{font-size:14px;color:#879594;margin:15px 0 0}
-.home-guide{border-top:1px solid #d9dfda}
-.home-step{display:grid;grid-template-columns:43px 1fr;gap:18px;padding:26px 0 27px;border-bottom:1px solid #d9dfda}
-.home-step>span{color:var(--teal);font-size:18.5px;font-weight:800;letter-spacing:.04em;padding-top:4px}
+.home-guide{border-top:1px solid #d9dfda;display:flex;flex-direction:column;align-items:center;text-align:center}
+.home-step{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;padding:26px 0 27px;border-bottom:1px solid #d9dfda;text-align:center}
+.home-step>span{color:var(--teal);font-size:18.5px;font-weight:800;letter-spacing:.04em}
+.home-step-content{width:100%;display:flex;flex-direction:column;align-items:center}
 .home-step h2{font-size:24px;margin:0 0 8px}
 .home-step p{color:#63747a;font-size:16px;line-height:1.8;margin:0;max-width:560px}
-.home-formula{color:var(--teal-dark);font-size:17.5px;font-weight:800;margin:28px 0 0 61px}
+.home-formula{width:100%;color:var(--teal-dark);font-size:17.5px;font-weight:800;margin:28px 0 0;text-align:center}
 .home-roles{grid-column:1/-1;margin-top:54px}
 .home-roles-heading{border-top:1px solid #d9dfda;padding-top:37px;margin-bottom:20px}
 .home-roles-heading h2{font-size:clamp(32px,3vw,46px);line-height:1.25}
@@ -368,7 +369,7 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .rule-block.special-rules-block{background:#f5faf7;border-color:#d9ebe1}
 .special-rules-note{margin:0 0 10px;color:#648078;font-size:13px;line-height:1.6}
 .special-rule{border-color:#cde4d8;background:#fff}
-.rule-block{background:#fff;border:1px solid #e6ebe7;border-radius:13px;padding:22px 23px;box-shadow:var(--shadow)}
+.rule-block{background:#fff;border:1px solid #e6ebe7;border-radius:13px;padding:22px 23px;box-shadow:var(--shadow);min-width:0}
 .rule-block.wide{grid-column:1/-1}
 .rule-block h3{font-size:19.5px;margin:7px 0 10px}
 .rule-icon{font-size:30px;line-height:1}
@@ -377,8 +378,8 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .rule-block li{font-size:14px;line-height:1.65;color:#5f726c}
 .tag{display:inline-block;padding:1px 5px;border-radius:4px;font-size:11.5px;margin-right:2px}
 .tag.blue{background:#e3eefb;color:#356795}.tag.red{background:#fbe7e3;color:#a34d43}.tag.yellow{background:#fbf2d6;color:#8f6b15}.tag.green{background:#e5f3e8;color:#35734a}.tag.ghost{background:#f1e6f8;color:#765191}
-.rules-items{display:grid;gap:7px}
-.rule-item{display:flex;gap:9px;padding:8px 10px;border:1px solid #e8eee9;border-radius:7px;background:#f9fbf9}
+.rules-items{display:grid;gap:7px;width:100%;min-width:0}
+.rule-item{display:flex;gap:9px;width:100%;min-width:0;padding:8px 10px;border:1px solid #e8eee9;border-radius:7px;background:#f9fbf9}
 .rule-item>span{font-size:19.5px;flex:none}
 .rule-item strong{display:block;font-size:12.5px;color:#255f55}
 .rule-item p{font-size:11.5px;line-height:1.5;color:#768981;margin:1px 0 0}
@@ -1475,5 +1476,560 @@ html,body{margin:0}
   #debug-panel,
   .mobile-control-area #debug-panel{
     display:none!important;
+  }
+}
+/* 首頁遊玩方式與線上多人內嵌區塊 */
+.home-entry-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+.home-entry-actions button{min-width:170px;flex:1 1 170px}
+.home-panel-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:16px}
+.home-panel-heading h2{font-size:27px;margin:0 0 6px}
+.home-panel-heading p:not(.eyebrow){color:#6c7b7d;font-size:14px;line-height:1.6;margin:0}
+.home-online-panel{margin-top:24px;padding:20px;border:1px solid #dce8e2;border-radius:14px;background:#fbfdfb;box-shadow:var(--shadow);text-align:left}
+.home-online-entry{margin-top:0}
+.setup-back-btn{margin:-8px 0 18px}
+@media(max-width:760px){.home-entry-actions{display:grid;grid-template-columns:1fr}.home-entry-actions button{width:100%}.home-online-panel{padding:16px}.home-panel-heading h2{font-size:23px}}
+
+/* 邪惡企業限定傳送門：目標格紫光與雙色煙霧。 */
+.party-tile.portal-purple-glow{
+  z-index:12;
+  animation:portalPurpleGlow 1s ease-in-out both;
+}
+.portal-smoke-cloud{
+  position:absolute;
+  /* 高於棋子（最高約 20），低於所有固定彈窗（從 80 起）。 */
+  z-index:24;
+  width:1px;
+  height:1px;
+  pointer-events:none;
+  transform:translate(-50%,-50%);
+}
+.portal-smoke-cloud i{
+  position:absolute;
+  left:0;
+  top:0;
+  display:block;
+  width:var(--smoke-size,24px);
+  height:var(--smoke-size,24px);
+  border-radius:50%;
+  opacity:1;
+  filter:blur(4px);
+  transform:translate(-50%,-50%) scale(.5);
+  animation:smokePuffDissipate .9s ease-out both;
+}
+.portal-smoke-grey i{background:radial-gradient(circle,rgba(75,85,99,.92) 0%,rgba(107,114,128,.75) 55%,rgba(156,163,175,0) 75%)}
+.portal-smoke-purple i{background:radial-gradient(circle,rgba(147,51,234,.92) 0%,rgba(168,85,247,.75) 55%,rgba(192,132,252,0) 75%)}
+@keyframes specialUnlockPop{
+  0%{opacity:0;transform:translate(-50%,-50%) scale(.3)}
+  18%{opacity:1;transform:translate(-50%,-50%) scale(1.18)}
+  28%{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  75%{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  100%{opacity:0;transform:translate(-50%,-65%) scale(.95)}
+}
+.special-item-unlock-banner{
+  position:fixed;
+  top:0;
+  left:0;
+  z-index:9500;
+  pointer-events:none;
+  transform:translate(-50%,-50%);
+  box-sizing:border-box;
+  max-width:calc(100vw - 24px);
+  padding:18px 36px;
+  background:linear-gradient(135deg,rgba(15,23,42,.94),rgba(30,41,59,.92));
+  border:2.5px solid #facc15;
+  border-radius:16px;
+  color:#fde047;
+  -webkit-text-stroke:6px #3b1706;
+  paint-order:stroke fill;
+  text-shadow:0 2px 8px rgba(0,0,0,.8),0 0 16px rgba(250,204,21,.6);
+  box-shadow:0 12px 32px rgba(0,0,0,.55),0 0 28px rgba(250,204,21,.65);
+  font-family:'Noto Sans TC','Microsoft JhengHei',sans-serif;
+  font-size:clamp(1.8rem,4.5vw,3rem);
+  font-weight:900;
+  line-height:1.35;
+  letter-spacing:2px;
+  text-align:center;
+  white-space:nowrap;
+  animation:specialUnlockPop 2s ease-out forwards;
+}
+
+@keyframes portalPurpleGlow{
+  0%{filter:brightness(1);box-shadow:0 0 0 rgba(180,95,255,0);}
+  55%{filter:brightness(1.3) saturate(1.3);box-shadow:0 0 10px rgba(177,91,255,.72),0 0 28px rgba(124,58,237,.55),inset 0 0 12px rgba(216,180,254,.7);}
+  100%{filter:brightness(1.12) saturate(1.15);box-shadow:0 0 18px rgba(177,91,255,.95),0 0 38px rgba(124,58,237,.72),inset 0 0 18px rgba(216,180,254,.85);}
+}
+@keyframes smokePuffDissipate{
+  0%{opacity:1;transform:translate(-50%,-50%) scale(.5)}
+  100%{opacity:0;transform:translate(calc(-50% + var(--smoke-x,0px)),calc(-50% + var(--smoke-y,-26px))) scale(2.2)}
+}
+/* 線上多人入口在首頁直接呈現，不使用全頁 Popup 遮罩。 */
+#party-ext-root.home-inline{display:block;position:static}
+#party-ext-root.home-inline>.ext-overlay{position:static;inset:auto;z-index:auto;display:block;padding:0;overflow:visible}
+#party-ext-root.home-inline>.ext-overlay>.ext-modal-backdrop{display:none}
+#party-ext-root.home-inline .connect-card,#party-ext-root.home-inline .lobby-card{width:100%;max-width:none;max-height:none;overflow:visible;border:0;border-radius:0;padding:0;box-shadow:none;animation:none}
+#party-ext-root.home-inline .connect-card{text-align:left}
+#party-ext-root.home-inline .lobby-card{text-align:left}
+#party-ext-root.home-inline .ext-modal-close{display:none}
+#party-ext-root.home-inline .connect-actions{justify-content:flex-start}
+#party-ext-root.home-inline .lobby-top-actions .ext-modal-close{display:block;position:static;font-size:28px}
+#party-ext-root.home-inline .lobby-grid{grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr)}
+#party-ext-root.home-inline .connecting-overlay{display:grid;padding:15px;background:#f8fbf8;border:1px solid #dce8e2;border-radius:10px}
+@media(max-width:760px){#party-ext-root.home-inline .lobby-grid{grid-template-columns:1fr}.home-panel-heading{align-items:center}}
+
+/* 首頁與建立對局：標題置頂，設定區塊置中並使用寬版容器。 */
+.home-page,
+.setup-wrap{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:24px;
+  width:100%;
+}
+.home-page{padding:56px 0 84px}
+.home-hero,
+.home-guide,
+.home-roles,
+.setup-hero,
+.setup-card{
+  width:92%;
+  max-width:960px;
+  margin-left:auto;
+  margin-right:auto;
+}
+.home-hero,
+.setup-hero{
+  padding-top:18px;
+  text-align:center;
+}
+.home-hero h1,
+.setup-hero h1{
+  font-size:clamp(48px,6vw,72px);
+  margin-bottom:22px;
+}
+.home-hero>p:not(.eyebrow):not(.home-status),
+.setup-hero>p:not(.eyebrow){
+  max-width:800px;
+  margin-left:auto;
+  margin-right:auto;
+}
+.home-entry-actions{width:min(100%,620px);margin-left:auto;margin-right:auto}
+.home-online-panel{width:100%;margin-left:auto;margin-right:auto}
+.home-guide{margin-top:0}
+.home-roles{grid-column:auto;margin-top:0}
+.setup-wrap{min-height:calc(100vh - 144px);padding:34px 0 68px}
+.setup-card{padding:33px;margin-top:0}
+.setup-notes{justify-content:center}
+#party-ext-root.home-inline{width:100%}
+#party-ext-root.home-inline .lobby-card{width:100%}
+
+/* 派對大廳已是首頁內嵌內容，任何狀態都不應回到 fixed modal 圖層。 */
+#party-lobby{
+  position:static!important;
+  inset:auto!important;
+  z-index:auto!important;
+  padding:0!important;
+  overflow:visible!important;
+}
+#party-lobby[hidden]{display:none!important}
+#party-connect{
+  position:static!important;
+  inset:auto!important;
+  z-index:auto!important;
+  padding:0!important;
+  overflow:visible!important;
+}
+#party-connect[hidden]{display:none!important}
+
+/* 線上入口與單機入口一致：進入設定後收起首頁說明內容。 */
+body.home-online .home-guide,
+body.home-online .home-roles,
+body.home-online .home-hero>.eyebrow,
+body.home-online .home-hero>p:not(.eyebrow):not(.home-status),
+body.home-online .home-status,
+body.home-online #pwa-install-btn{
+  display:none!important;
+}
+
+@media(max-width:760px){
+  .home-page,
+  .setup-wrap{gap:18px;padding-left:0;padding-right:0}
+  .home-hero,
+  .home-guide,
+  .home-roles,
+  .setup-hero,
+  .setup-card{width:92%;max-width:none}
+  .home-page{padding-top:34px;padding-bottom:60px}
+  .setup-wrap{display:flex;padding-top:28px}
+  .home-hero,
+  .setup-hero{padding-top:0}
+  .home-hero h1,
+  .setup-hero h1{font-size:clamp(42px,12vw,58px);margin-bottom:18px}
+  .home-online-panel{padding:16px}
+  .setup-card{padding:22px}
+}
+
+/* 單機模式選擇：只保留圖示與名稱，尺寸依每個按鈕寬度縮放。 */
+.mode-card{
+  container-type:size;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  text-align:center;
+  box-sizing:border-box;
+  width:100%;
+  height:95px!important;
+  min-height:0!important;
+  overflow:hidden;
+  gap:4px;
+  padding:10px 6px!important;
+}
+.mode-card span{
+  display:block;
+  flex:0 0 auto;
+  font-size:clamp(2rem,55cqh,3rem)!important;
+  line-height:1!important;
+  margin:0!important;
+}
+.mode-card strong{
+  display:block;
+  flex:0 0 auto;
+  max-width:100%;
+  margin:0!important;
+  color:#3c5157;
+  font-size:clamp(1rem,17cqw,1.5rem)!important;
+  font-weight:700;
+  line-height:1.1!important;
+  white-space:nowrap;
+}
+.mode-card small{display:none!important}
+
+@media(max-width:760px){
+  .mode-card{height:95px!important;padding:8px 4px!important}
+}
+
+/* 單機進階設定：桌面版左右各七項，中央以垂直線分隔。 */
+.setup-card .advanced-settings summary{
+  font-size:1.15rem!important;
+  font-weight:700!important;
+  color:#1f2937!important;
+}
+.setup-card .advanced-settings-grid{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+  grid-template-rows:repeat(7,minmax(40px,auto))!important;
+  grid-auto-flow:column!important;
+  column-gap:48px!important;
+  row-gap:14px!important;
+  padding:10px 24px 16px!important;
+  margin:12px 0!important;
+  background:linear-gradient(to right,transparent calc(50% - .5px),#d1d5db calc(50% - .5px),#d1d5db calc(50% + .5px),transparent calc(50% + .5px));
+}
+.setup-card .advanced-setting-field,
+.setup-card .advanced-setting-toggle{
+  display:flex!important;
+  flex-direction:row!important;
+  align-items:center!important;
+  justify-content:space-between!important;
+  gap:12px!important;
+  min-width:0!important;
+  min-height:40px!important;
+  margin:0!important;
+  color:#1f2937!important;
+  font-size:1.05rem!important;
+  font-weight:500!important;
+  line-height:1.3!important;
+  white-space:normal!important;
+}
+.setup-card .advanced-setting-field>span,
+.setup-card .advanced-setting-toggle>span{
+  flex:1 1 auto!important;
+  min-width:0!important;
+  color:#1f2937!important;
+  font-size:1.05rem!important;
+  white-space:normal!important;
+}
+.setup-card .advanced-setting-field input[type="number"]{
+  flex:0 0 96px!important;
+  width:96px!important;
+  max-width:96px!important;
+  height:40px!important;
+  padding:6px 10px!important;
+  box-sizing:border-box!important;
+  font-size:1.1rem!important;
+  font-weight:600!important;
+}
+.setup-card .advanced-setting-toggle input[type="checkbox"]{
+  flex:0 0 22px!important;
+  width:22px!important;
+  height:22px!important;
+  margin:0!important;
+  cursor:pointer;
+}
+.setup-card .advanced-settings>.custom-map-button,
+.setup-card .advanced-settings>.advanced-settings-reset{
+  display:inline-flex!important;
+  align-items:center;
+  justify-content:center;
+  width:auto!important;
+  min-height:44px;
+  margin:4px 8px 0 0!important;
+  padding:10px 20px!important;
+  border-radius:10px!important;
+  font-size:1.05rem!important;
+}
+
+@media(max-width:767px){
+  .setup-card .advanced-settings-grid{
+    grid-template-columns:1fr!important;
+    grid-template-rows:none!important;
+    grid-auto-flow:row!important;
+    gap:12px!important;
+    padding:10px 0 16px!important;
+    background:none;
+  }
+  .setup-card .advanced-setting-field,
+  .setup-card .advanced-setting-toggle{
+    font-size:1rem!important;
+  }
+  .setup-card .advanced-setting-field>span,
+  .setup-card .advanced-setting-toggle>span{
+    font-size:1rem!important;
+  }
+  .setup-card .advanced-settings>.custom-map-button,
+  .setup-card .advanced-settings>.advanced-settings-reset{
+    width:100%!important;
+    margin-right:0!important;
+  }
+}
+
+/* 多人大廳與單機設定共用上下全寬結構：玩家區、開始按鈕、對局設定。 */
+.lobby-card .lobby-grid{
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:stretch!important;
+  gap:20px!important;
+  width:100%!important;
+  padding:16px 0!important;
+}
+.lobby-card .lobby-players,
+.lobby-card .lobby-settings{
+  width:100%!important;
+  min-width:0!important;
+  box-sizing:border-box!important;
+}
+.lobby-card .lobby-role-grid{
+  width:100%;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+}
+.lobby-card .lobby-role-btn{
+  width:100%;
+}
+.lobby-card .lobby-actions{
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:stretch!important;
+  justify-content:center!important;
+  gap:12px!important;
+  width:100%!important;
+  box-sizing:border-box!important;
+  border-top:1px solid #edf0ec;
+  border-bottom:1px solid #edf0ec;
+  padding:16px 0!important;
+}
+.lobby-card .lobby-actions #lobby-status,
+.lobby-card .lobby-actions .waiting-dot{
+  display:block;
+  width:100%;
+  font-size:1rem;
+  color:#7c8c88;
+}
+.lobby-card .lobby-actions .primary{
+  display:flex!important;
+  align-items:center;
+  justify-content:space-between;
+  width:100%!important;
+  min-width:0!important;
+  min-height:60px;
+  box-sizing:border-box;
+  font-size:1.1rem;
+  padding:14px 20px;
+}
+.lobby-card .lobby-settings{
+  background:#f6f9f6;
+  border:1px solid #e5ebe6;
+  border-radius:11px;
+  padding:20px!important;
+}
+
+@media(max-width:767px){
+  .lobby-card .lobby-role-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .lobby-card .lobby-settings{padding:16px!important}
+}
+
+/* 多人大廳沿用單機的模式卡與進階設定排版。 */
+#home-online-heading[hidden]{display:none!important}
+.lobby-mode-select{display:none!important}
+.lobby-settings .lobby-mode-picker{
+  display:grid!important;
+  grid-template-columns:repeat(4,minmax(0,1fr))!important;
+  gap:6px!important;
+  margin-top:10px;
+}
+.lobby-settings .lobby-mode-picker .mode-card{
+  width:100%!important;
+  height:95px!important;
+  min-height:0!important;
+}
+.lobby-settings .lobby-row.lobby-primary-row{
+  display:grid!important;
+  grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  align-items:end!important;
+  gap:12px!important;
+  margin-top:12px!important;
+}
+.lobby-settings .lobby-row.lobby-extra-row{
+  display:grid!important;
+  grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  gap:9px!important;
+  margin-top:9px!important;
+}
+.lobby-settings .lobby-row>label[data-lobby-field]{
+  display:block;
+  min-width:0;
+  font-size:1rem;
+  font-weight:500;
+  line-height:1.3;
+  color:#1f2937;
+}
+.lobby-settings .lobby-row>label[data-lobby-field].hidden{display:none!important}
+.lobby-settings .lobby-row>label[data-lobby-field] input{
+  width:100%!important;
+  height:40px!important;
+  margin-top:5px!important;
+  box-sizing:border-box!important;
+  font-size:1.05rem!important;
+  font-weight:600!important;
+}
+.lobby-settings .lobby-primary-row .lobby-debug-check{
+  display:flex!important;
+  align-items:center!important;
+  align-self:end!important;
+  min-height:40px;
+  gap:6px;
+  margin:0!important;
+  white-space:nowrap;
+  font-size:1rem;
+  font-weight:500;
+  color:#1f2937;
+}
+.lobby-settings .lobby-debug-check input{
+  display:inline-block!important;
+  flex:0 0 15px!important;
+  width:15px!important;
+  height:15px!important;
+  margin:0!important;
+  padding:0!important;
+  cursor:pointer;
+}
+.lobby-settings .advanced-settings{
+  width:100%!important;
+  box-sizing:border-box!important;
+  overflow-x:hidden!important;
+}
+.lobby-settings .advanced-settings summary{
+  font-size:1.15rem!important;
+  font-weight:700!important;
+  color:#1f2937!important;
+}
+.lobby-settings .advanced-settings-grid{
+  display:grid!important;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
+  grid-template-rows:repeat(7,minmax(40px,auto))!important;
+  grid-auto-flow:column!important;
+  column-gap:28px!important;
+  row-gap:12px!important;
+  padding:10px 16px 16px!important;
+  margin:12px 0!important;
+  background:linear-gradient(to right,transparent calc(50% - .5px),#d1d5db calc(50% - .5px),#d1d5db calc(50% + .5px),transparent calc(50% + .5px));
+}
+.lobby-settings .advanced-setting-field,
+.lobby-settings .advanced-setting-toggle{
+  display:flex!important;
+  flex-direction:row!important;
+  align-items:center!important;
+  justify-content:space-between!important;
+  gap:8px!important;
+  min-width:0!important;
+  min-height:40px!important;
+  margin:0!important;
+  color:#1f2937!important;
+  font-size:1rem!important;
+  font-weight:500!important;
+  line-height:1.3!important;
+  white-space:normal!important;
+}
+.lobby-settings .advanced-setting-field>span,
+.lobby-settings .advanced-setting-toggle>span{
+  flex:1 1 auto!important;
+  min-width:0!important;
+  color:#1f2937!important;
+  font-size:1rem!important;
+  white-space:normal!important;
+}
+.lobby-settings .advanced-setting-field input[type="number"]{
+  flex:0 0 96px!important;
+  width:96px!important;
+  max-width:96px!important;
+  height:40px!important;
+  padding:6px 10px!important;
+  box-sizing:border-box!important;
+  font-size:1.05rem!important;
+  font-weight:600!important;
+}
+.lobby-settings .advanced-setting-toggle input[type="checkbox"]{
+  flex:0 0 22px!important;
+  width:22px!important;
+  height:22px!important;
+  margin:0!important;
+  cursor:pointer;
+}
+.lobby-settings .advanced-settings>.custom-map-button,
+.lobby-settings .advanced-settings>.advanced-settings-reset{
+  display:inline-flex!important;
+  align-items:center;
+  justify-content:center;
+  width:auto!important;
+  min-height:44px;
+  margin:4px 8px 0 0!important;
+  padding:10px 20px!important;
+  border-radius:10px!important;
+  font-size:1.05rem!important;
+}
+
+@media(max-width:767px){
+  .lobby-settings .lobby-mode-picker{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .lobby-settings .lobby-row.lobby-primary-row,
+  .lobby-settings .lobby-row.lobby-extra-row{
+    grid-template-columns:1fr 1fr!important;
+  }
+  .lobby-settings .lobby-primary-row .lobby-debug-check{grid-column:1/-1}
+  .lobby-settings .advanced-settings-grid{
+    grid-template-columns:1fr!important;
+    grid-template-rows:none!important;
+    grid-auto-flow:row!important;
+    gap:12px!important;
+    padding:10px 0 16px!important;
+    background:none;
+  }
+  .lobby-settings .advanced-setting-field,
+  .lobby-settings .advanced-setting-toggle,
+  .lobby-settings .advanced-setting-field>span,
+  .lobby-settings .advanced-setting-toggle>span{font-size:1rem!important}
+  .lobby-settings .advanced-settings>.custom-map-button,
+  .lobby-settings .advanced-settings>.advanced-settings-reset{
+    width:100%!important;
+    margin-right:0!important;
   }
 }

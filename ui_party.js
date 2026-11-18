@@ -87,6 +87,9 @@ export const PartyUI = (() => {
   let lastIndulgenceKey = '';
   let lastVectorKey = '';
   let lastVectorPendingKey = '';
+  let lastPortalPendingKey = '';
+  let lastPortalResolvedKey = '';
+  const portalSmokeKeys = new Set();
   const playedShieldBlocks = new Set();
   let vectorLockUntil = 0;
   let vectorLockTimer = null;
@@ -289,7 +292,7 @@ export const PartyUI = (() => {
     const homeHero = $('.home-hero');
     if (homeHero && !homeHero.querySelector('[data-party-fullscreen]')) {
       const button = makeFullscreenButton('home-fullscreen-btn');
-      const anchor = $('#home-play-btn');
+      const anchor = $('#home-entry-actions');
       if (anchor) anchor.insertAdjacentElement('afterend', button);
       else homeHero.append(button);
     }
@@ -664,6 +667,18 @@ export const PartyUI = (() => {
     }
   }
 
+  // 首頁多人入口使用同一套連線表單與大廳 DOM，但改掛在首頁區塊內，
+  // 讓原有 id、事件綁定與 PeerJS 流程可以直接沿用。
+  function setHomeInline(enabled) {
+    ensureRoot();
+    const root = $('#party-ext-root');
+    const host = $('#home-online-panel');
+    if (!root) return;
+    if (enabled && host && root.parentElement !== host) host.appendChild(root);
+    if (!enabled && root.parentElement !== document.body) document.body.appendChild(root);
+    root.classList.toggle('home-inline', Boolean(enabled));
+  }
+
   // -------------------------------------------------------------------------
   // 棋子顏色選擇
   // -------------------------------------------------------------------------
@@ -875,7 +890,7 @@ export const PartyUI = (() => {
         ${['star', 'tycoon', 'evil', 'random'].map(id => {
           const m = GAME_MODES?.[id];
           if (!m) return '';
-          return `<button type="button" class="mode-card ${id === mode ? 'active' : ''}" data-mode-id="${id}"><span>${m.icon}</span><strong>${h(m.name)}</strong><small>${h(m.desc)}</small></button>`;
+          return `<button type="button" class="mode-card ${id === mode ? 'active' : ''}" data-mode-id="${id}"><span>${m.icon}</span><strong>${h(m.name)}</strong></button>`;
         }).join('')}
       </div>
       <input type="hidden" id="mode-select" value="${h(mode)}">
@@ -891,11 +906,6 @@ export const PartyUI = (() => {
         <label class="ext-check"><input id="debug-mode" type="checkbox"> 🧪 開啟測試（單機沙盒）</label>
       </div>
       ${advancedSettingsMarkup()}
-      <div class="multi-entry">
-        <div><strong>🌐 多人房間</strong><small>WebRTC 房間代碼大廳，支援 2–8 人</small></div>
-        <div class="multi-buttons"><button type="button" id="create-room-btn" class="secondary">建立房間</button><button type="button" id="join-room-btn" class="quiet">輸入代碼加入</button></div>
-      </div>
-      <p id="room-brief" class="room-brief"></p>
     `;
     document.querySelectorAll('#setup-players [data-setup-role]').forEach(select => {
       if (select.parentElement.querySelector('.setup-role-info')) return;
@@ -915,21 +925,26 @@ export const PartyUI = (() => {
       setupFieldVisibility(box, id, true);
       sound('click');
     }));
-    $('#create-room-btn').onclick = () => openConnect('create');
-    $('#join-room-btn').onclick = () => openConnect('join');
-    if (window.PartyNet?.active && window.PartyNet.lobby) {
+    const createRoom = $('#create-room-btn');
+    const joinRoom = $('#join-room-btn');
+    if (createRoom) createRoom.onclick = () => { app()?.openHomeOnline?.(); setHomeInline(true); openConnect('create'); };
+    if (joinRoom) joinRoom.onclick = () => { app()?.openHomeOnline?.(); setHomeInline(true); openConnect('join'); };
+    if (window.PartyNet?.active && window.PartyNet.lobby && $('#room-brief')) {
       $('#room-brief').textContent = `目前房間：${window.PartyNet.code} · ${window.PartyNet.lobby.players.length} 人`;
     }
   }
 
   function openConnect(kind, presetCode = '', presetName = '') {
+    app()?.openHomeOnline?.();
+    setHomeInline(true);
+    $('#home-online-entry')?.setAttribute('hidden', '');
+    $('#home-online-back')?.removeAttribute('hidden');
     const el = $('#party-connect');
     if (!el) return;
     const roles = window.__partyData?.LOBBY_ROLES || [];
     const selfName = presetName || document.querySelector('[data-setup-name="0"]')?.value || '玩家 1';
     const joinCopy = presetCode ? '已帶入房間代碼，輸入你的名稱後按「加入房間」。' : '向房主取得 5 碼房間代碼，加入後在大廳選擇企業。';
     el.innerHTML = `
-      <div class="ext-modal-backdrop"></div>
       <div class="connect-card">
         <button class="ext-modal-close" data-connect-close type="button">×</button>
         <p class="ext-kicker">${kind === 'create' ? 'CREATE ROOM' : 'JOIN ROOM'}</p>
@@ -946,7 +961,7 @@ export const PartyUI = (() => {
     `;
     el.hidden = false;
     el.dataset.kind = kind;
-    el.querySelectorAll('[data-connect-close]').forEach(b => b.onclick = () => { el.hidden = true; });
+    el.querySelectorAll('[data-connect-close]').forEach(b => b.onclick = () => hideConnect());
     $('#connect-go').onclick = () => {
       const name = $('#connect-name').value.trim() || '玩家';
       try {
@@ -972,6 +987,7 @@ export const PartyUI = (() => {
   }
 
   function showConnecting() {
+    setHomeInline(true);
     const form = $('#party-connect');
     const loading = $('#party-connecting');
     if (form) form.hidden = true;
@@ -983,16 +999,44 @@ export const PartyUI = (() => {
     if (loading) loading.hidden = true;
   }
 
+  function hideConnect({ leave = false } = {}) {
+    if (leave && window.PartyNet?.active) window.PartyNet.leave(false);
+    const form = $('#party-connect');
+    if (form) {
+      form.hidden = true;
+      form.innerHTML = '';
+    }
+    hideConnecting();
+    $('#home-online-entry')?.removeAttribute('hidden');
+    $('#home-online-back')?.removeAttribute('hidden');
+  }
+
   // -------------------------------------------------------------------------
   // 大廳
   // -------------------------------------------------------------------------
   function showLobby(lobby) {
+    app()?.openHomeOnline?.();
+    setHomeInline(true);
     ensureRoot();
     const el = $('#party-lobby');
     if (!el) return;
     getAdvancedSettings();
-    if (!lobby) { clearTurnLock(); el.hidden = true; return; }
-    if (lobby.status === 'playing' && state()?.status === 'playing') { el.hidden = true; return; }
+    if (!lobby) {
+      clearTurnLock();
+      el.hidden = true;
+      $('#home-online-entry')?.removeAttribute('hidden');
+      $('#home-online-back')?.removeAttribute('hidden');
+      $('#home-online-heading')?.removeAttribute('hidden');
+      return;
+    }
+    $('#home-online-entry')?.setAttribute('hidden', '');
+    $('#home-online-back')?.setAttribute('hidden', '');
+    $('#home-online-heading')?.setAttribute('hidden', '');
+    if (lobby.status === 'playing' && state()?.status === 'playing') {
+      el.hidden = true;
+      $('#home-online-heading')?.removeAttribute('hidden');
+      return;
+    }
     clearTurnLock();
     const net = window.PartyNet;
     const activeNameInput = !lobbyNameSubmitting && document.activeElement?.matches?.('[data-lobby-name]')
@@ -1034,7 +1078,6 @@ export const PartyUI = (() => {
       ? `<div class="lobby-qr"><div class="lobby-qr-code" id="lobby-qr" role="img" aria-label="加入房間的 QR Code">${qr}</div><small>其他人用手機相機掃描，會打開遊戲並自動帶入房間代碼。</small></div>`
       : lobby.code && !invite ? '<p class="lobby-qr-note">用線上網址開啟遊戲才會顯示 QR Code（本機網址別的裝置打不開）。</p>' : '';
     el.innerHTML = `
-      <div class="ext-modal-backdrop"></div>
       <div class="lobby-card">
         <div class="lobby-top">
           <div><p class="ext-kicker">MULTIPLAYER LOBBY · WebRTC</p><h2>派對大廳</h2><p class="lobby-code-line">房間代碼 <strong id="lobby-code">${h(lobby.code)}</strong><button class="quiet" id="copy-code" type="button">複製</button></p>${qrBlock}</div>
@@ -1062,15 +1105,23 @@ export const PartyUI = (() => {
             }).join('')}
             ${rolePicker}
           </div>
+          <div class="lobby-footer lobby-actions">
+            <span id="lobby-status">${isHost ? hostStatus : '等待房主開始對局…'}</span>
+            ${isHost ? `<button class="primary" id="lobby-start" type="button" ${online.length < 2 ? 'disabled' : ''}>開始對局 →</button>` : `<span class="waiting-dot">等待房主</span>`}
+          </div>
           <div class="lobby-settings">
             <div class="lobby-section-head"><span>對局設定</span><small>${isHost ? '房主可調整' : '由房主設定'}</small></div>
-            <label>模式
-              <select id="lobby-mode" ${isHost ? '' : 'disabled'}>${['star', 'tycoon', 'evil', 'random'].map(id => `<option value="${id}" ${lobby.mode === id ? 'selected' : ''}>${modes[id]?.icon || ''} ${h(modes[id]?.name || id)}</option>`).join('')}</select>
-            </label>
+            <div class="mode-picker lobby-mode-picker" id="lobby-mode-picker" aria-label="選擇對局模式">
+              ${['star', 'tycoon', 'evil', 'random'].map(id => `<button type="button" class="mode-card ${lobby.mode === id ? 'active' : ''}" data-lobby-mode-id="${id}" aria-pressed="${lobby.mode === id}" ${isHost ? '' : 'disabled'}><span>${modes[id]?.icon || ''}</span><strong>${h(modes[id]?.name || id)}</strong></button>`).join('')}
+            </div>
+            <select id="lobby-mode" class="lobby-mode-select" aria-hidden="true" tabindex="-1" ${isHost ? '' : 'disabled'}>${['star', 'tycoon', 'evil', 'random'].map(id => `<option value="${id}" ${lobby.mode === id ? 'selected' : ''}>${modes[id]?.icon || ''} ${h(modes[id]?.name || id)}</option>`).join('')}</select>
             <div class="lobby-mode-desc" id="lobby-mode-desc">${h(meta.desc || '')}</div>
-            <div class="lobby-row">
+            <div class="lobby-row lobby-primary-row">
               ${field('rounds', 'lobby-rounds', '最多季數', lobby.rounds || meta.defaultRounds || 10, 'min="3" max="30"')}
               ${field('starGoal', 'lobby-star-goal', '勝利星數', lobby.starGoal || meta.starGoal || 3, 'min="1" max="10"')}
+              <label class="ext-check lobby-debug-check"><input id="lobby-debug" type="checkbox" ${lobby.debug ? 'checked' : ''} ${isHost ? '' : 'disabled'}> 🧪 開啟測試</label>
+            </div>
+            <div class="lobby-row lobby-extra-row">
               ${field('target', 'lobby-target', '總資產目標', lobby.target || meta.defaultTarget || 8000, 'min="2000" step="500"')}
               ${field('doomEvery', 'lobby-doom-every', '保護費間隔（季）', lobby.doomEvery || 5, 'min="1" max="30"')}
               ${field('doomPrice', 'lobby-doom-price', '初始保護費', lobby.doomPrice || 1000, 'min="100" step="100"')}
@@ -1078,13 +1129,8 @@ export const PartyUI = (() => {
             </div>
             <p class="lobby-lock-note" ${activeMode === 'random' ? '' : 'hidden'}>🎲 隨機模式鎖定數值：企業之星 10 季／3 星；首富競爭 24 季／8,000；邪惡企業 20 季／首期 1,000／抬升 500。</p>
             ${advancedSettingsMarkup({ disabled: !isHost })}
-            <label class="ext-check"><input id="lobby-debug" type="checkbox" ${lobby.debug ? 'checked' : ''} ${isHost ? '' : 'disabled'}> 🧪 開啟測試</label>
             <div class="lobby-hint">Tips：每人只能操作自己的回合；所有狀態（道具、星數、護盾、通膨）都會同步。</div>
           </div>
-        </div>
-        <div class="lobby-footer">
-          <span id="lobby-status">${isHost ? hostStatus : '等待房主開始對局…'}</span>
-          ${isHost ? `<button class="primary" id="lobby-start" type="button" ${online.length < 2 ? 'disabled' : ''}>開始對局 →</button>` : `<span class="waiting-dot">等待房主</span>`}
         </div>
       </div>
     `;
@@ -1102,9 +1148,14 @@ export const PartyUI = (() => {
     $('#copy-code').onclick = async () => {
       try { await navigator.clipboard.writeText(lobby.code); $('#copy-code').textContent = '已複製'; setTimeout(() => { const b = $('#copy-code'); if (b) b.textContent = '複製'; }, 1500); } catch { }
     };
-    $('#lobby-leave').onclick = () => { window.PartyNet.leave(); el.hidden = true; renderSetupExtras(); };
+    $('#lobby-leave').onclick = () => { window.PartyNet.leave(); el.hidden = true; $('#home-online-entry')?.removeAttribute('hidden'); $('#home-online-heading')?.removeAttribute('hidden'); renderSetupExtras(); };
     $('#lobby-mode').onchange = e => {
       const id = e.target.value;
+      $$('[data-lobby-mode-id]').forEach(button => {
+        const active = button.dataset.lobbyModeId === id;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
       window.PartyNet.setMode(id);
       const m = modes[id];
       if (!m) return;
@@ -1115,6 +1166,13 @@ export const PartyUI = (() => {
       if (id === 'tycoon') window.PartyNet.setTarget(m.defaultTarget || 8000);
       if (id === 'evil') { window.PartyNet.setDoomEvery(5); window.PartyNet.setDoomPrice(1000); window.PartyNet.setDoomStep(500); }
     };
+    $$('[data-lobby-mode-id]').forEach(button => button.onclick = () => {
+      const select = $('#lobby-mode');
+      if (!select || button.disabled) return;
+      select.value = button.dataset.lobbyModeId;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      sound('click');
+    });
     const bind = (id, fn) => { const node = $(id); if (node) node.onchange = e => fn(e.target.value); };
     bind('#lobby-rounds', v => window.PartyNet.setRounds(v));
     bind('#lobby-star-goal', v => window.PartyNet.setStarGoal(v));
@@ -1181,7 +1239,7 @@ export const PartyUI = (() => {
     };
   }
 
-  function hideLobby() { const el = $('#party-lobby'); if (el) el.hidden = true; closeColorPicker(); }
+  function hideLobby() { const el = $('#party-lobby'); if (el) el.hidden = true; $('#home-online-entry')?.removeAttribute('hidden'); $('#home-online-back')?.removeAttribute('hidden'); $('#home-online-heading')?.removeAttribute('hidden'); closeColorPicker(); }
 
   // -------------------------------------------------------------------------
   // 開場 / 事件動畫
@@ -2108,6 +2166,65 @@ export const PartyUI = (() => {
       : `⬆️ ${names[0] || '玩家'} 被矢量操作傳送到第 ${tileNo(destination)} 格！`);
   }
 
+  function portalTileElement(index) {
+    return $('#board')?.querySelector(`[data-tile-index="${index}"]`) || null;
+  }
+  // 傳送門煙霧掛在 body，使用文件座標，避免被棋盤或格子的 overflow 裁切。
+  function spawnPortalSmoke(cellElement, colorType) {
+    if (!cellElement || !document.body) return null;
+    const rect = cellElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const cloud = document.createElement('span');
+    const tone = colorType === 'purple' ? 'purple' : 'grey';
+    cloud.className = `portal-smoke-cloud portal-smoke-${tone}`;
+    cloud.setAttribute('aria-hidden', 'true');
+    cloud.style.left = `${rect.left + rect.width / 2 + window.scrollX}px`;
+    cloud.style.top = `${rect.top + rect.height / 2 + window.scrollY}px`;
+    const count = 6 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i += 1) {
+      const puff = document.createElement('i');
+      const angle = (Math.PI * 2 * i / count) + (Math.random() - .5) * .45;
+      const distance = 22 + Math.random() * 34;
+      puff.style.setProperty('--smoke-size', `${18 + Math.random() * 22}px`);
+      puff.style.setProperty('--smoke-x', `${Math.cos(angle) * distance}px`);
+      puff.style.setProperty('--smoke-y', `${-18 - Math.random() * 34 + Math.sin(angle) * distance * .45}px`);
+      puff.style.animationDelay = `${Math.random() * .12}s`;
+      cloud.appendChild(puff);
+    }
+    document.body.appendChild(cloud);
+    setTimeout(() => cloud.remove(), 1150);
+    return cloud;
+  }
+  function emitPortalSmoke(event) {
+    const key = String(event?.at || event?.resolvedAt || '');
+    if (!key || portalSmokeKeys.has(key)) return;
+    portalSmokeKeys.add(key);
+    if (portalSmokeKeys.size > 24) portalSmokeKeys.delete(portalSmokeKeys.values().next().value);
+    spawnPortalSmoke(portalTileElement(event.origin), 'grey');
+    spawnPortalSmoke(portalTileElement(event.target), 'purple');
+  }
+  function playPortalPending(event) {
+    if (!event?.at) return;
+    const key = String(event.at);
+    const tile = $('#board')?.querySelector(`[data-tile-index="${event.target}"]`);
+    tile?.classList.add('portal-purple-glow');
+    sound('portal');
+    app()?.notify?.('🪞 請稍候，傳送門正在蓄能…');
+    setTimeout(() => {
+      const current = state(), pending = current?.ext?.portalPending;
+      $('#board')?.querySelector(`[data-tile-index="${event.target}"]`)?.classList.remove('portal-purple-glow');
+      if (pending && String(pending.at) === key && (!current?.net || window.PartyNet?.isHost)) {
+        // 房主先完成瞬移與落地結算，煙霧緊接著在兩個座標浮層出現；
+        // resolvePortal 會廣播 PORTAL_RESOLVED，其他裝置由同步事件播放同一特效。
+        const resolving = app()?.resolvePortal?.(event.at);
+        Promise.resolve(resolving).then(() => emitPortalSmoke(state()?.ext?.portalEvent || event));
+      } else {
+        // 客機不能直接改狀態，先播放本機視覺效果，之後由房主快照／事件校正狀態。
+        emitPortalSmoke(event);
+      }
+    }, 1000);
+  }
+
   function eventSound(event) {
     const kind = event?.kind;
     const amount = Number(event?.amount) || 0;
@@ -2836,6 +2953,16 @@ export const PartyUI = (() => {
       lastVectorPendingKey = String(vectorPending.at);
       beginVectorLock(vectorPending);
     }
+    const portalPending = p.ext?.portalPending;
+    if (portalPending?.at && String(portalPending.at) !== lastPortalPendingKey) {
+      lastPortalPendingKey = String(portalPending.at);
+      playPortalPending(portalPending);
+    }
+    const portalEvent = p.ext?.portalEvent;
+    if (portalEvent?.resolvedAt && String(portalEvent.resolvedAt) !== lastPortalResolvedKey) {
+      lastPortalResolvedKey = String(portalEvent.resolvedAt);
+      emitPortalSmoke(portalEvent);
+    }
     const vector = p.ext?.vectorEvent;
     if (vector?.at && String(vector.at) !== lastVectorKey) {
       lastVectorKey = String(vector.at);
@@ -3213,12 +3340,12 @@ export const PartyUI = (() => {
   }
 
   return {
-    init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, onGameStart, afterRender, isHostPlayer,
+    init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, hideConnect, onGameStart, afterRender, isHostPlayer, setHomeInline,
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
     openSettlement, hideSettlement, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
     closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock,
-    playGhostInterference: flashGhostInterference, playSkillCue,
+    playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,
     decisionBlocked, flashFrozen

@@ -8,9 +8,63 @@ import {
   extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extAuctionId, extPrepareWheel, extResolveWheel,
   extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath, extInvest, extIsDoomApproaching,
   extTargets, extIsGhost, extAllowsPostRollItems,
-  extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice
+  extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice,
+  extUsePortal, extResolvePortal, extAddSpecial
 } from './party_engine.js';
 import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS, SPECIAL_ITEMS, FATE_DICE_ID} from './party_data.js';
+
+test('傳送門是邪惡企業限定特殊道具', () => {
+  const portal = SPECIAL_ITEMS.find(item => item.id === 'portal');
+  assert.equal(portal?.icon, '🪞');
+  assert.equal(portal?.specialOnly, true);
+  assert.equal(portal?.exclusiveMode, 'evil');
+});
+
+test('毀滅日結算後恰好 0 元的生還者下回合取得傳送門', () => {
+  const state = make('evil');
+  const [zero, rich] = state.players;
+  state.ext.doomPrice = 1000;
+  zero.cash = 1000;
+  rich.cash = 2200;
+  extTriggerDoom(state);
+  resolveAllDoom(state);
+  assert.equal(zero.cash, 0);
+  assert.equal(zero.ext.grantPortalNextTurn, true);
+  assert.equal(rich.ext.grantPortalNextTurn, false);
+  state.turnIndex = state.players.indexOf(zero);
+  startTurn(state);
+  assert.equal(zero.ext.grantPortalNextTurn, false);
+  assert.deepEqual(zero.specials, ['portal']);
+  assert.deepEqual(state.ext.specialUnlockEvent.itemId, 'portal');
+  assert.equal(state.ext.specialUnlockEvent.playerId, zero.id);
+});
+
+test('傳送門滿背包時會替換道具，使用後瞬移並結算目標格', () => {
+  const state = make('evil');
+  const player = state.players[0];
+  player.items = ['shield', 'dice123', 'swap'];
+  assert.ok(extAddSpecial(state, player, 'portal', { force: true }));
+  player.position = 2;
+  state.phase = 'roll';
+  const pending = extUsePortal(state, 4);
+  assert.equal(pending.origin, 2);
+  assert.equal(player.position, 2);
+  assert.equal(player.isHandlingEvent, true);
+  assert.equal(player.specials.includes('portal'), false);
+  const event = extResolvePortal(state, pending.at);
+  assert.equal(event.target, 4);
+  assert.equal(player.position, 4);
+  assert.equal(player.isHandlingEvent, false);
+  assert.equal(state.ext.portalPending, null);
+  // 第二次使用必須以目前真實位置為起點，不能沿用第一次的 from。
+  state.phase = 'roll';
+  assert.ok(extAddSpecial(state, player, 'portal', { force: true }));
+  const second = extUsePortal(state, 7);
+  assert.equal(second.origin, 4);
+  assert.equal(state.lastRoll, null);
+  extResolvePortal(state, second.at);
+  assert.equal(player.position, 7);
+});
 
 const make = (mode = 'star', seed = 42, extra = {}) => {
   const state = createGame({
@@ -46,6 +100,8 @@ test('首富競爭連續三季墊底會自動取得命運骰子', () => {
   assert.ok(last.specials.includes(FATE_DICE_ID));
   assert.ok(last.items.length + last.mythics.length + last.specials.length <= 3);
   assert.equal(state.ext.tycoonStreaks[last.id], 3);
+  assert.deepEqual(state.ext.specialUnlockEvent.itemId, FATE_DICE_ID);
+  assert.equal(state.ext.specialUnlockEvent.playerId, last.id);
 });
 
 test('測試模式可直接取得並使用命運骰子', () => {
@@ -1209,6 +1265,88 @@ test('幽靈干擾動畫、鎖銬音效與測試模式幽靈點選已接線', as
   assert.match(css, /\.token\.vector-locked/);
   assert.match(css, /animation:\s*vector-lock-ring/);
   assert.match(css, /body\.debug-mode \.ghost-piece\s*\{[\s\S]*?pointer-events:\s*auto/);
+});
+
+test('內建 WebAudio 增益提升並經過動態壓縮，自訂 MP3 保留獨立音量控制', async () => {
+  const {readFileSync} = await import('node:fs');
+  const audio = readFileSync(new URL('./audio_system.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  assert.match(audio, /BUILTIN_GAIN_BOOST\s*=\s*3/);
+  assert.match(audio, /master\.gain\.value\s*=\s*muted \? 0 : volume \* BUILTIN_GAIN_BOOST/);
+  assert.match(audio, /ctx\.createDynamicsCompressor\(\)/);
+  assert.match(audio, /compressor\.threshold\.value\s*=\s*-12/);
+  assert.match(audio, /compressor\.ratio\.value\s*=\s*6/);
+  assert.match(audio, /compressor\.attack\.value\s*=\s*0\.003/);
+  assert.match(audio, /compressor\.release\.value\s*=\s*0\.15/);
+  assert.match(audio, /master\.connect\(compressor\);\s*compressor\.connect\(ctx\.destination\)/);
+  assert.match(audio, /function trackExternalAudio\(el, gain = 1\)/);
+  assert.match(audio, /external\.add\(rec\)/);
+  assert.match(app, /SoundManager\.trackExternalAudio\?\.\(chimeAudio,\.85\)/);
+  assert.match(app, /SoundManager\.trackExternalAudio\?\.\(sfx,\.9\)/);
+});
+
+test('傳送門煙霧使用 body 全域座標與灰紫多粒子浮層', async () => {
+  const {readFileSync} = await import('node:fs');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  assert.match(ui, /function spawnPortalSmoke\(cellElement, colorType\)/);
+  assert.match(ui, /getBoundingClientRect\(\)/);
+  assert.match(ui, /window\.scrollX/);
+  assert.match(ui, /window\.scrollY/);
+  assert.match(ui, /document\.body\.appendChild\(cloud\)/);
+  assert.match(ui, /portal-smoke-\$\{tone\}/);
+  assert.match(ui, /spawnPortalSmoke\(portalTileElement\(event\.origin\), 'grey'\)/);
+  assert.match(ui, /spawnPortalSmoke\(portalTileElement\(event\.target\), 'purple'\)/);
+  assert.match(app, /PORTAL_RESOLVED/);
+  assert.match(app, /PartyUI\.playPortalSmokeEvent\?\.\(event\)/);
+  assert.match(css, /\.portal-smoke-cloud\{[\s\S]*?z-index:24/);
+  assert.match(css, /filter:blur\(4px\)/);
+  assert.match(css, /rgba\(75,85,99,\.92\)/);
+  assert.match(css, /rgba\(147,51,234,\.92\)/);
+  assert.match(css, /@keyframes smokePuffDissipate/);
+  assert.match(app, /function snapPortalToken\(playerId,targetPosition\)/);
+  assert.match(app, /piece\.style\.transition='none'/);
+  assert.match(app, /void piece\.offsetWidth/);
+});
+
+test('特殊道具解鎖會建立中央金色提示並在動畫後移除', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  assert.match(app, /function showSpecialItemUnlockBanner\(\)/);
+  assert.match(app, /document\.querySelector\('#board,\.board-container'\)/);
+  assert.match(app, /boardEl\?\.getBoundingClientRect\?\.\(\)/);
+  assert.match(app, /const centerX=rect&&rect\.width>0\?rect\.left\+rect\.width\/2/);
+  assert.match(app, /banner\.style\.left=`\$\{centerX\}px`/);
+  assert.match(app, /new Audio\(new URL\('\.\/chime\.mp3',document\.baseURI\)\.href\)/);
+  assert.match(app, /banner\.innerHTML='達成隱藏條件<br>獲得特殊道具'/);
+  assert.match(app, /banner\.addEventListener\('animationend',remove/);
+  assert.match(app, /setTimeout\(remove,2000\)/);
+  assert.match(css, /\.special-item-unlock-banner\{[\s\S]*?position:fixed[\s\S]*?z-index:9500[\s\S]*?pointer-events:none[\s\S]*?background:linear-gradient\(135deg,rgba\(15,23,42,\.94\),rgba\(30,41,59,\.92\)\)[\s\S]*?border:2\.5px solid #facc15/);
+  assert.match(css, /-webkit-text-stroke:6px #3b1706[\s\S]*?paint-order:stroke fill/);
+  assert.match(css, /@keyframes specialUnlockPop\{[\s\S]*?18%\{opacity:1;transform:translate\(-50%,-50%\) scale\(1\.18\)/);
+  assert.match(css, /100%\{opacity:0;transform:translate\(-50%,-65%\) scale\(\.95\)\}/);
+});
+
+test('真理之門成功交換接上中央電弧音效與多人同步事件', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  assert.match(app, /function playGateOfTruthEffect\(\)/);
+  assert.match(app, /new Audio\(new URL\('\.\/electric_impact\.mp3',document\.baseURI\)\.href\)/);
+  assert.match(app, /canvas\.style\.cssText=`position:fixed;left:\$\{centerX\}px;top:\$\{centerY\}px;[\s\S]*?z-index:9600/);
+  assert.match(app, /ctx\.strokeStyle='#ffffff'/);
+  assert.match(app, /ctx\.shadowBlur=18/);
+  assert.match(app, /radius=85\+Math\.sin/);
+  assert.match(app, /requestAnimationFrame\(frame\)/);
+  assert.match(app, /elapsed>=1000\)\{canvas\.remove\(\);return\}/);
+  assert.match(app, /elapsed>=800\?Math\.max\(0,1-\(elapsed-800\)\/200\)/);
+  assert.match(app, /TRUTH_GATE_TRIGGERED/);
+  assert.match(app, /if\(event\?\.type==='TRUTH_GATE_TRIGGERED'\)playGateOfTruthEffect\(\)/);
+  assert.match(app, /truthGateAction=action\?\.type==='TRUTH_GATE'/);
+  assert.match(ui, /payload:\{mode:'buy',itemId,mythic:false\}/);
+  assert.match(ui, /payload:\{mode:'sell',kind,index:Number\(index\)\}/);
 });
 
 test('開場倒數期間隱藏棋盤幽靈，遮罩結束後清除狀態並重繪', async () => {

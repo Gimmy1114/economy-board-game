@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#111b28">
   <link rel="manifest" href="./manifest.webmanifest">
   <title>經濟棋局｜併購派對</title>
-  <link rel="stylesheet" href="./styles.css?v=cc88070e">
-  <link rel="stylesheet" href="./party-ext.css?v=cc88070e">
+  <link rel="stylesheet" href="./styles.css?v=e9c3cba5">
+  <link rel="stylesheet" href="./party-ext.css?v=e9c3cba5">
 </head>
 <body>
   <div id="landscape-warning" role="alert" aria-live="assertive">
@@ -25,17 +25,32 @@
         <div class="home-hero">
           <p class="eyebrow">2–8 人派對棋盤</p>
           <h1 id="home-title">擲出骰子，<br><em>買下整座棋盤。</em></h1>
-          <p>輪流丟 骰子、踩格賺總資產、抽道具、放技能，再用併購星把對手變成你的子公司。先拿到 3 顆星的人，就是這場派對的贏家。</p>
-          <button id="home-play-btn" class="primary" type="button">設定玩家，開始派對 →</button>
+          <p>輪流丟 骰子、踩格賺總資產、抽道具、放技能，再用併購星把對手變成你的子公司。<br>先拿到 3 顆星的人，就是這場派對的贏家。</p>
+          <div id="home-entry-actions" class="home-entry-actions" aria-label="選擇遊玩方式">
+            <button id="home-local-btn" class="primary" type="button">本地單機遊玩</button>
+            <button id="home-online-btn" class="secondary" type="button">線上多人遊玩</button>
+          </div>
+          <div id="home-resume-actions" class="home-entry-actions" hidden>
+            <button id="home-continue-btn" class="primary" type="button">繼續遊戲</button>
+            <button id="home-new-btn" class="secondary" type="button">創建新遊戲</button>
+          </div>
+          <div id="home-online-panel" class="home-online-panel" hidden>
+            <div id="home-online-heading" class="home-panel-heading"><div><p class="eyebrow">MULTIPLAYER · WebRTC</p><h2>線上多人遊玩</h2><p>建立房間或輸入房號加入。連線成功後，大廳會直接顯示在這裡。</p></div><button id="home-online-back" class="quiet" type="button">返回</button></div>
+            <div id="home-online-entry" class="multi-entry home-online-entry">
+              <div><strong>🌐 多人房間</strong><small>WebRTC 房間代碼大廳，支援 2–8 人</small></div>
+              <div class="multi-buttons"><button type="button" id="create-room-btn" class="secondary">建立房間</button><button type="button" id="join-room-btn" class="quiet">輸入代碼加入</button></div>
+            </div>
+            <p id="room-brief" class="room-brief"></p>
+          </div>
           <button id="pwa-install-btn" class="secondary pwa-install-btn" type="button">下載 APP（加入主畫面）</button>
           <p id="home-status" class="home-status">一台電腦就能開始，大家輪流操作。</p>
         </div>
         <div class="home-guide" aria-label="玩法步驟">
-          <div class="home-step"><span>01</span><div><h2>丟 骰子前進</h2><p>每回合丟一顆六面骰，點數 1–6。骰子會旋轉 1–2 秒再停定，棋子逐格前進；集齊四角記號後經過出發點可領 1,000 元補助，領取後記號重置。</p></div></div>
-          <div class="home-step"><span>02</span><div><h2>踩格賺總資產與能量</h2><p>藍色發財格賺 300、紅色蕭條格扣 150、黃色技能格補 1 點能量、綠色事件格抽即時事件。只有踩在灰色斜線的罷工幽靈格，才會扣 1,000 總資產並沒收 1 個道具。</p></div></div>
-          <div class="home-step"><span>03</span><div><h2>用道具干擾對手</h2><p>每回合開始自動抽 1 個道具，普通與神話道具共用 3 格；滿了必須先丟棄。丟骰前可無限次使用：護盾、123／456 骰子、移形換位、開槓桿。</p></div></div>
-          <div class="home-step"><span>04</span><div><h2>發動企業專屬技能</h2><p>每家企業都有獨特技能，消耗 1 點能量。做空、鎖步、專利訴訟、關稅壁壘、限電、炒地皮，全部都能直接干擾對手。</p></div></div>
-          <div class="home-step"><span>05</span><div><h2>買星、併購、拿下勝利</h2><p>用 1,000 總資產買 1 顆併購星，先拿到 3 顆立刻獲勝。總資產滿 2,000 可併購對手，讓他成為每回合上繳 40% 收益的子公司；子公司存到 1,000 也能獨立反撲。</p></div></div>
+          <div class="home-step"><span>01</span><div class="home-step-content"><h2>丟 骰子前進</h2><p>每回合丟一顆六面骰，點數 1–6。骰子會旋轉 1–2 秒再停定，棋子逐格前進；集齊四角記號後經過出發點可領 1,000 元補助，領取後記號重置。</p></div></div>
+          <div class="home-step"><span>02</span><div class="home-step-content"><h2>踩格賺總資產與能量</h2><p>藍色發財格賺 300、紅色蕭條格扣 150、黃色技能格補 1 點能量、綠色事件格抽即時事件。只有踩在灰色斜線的罷工幽靈格，才會扣 1,000 總資產並沒收 1 個道具。</p></div></div>
+          <div class="home-step"><span>03</span><div class="home-step-content"><h2>用道具干擾對手</h2><p>每回合開始自動抽 1 個道具，普通與神話道具共用 3 格；滿了必須先丟棄。丟骰前可無限次使用：護盾、123／456 骰子、移形換位、開槓桿。</p></div></div>
+          <div class="home-step"><span>04</span><div class="home-step-content"><h2>發動企業專屬技能</h2><p>每家企業都有獨特技能，消耗 1 點能量。做空、鎖步、專利訴訟、關稅壁壘、限電、炒地皮，全部都能直接干擾對手。</p></div></div>
+          <div class="home-step"><span>05</span><div class="home-step-content"><h2>買星、併購、拿下勝利</h2><p>用 1,000 總資產買 1 顆併購星，先拿到 3 顆立刻獲勝。總資產滿 2,000 可併購對手，讓他成為每回合上繳 40% 收益的子公司；子公司存到 1,000 也能獨立反撲。</p></div></div>
           <p class="home-formula">3 顆併購星直接獲勝　·　季數上限時：星數 → 總資產</p>
         </div>
         <section class="home-roles" aria-labelledby="home-roles-title">
@@ -57,8 +72,8 @@
       </section>
 
       <div id="setup" class="setup-wrap" hidden>
-        <section class="setup-hero"><p class="eyebrow">2–8 人・一台電腦輪流玩・一回合代表一季</p><h1>啟動你的<br><em>併購派對。</em></h1><p>選擇企業、設定季數上限，擲出骰子在 24 格經濟版圖上前進。踩格、抽道具、放技能、買星星，把對手的公司一間間收進口袋。</p><div class="setup-notes"><span>24 格動態棋盤</span><span>10 種企業技能</span><span>5 道具 + 8 神話</span><span>2–8 人房間</span></div></section>
-        <section class="setup-card"><div class="section-heading"><div><p class="eyebrow">建立對局</p><h2>設定玩家</h2></div><span class="step-pill">2–8 人</span></div><div id="setup-players"></div><button id="add-player" type="button" class="add-player">＋ 新增玩家</button><p class="helper" id="setup-mode-helper">選擇模式後，數值設定會顯示在下方測試選項旁。</p><p id="setup-error" class="form-error" role="alert"></p><button id="start-btn" class="primary big" type="button">開始派對 <span>→</span></button></section>
+        <section class="setup-hero"><p class="eyebrow">2–8 人・一台電腦輪流玩・一回合代表一季</p><h1>啟動你的<br><em>併購派對</em></h1><p>選擇企業、設定季數上限，擲出骰子在 24 格經濟版圖上前進。踩格、抽道具、放技能、買星星，把對手的公司一間間收進口袋。</p><div class="setup-notes"><span>24 格動態棋盤</span><span>10 種企業技能</span><span>5 道具 + 8 神話</span><span>2–8 人房間</span></div></section>
+        <section class="setup-card"><div class="section-heading"><div><p class="eyebrow">建立對局</p><h2>設定玩家</h2></div><span class="step-pill">2–8 人</span></div><button id="setup-back-btn" class="quiet setup-back-btn" type="button">← 返回遊玩方式</button><div id="setup-players"></div><button id="add-player" type="button" class="add-player">＋ 新增玩家</button><p class="helper" id="setup-mode-helper">選擇模式後，數值設定會顯示在下方測試選項旁。</p><p id="setup-error" class="form-error" role="alert"></p><button id="start-btn" class="primary big" type="button">開始派對 <span>→</span></button></section>
       </div>
 
       <div id="game" hidden>
@@ -111,6 +126,6 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <script src="https://unpkg.com/qrcode-generator@1.4.4/qrcode.js" integrity="sha384-8FWZA6BGMXhsfO+BLtrJK0We6gg5o1JyO8xQm6peWDEUs17ACA5ziE/NIAkl9z2k" crossorigin="anonymous"></script>
-  <script defer src="./game.js?v=cc88070e"></script>
+  <script defer src="./game.js?v=e9c3cba5"></script>
 </body>
 </html>

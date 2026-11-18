@@ -209,6 +209,11 @@ export const SPECIAL_ITEMS = [
   {
     id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true, category: '特殊道具',
     desc: '(首富競爭模式限定) 能夠精準掌控命運的神祕道具，在連續三季最後一名時自動獲得。'
+  },
+  {
+    id: 'portal', name: '傳送門', icon: '🪞', kind: 'active', special: true, specialOnly: true,
+    exclusiveMode: 'evil', category: '特殊道具',
+    desc: '（邪惡企業限定）擲骰前選擇任一地圖格，1 秒後瞬移並觸發目標格效果；使用一次即銷毀。'
   }
 ];
 

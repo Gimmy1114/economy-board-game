@@ -1,6 +1,6 @@
 // ============================================================================
 // 全域音效管理器（非破壞性新增）
-// 使用 WebAudio 即時合成，不需外部音檔；所有音效由 Hook 觸發。
+// 內建音效使用 WebAudio 即時合成；外部 MP3 只走獨立音量係數，避免被內建增益放大。
 // ============================================================================
 export const SoundManager = (() => {
   let ctx = null;
@@ -9,6 +9,8 @@ export const SoundManager = (() => {
   let muted = false;
   let unlocked = false;
   const media = new Map();
+  const external = new Set();
+  const BUILTIN_GAIN_BOOST = 3;
   try {
     const saved = JSON.parse(localStorage.getItem('party-audio-v1') || '{}');
     if (typeof saved.volume === 'number') volume = Math.max(0, Math.min(1, saved.volume));
@@ -21,8 +23,14 @@ export const SoundManager = (() => {
       if (!AC) return null;
       ctx = new AC();
       master = ctx.createGain();
-      master.gain.value = muted ? 0 : volume;
-      master.connect(ctx.destination);
+      master.gain.value = muted ? 0 : volume * BUILTIN_GAIN_BOOST;
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -12;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.15;
+      master.connect(compressor);
+      compressor.connect(ctx.destination);
     }
     if (ctx.state === 'suspended') ctx.resume().catch(() => { });
     return ctx;
@@ -30,9 +38,12 @@ export const SoundManager = (() => {
 
   function save() {
     try { localStorage.setItem('party-audio-v1', JSON.stringify({ volume, muted })); } catch { }
-    if (master) master.gain.value = muted ? 0 : volume;
+    if (master) master.gain.value = muted ? 0 : volume * BUILTIN_GAIN_BOOST;
     for (const rec of media.values()) {
       try { rec.el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * (rec.gain || 1))); } catch { }
+    }
+    for (const rec of external) {
+      try { rec.el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * rec.gain)); } catch { }
     }
     const el = document.querySelector('#volume-slider');
     if (el) el.value = String(Math.round(volume * 100));
@@ -56,6 +67,20 @@ export const SoundManager = (() => {
       const task = rec.el.play();
       if (task?.catch) task.catch(() => { });
     } catch { }
+  }
+
+  // 直接由畫面建立的自訂 MP3 也掛入同一個靜音／音量控制；gain 是該檔案
+  // 原本的音量係數，不套用內建 Web Audio 的增益提升。
+  function trackExternalAudio(el, gain = 1) {
+    if (!el) return el;
+    const rec = { el, gain: Number(gain) || 1 };
+    external.add(rec);
+    const sync = () => {
+      try { el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * rec.gain)); } catch { }
+    };
+    sync();
+    el.addEventListener?.('ended', () => external.delete(rec), { once: true });
+    return el;
   }
 
   function tone({ freq = 440, endFreq = freq, dur = 0.12, type = 'sine', gain = 0.15, delay = 0, sweep = false }) {
@@ -121,6 +146,7 @@ export const SoundManager = (() => {
     frozen() { playMedia('frozen', new URL('./frozen.mp3', document.baseURI).href, { gain: 1 }); },
     // 矢量傳送與幽靈專屬音效原本偏大，統一壓到約 45%，避免突然爆音。
     swing() { playMedia('swing', new URL('./swing.mp3', document.baseURI).href, { gain: .45 }); },
+    portal() { playMedia('portal', new URL('./portal.mp3', document.baseURI).href, { gain: .8 }); },
     totem() { playMedia('totem', new URL('./minecraft-totem-sound.mp3', document.baseURI).href, { gain: 1 }); },
     ghostLaugh() { playMedia('king-boos-laugh', new URL('./king-boos-laugh.mp3', document.baseURI).href, { gain: .45 }); },
     cuff() {
@@ -178,6 +204,7 @@ export const SoundManager = (() => {
     get volume() { return volume; },
     get muted() { return muted; },
     setVolume(v) { volume = Math.max(0, Math.min(1, Number(v))); save(); },
+    trackExternalAudio,
     toggleMute() { muted = !muted; save(); return muted; }
   };
 })();

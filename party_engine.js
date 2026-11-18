@@ -11,7 +11,7 @@ import {
 } from './party_data.js';
 import {
   engineHooks, boardOf, addCash, log, finish, checkStarWin, startTurn, endTurn, moveGhost,
-  resolveTileFor, drawItem, currentOf, statusChips, nextRandom, pick, clamp, round2, roleById, itemById, applyCornerProgress,
+  resolveTileFor, resolveLanding, drawItem, currentOf, statusChips, nextRandom, pick, clamp, round2, roleById, itemById, applyCornerProgress,
   tileNo, tileNoText
 } from './engine.js';
 import { BOARD, ROLES, ITEMS, DECISION_OPTIONS, STAR_COST, STAR_GOAL, START_CASH } from './data.js';
@@ -122,7 +122,7 @@ function extPlayerExt(p) {
       eliminated: false, ghostRole: false, frozen: 0, iceLock: 0, burn: 0, immune: false,
       bankFreeze: false, bankai: false, itemsAcquired: 0, aliveSeasons: 0,
       forceOneNext: false, noDiceItems: false, oneStepLock: false, domainUsedRound: 0, starsBought: 0,
-      itemGets: {}, itemRound: null, certificates: []
+      itemGets: {}, itemRound: null, certificates: [], grantPortalNextTurn: false
     };
   }
   p.ext.eliminated = Boolean(p.ext.eliminated);
@@ -148,6 +148,7 @@ function extPlayerExt(p) {
   if (!Array.isArray(p.mythics)) p.mythics = [];
   if (!Array.isArray(p.items)) p.items = [];
   if (!Array.isArray(p.specials)) p.specials = [];
+  p.ext.grantPortalNextTurn = Boolean(p.ext.grantPortalNextTurn);
   // Keep the first copy and never merge charges from duplicate or replayed acquisition packets.
   const seenMythics = new Set();
   p.mythics = p.mythics.filter(entry => {
@@ -402,7 +403,11 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     vectorPending: null,
     fateDice: null,
     tycoonStreaks: {},
-    tycoonComeback: null
+    tycoonComeback: null,
+    portalPending: null,
+    portalEvent: null,
+    specialUnlockEvent: null,
+    specialUnlockEvents: []
   };
   for (const p of state.players) {
     extPlayerExt(p);
@@ -469,6 +474,10 @@ export function extEnsureState(state) {
     if (!('vectorEvent' in state.ext)) state.ext.vectorEvent = null;
     if (!('vectorPending' in state.ext)) state.ext.vectorPending = null;
     if (!('fateDice' in state.ext)) state.ext.fateDice = null;
+    if (!('portalPending' in state.ext)) state.ext.portalPending = null;
+    if (!('portalEvent' in state.ext)) state.ext.portalEvent = null;
+    if (!('specialUnlockEvent' in state.ext)) state.ext.specialUnlockEvent = null;
+    if (!Array.isArray(state.ext.specialUnlockEvents)) state.ext.specialUnlockEvents = state.ext.specialUnlockEvent ? [state.ext.specialUnlockEvent] : [];
     if (!state.ext.tycoonStreaks || typeof state.ext.tycoonStreaks !== 'object') state.ext.tycoonStreaks = {};
     if (!('tycoonComeback' in state.ext)) state.ext.tycoonComeback = null;
     if (!('pendingVictory' in state.ext)) state.ext.pendingVictory = null;
@@ -505,7 +514,8 @@ export function extEnsureState(state) {
     noInflation: false, noRedemption: false, confirmed: [], lobbyPlayers: null, replicas: null, migrated: true,
     starOffer: null, replaceOffer: null, eventPrompt: null, wheelPending: null,
     indulgenceEvent: null, totemEvent: null, vectorEvent: null, vectorPending: null,
-    fateDice: null, tycoonStreaks: {}, tycoonComeback: null
+    fateDice: null, tycoonStreaks: {}, tycoonComeback: null, portalPending: null, portalEvent: null,
+    specialUnlockEvent: null, specialUnlockEvents: []
   };
   if (!state.ghostPosition || state.ghostPosition <= 0) state.ghostPosition = 1;
   extRecordRound(state, state.round || 1, { initial: true });
@@ -690,6 +700,15 @@ engineHooks.canDrawItem = (state, player) => {
   if (player.ext?.bankai) { log(state, `🌀 ${player.name} 的卍解禁止獲取新道具。`); return false; }
   return extItemCount(player) < 3;
 };
+function markSpecialUnlock(state, player, meta) {
+  if (!state?.ext || !player?.id || !meta?.id) return null;
+  const event = { playerId: player.id, itemId: meta.id, at: Date.now() };
+  if (!Array.isArray(state.ext.specialUnlockEvents)) state.ext.specialUnlockEvents = [];
+  state.ext.specialUnlockEvents.push(event);
+  if (state.ext.specialUnlockEvents.length > 16) state.ext.specialUnlockEvents.splice(0, state.ext.specialUnlockEvents.length - 16);
+  state.ext.specialUnlockEvent = event;
+  return event;
+}
 engineHooks.itemAcquired = (state, player, itemId) => {
   if (!player?.ext) return;
   player.ext.itemsAcquired = (player.ext.itemsAcquired || 0) + 1;
@@ -700,6 +719,21 @@ engineHooks.itemAcquired = (state, player, itemId) => {
     player.ext.itemRound.ids.push(itemId);
   }
   extNoteItem(player, itemById(itemId)?.name || itemId);
+};
+
+// 毀滅日零資產獎勵會在下一次自己的回合開始時取代普通抽卡。
+engineHooks.drawItem = (state, player) => {
+  if (!player?.ext?.grantPortalNextTurn) return undefined;
+  player.ext.grantPortalNextTurn = false;
+  if (extIsGhost(player)) return null;
+  if (state.ext?.mode !== 'evil') return undefined;
+  const result = extAddSpecial(state, player, 'portal', { force: true });
+  if (result) {
+    markSpecialUnlock(state, player, result);
+    log(state, `🪞 ${player.name} 回合開始取得特殊道具「${result.icon} ${result.name}」。`);
+    return result;
+  }
+  return null;
 };
 
 function extCaptureRollSnapshot(state, player) {
@@ -1704,6 +1738,7 @@ export function extAddItem(state, player, itemId) {
 export function extAddSpecial(state, player, id, { silent = false, force = false } = {}) {
   const meta = SPECIAL_ITEM_BY_ID[id];
   if (!meta) return null;
+  if (meta.exclusiveMode && state?.ext?.mode !== meta.exclusiveMode) return null;
   extPlayerExt(player);
   if (player.ext?.bankai && !force) {
     if (!silent) log(state, `🌀 ${player.name} 的卍解禁止獲取新道具（含特殊道具）。`);
@@ -1727,6 +1762,57 @@ export function extAddSpecial(state, player, id, { silent = false, force = false
   return meta;
 }
 
+// 傳送門會先建立一個可同步的 pending 事件，讓每台裝置播放 1 秒紫光；
+// 動畫結束後由房主（或單機本機）呼叫 extResolvePortal() 完成移動與落地結算。
+export function extUsePortal(state, tileIndex) {
+  if (state.status !== 'playing') throw Error('遊戲已結束。');
+  if (state.ext?.mode !== 'evil') throw Error('傳送門只能在邪惡企業模式使用。');
+  if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('傳送門只能在擲骰前使用。');
+  const player = currentOf(state);
+  extPlayerExt(player);
+  const index = Number(tileIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= boardOf(state).length) throw Error('請選擇一個有效格子。');
+  if (!extHasSpecial(player, 'portal')) throw Error('你沒有傳送門。');
+  if (engineHooks.canUse && !engineHooks.canUse(state, player, 'item', 'portal')) {
+    throw Error(engineHooks.blockedReason?.(state, player, 'item', 'portal') || '目前無法使用。');
+  }
+  const origin = player.position;
+  player.specials.splice(player.specials.indexOf('portal'), 1);
+  player.isHandlingEvent = true;
+  state.phase = 'moving';
+  // 傳送門不是擲骰移動；清掉上一個回合的 lastRoll，避免畫面重繪時
+  // 把玩家暫時畫回上一次移動的 from 格。
+  state.lastRoll = null;
+  state.pendingLanding = null;
+  state.ext.portalPending = { playerId: player.id, origin, target: index, at: Date.now() };
+  log(state, `🪞 ${player.name} 開啟傳送門：第 ${tileNo(origin)} 格 → 第 ${tileNo(index)} 格。`);
+  return state.ext.portalPending;
+}
+
+export function extResolvePortal(state, at = null) {
+  const pending = state.ext?.portalPending;
+  if (!pending || (at !== null && String(pending.at) !== String(at))) return null;
+  const player = state.players.find(entry => entry.id === pending.playerId);
+  if (!player || state.status !== 'playing') { if (state.ext) state.ext.portalPending = null; return null; }
+  const origin = Number.isInteger(pending.origin) ? pending.origin : player.position;
+  const target = pending.target;
+  state.ext.portalPending = null;
+  player.position = target;
+  player.isMoving = false;
+  state.lastRoll = {
+    playerId: player.id, value: 0, from: origin, path: [target], animationPath: [target],
+    tileIndex: target, tileType: boardOf(state)[target]?.type, struck: false,
+    passedStart: false, effects: [], resolved: false, portal: true
+  };
+  state.pendingLanding = { playerId: player.id, from: origin, value: 0, path: [target], leverage: false, noReward: false, forcedRed: false };
+  state.phase = 'resolve';
+  try { resolveLanding(state); }
+  finally { player.isHandlingEvent = false; }
+  state.ext.portalEvent = { ...pending, origin, target, resolvedAt: Date.now() };
+  log(state, `🪞 ${player.name} 已瞬移至第 ${tileNo(target)} 格，觸發落地效果。`);
+  return state.ext.portalEvent;
+}
+
 // 落後補償：優先替換該玩家本季剛抽到的普通道具，否則在空位放入或替換最後一個普通道具。
 function extGrantFateDice(state, player) {
   extPlayerExt(player);
@@ -1747,6 +1833,7 @@ function extGrantFateDice(state, player) {
   }
   const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true, force: true });
   if (!meta) return null;
+  markSpecialUnlock(state, player, meta);
   if (replaced) {
     log(state, `✨ ${player.name} 的落後補償生效：將本季獲得的「${replaced}」替換為特殊道具「${meta.icon} ${meta.name}」。`);
   } else {
@@ -2351,6 +2438,16 @@ export function extFinishDoom(state) {
   ext.doomCount += 1;
   ext.doomEvent = { ...pending, at: Date.now() };
   delete ext.doomPending;
+  // 毀滅日扣款與處決全部完成後，恰好剩下 0 元的生還者下回合可取得傳送門。
+  if (ext.mode === 'evil') {
+    for (const player of state.players) {
+      if (!extIsGhost(player) && Number(player.cash) === 0) {
+        extPlayerExt(player);
+        player.ext.grantPortalNextTurn = true;
+        log(state, `🪞 ${player.name} 毀滅日結算後總資產恰好為 0，下一回合將取得傳送門。`);
+      }
+    }
+  }
   ext.lastEvent = { type: 'doomComplete', ...ext.doomEvent };
   log(state, `💀 毀滅日結束：${pending.paid.length} 人付款、${pending.resisted.length} 人抵抗、${pending.executed.length} 人被處決。下次保護費 ${extMoney(ext.doomPrice)}。`);
   if (!pending.early) extRecordRound(state, pending.finishedRound, { final: pending.finishedRound >= state.maxRounds });

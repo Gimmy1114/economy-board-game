@@ -271,6 +271,11 @@ const SPECIAL_ITEMS = [
   {
     id: 'fateDice', name: '命運骰子', icon: '🎲', kind: 'active', special: true, category: '特殊道具',
     desc: '(首富競爭模式限定) 能夠精準掌控命運的神祕道具，在連續三季最後一名時自動獲得。'
+  },
+  {
+    id: 'portal', name: '傳送門', icon: '🪞', kind: 'active', special: true, specialOnly: true,
+    exclusiveMode: 'evil', category: '特殊道具',
+    desc: '（邪惡企業限定）擲骰前選擇任一地圖格，1 秒後瞬移並觸發目標格效果；使用一次即銷毀。'
   }
 ];
 
@@ -544,6 +549,12 @@ function consumeShield(state,target,label){
 }
 
 function drawItem(state,player){
+  // 擴充模式可在回合開始時以特殊道具取代一般抽卡結果。
+  // 回傳 undefined 代表沿用原本的隨機道具流程；其他回傳值代表掛鉤已處理。
+  if(engineHooks.drawItem){
+    const handled=engineHooks.drawItem(state,player);
+    if(handled!==undefined)return handled;
+  }
   if(engineHooks.canDrawItem&&!engineHooks.canDrawItem(state,player))return null;
   if(player.items.length>=3)return null;
   const item=getRandomItem(state);
@@ -1338,7 +1349,7 @@ function extPlayerExt(p) {
       eliminated: false, ghostRole: false, frozen: 0, iceLock: 0, burn: 0, immune: false,
       bankFreeze: false, bankai: false, itemsAcquired: 0, aliveSeasons: 0,
       forceOneNext: false, noDiceItems: false, oneStepLock: false, domainUsedRound: 0, starsBought: 0,
-      itemGets: {}, itemRound: null, certificates: []
+      itemGets: {}, itemRound: null, certificates: [], grantPortalNextTurn: false
     };
   }
   p.ext.eliminated = Boolean(p.ext.eliminated);
@@ -1364,6 +1375,7 @@ function extPlayerExt(p) {
   if (!Array.isArray(p.mythics)) p.mythics = [];
   if (!Array.isArray(p.items)) p.items = [];
   if (!Array.isArray(p.specials)) p.specials = [];
+  p.ext.grantPortalNextTurn = Boolean(p.ext.grantPortalNextTurn);
   // Keep the first copy and never merge charges from duplicate or replayed acquisition packets.
   const seenMythics = new Set();
   p.mythics = p.mythics.filter(entry => {
@@ -1618,7 +1630,11 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
     vectorPending: null,
     fateDice: null,
     tycoonStreaks: {},
-    tycoonComeback: null
+    tycoonComeback: null,
+    portalPending: null,
+    portalEvent: null,
+    specialUnlockEvent: null,
+    specialUnlockEvents: []
   };
   for (const p of state.players) {
     extPlayerExt(p);
@@ -1685,6 +1701,10 @@ function extEnsureState(state) {
     if (!('vectorEvent' in state.ext)) state.ext.vectorEvent = null;
     if (!('vectorPending' in state.ext)) state.ext.vectorPending = null;
     if (!('fateDice' in state.ext)) state.ext.fateDice = null;
+    if (!('portalPending' in state.ext)) state.ext.portalPending = null;
+    if (!('portalEvent' in state.ext)) state.ext.portalEvent = null;
+    if (!('specialUnlockEvent' in state.ext)) state.ext.specialUnlockEvent = null;
+    if (!Array.isArray(state.ext.specialUnlockEvents)) state.ext.specialUnlockEvents = state.ext.specialUnlockEvent ? [state.ext.specialUnlockEvent] : [];
     if (!state.ext.tycoonStreaks || typeof state.ext.tycoonStreaks !== 'object') state.ext.tycoonStreaks = {};
     if (!('tycoonComeback' in state.ext)) state.ext.tycoonComeback = null;
     if (!('pendingVictory' in state.ext)) state.ext.pendingVictory = null;
@@ -1721,7 +1741,8 @@ function extEnsureState(state) {
     noInflation: false, noRedemption: false, confirmed: [], lobbyPlayers: null, replicas: null, migrated: true,
     starOffer: null, replaceOffer: null, eventPrompt: null, wheelPending: null,
     indulgenceEvent: null, totemEvent: null, vectorEvent: null, vectorPending: null,
-    fateDice: null, tycoonStreaks: {}, tycoonComeback: null
+    fateDice: null, tycoonStreaks: {}, tycoonComeback: null, portalPending: null, portalEvent: null,
+    specialUnlockEvent: null, specialUnlockEvents: []
   };
   if (!state.ghostPosition || state.ghostPosition <= 0) state.ghostPosition = 1;
   extRecordRound(state, state.round || 1, { initial: true });
@@ -1906,6 +1927,15 @@ engineHooks.canDrawItem = (state, player) => {
   if (player.ext?.bankai) { log(state, `🌀 ${player.name} 的卍解禁止獲取新道具。`); return false; }
   return extItemCount(player) < 3;
 };
+function markSpecialUnlock(state, player, meta) {
+  if (!state?.ext || !player?.id || !meta?.id) return null;
+  const event = { playerId: player.id, itemId: meta.id, at: Date.now() };
+  if (!Array.isArray(state.ext.specialUnlockEvents)) state.ext.specialUnlockEvents = [];
+  state.ext.specialUnlockEvents.push(event);
+  if (state.ext.specialUnlockEvents.length > 16) state.ext.specialUnlockEvents.splice(0, state.ext.specialUnlockEvents.length - 16);
+  state.ext.specialUnlockEvent = event;
+  return event;
+}
 engineHooks.itemAcquired = (state, player, itemId) => {
   if (!player?.ext) return;
   player.ext.itemsAcquired = (player.ext.itemsAcquired || 0) + 1;
@@ -1916,6 +1946,21 @@ engineHooks.itemAcquired = (state, player, itemId) => {
     player.ext.itemRound.ids.push(itemId);
   }
   extNoteItem(player, itemById(itemId)?.name || itemId);
+};
+
+// 毀滅日零資產獎勵會在下一次自己的回合開始時取代普通抽卡。
+engineHooks.drawItem = (state, player) => {
+  if (!player?.ext?.grantPortalNextTurn) return undefined;
+  player.ext.grantPortalNextTurn = false;
+  if (extIsGhost(player)) return null;
+  if (state.ext?.mode !== 'evil') return undefined;
+  const result = extAddSpecial(state, player, 'portal', { force: true });
+  if (result) {
+    markSpecialUnlock(state, player, result);
+    log(state, `🪞 ${player.name} 回合開始取得特殊道具「${result.icon} ${result.name}」。`);
+    return result;
+  }
+  return null;
 };
 
 function extCaptureRollSnapshot(state, player) {
@@ -2920,6 +2965,7 @@ function extAddItem(state, player, itemId) {
 function extAddSpecial(state, player, id, { silent = false, force = false } = {}) {
   const meta = SPECIAL_ITEM_BY_ID[id];
   if (!meta) return null;
+  if (meta.exclusiveMode && state?.ext?.mode !== meta.exclusiveMode) return null;
   extPlayerExt(player);
   if (player.ext?.bankai && !force) {
     if (!silent) log(state, `🌀 ${player.name} 的卍解禁止獲取新道具（含特殊道具）。`);
@@ -2943,6 +2989,57 @@ function extAddSpecial(state, player, id, { silent = false, force = false } = {}
   return meta;
 }
 
+// 傳送門會先建立一個可同步的 pending 事件，讓每台裝置播放 1 秒紫光；
+// 動畫結束後由房主（或單機本機）呼叫 extResolvePortal() 完成移動與落地結算。
+function extUsePortal(state, tileIndex) {
+  if (state.status !== 'playing') throw Error('遊戲已結束。');
+  if (state.ext?.mode !== 'evil') throw Error('傳送門只能在邪惡企業模式使用。');
+  if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('傳送門只能在擲骰前使用。');
+  const player = currentOf(state);
+  extPlayerExt(player);
+  const index = Number(tileIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= boardOf(state).length) throw Error('請選擇一個有效格子。');
+  if (!extHasSpecial(player, 'portal')) throw Error('你沒有傳送門。');
+  if (engineHooks.canUse && !engineHooks.canUse(state, player, 'item', 'portal')) {
+    throw Error(engineHooks.blockedReason?.(state, player, 'item', 'portal') || '目前無法使用。');
+  }
+  const origin = player.position;
+  player.specials.splice(player.specials.indexOf('portal'), 1);
+  player.isHandlingEvent = true;
+  state.phase = 'moving';
+  // 傳送門不是擲骰移動；清掉上一個回合的 lastRoll，避免畫面重繪時
+  // 把玩家暫時畫回上一次移動的 from 格。
+  state.lastRoll = null;
+  state.pendingLanding = null;
+  state.ext.portalPending = { playerId: player.id, origin, target: index, at: Date.now() };
+  log(state, `🪞 ${player.name} 開啟傳送門：第 ${tileNo(origin)} 格 → 第 ${tileNo(index)} 格。`);
+  return state.ext.portalPending;
+}
+
+function extResolvePortal(state, at = null) {
+  const pending = state.ext?.portalPending;
+  if (!pending || (at !== null && String(pending.at) !== String(at))) return null;
+  const player = state.players.find(entry => entry.id === pending.playerId);
+  if (!player || state.status !== 'playing') { if (state.ext) state.ext.portalPending = null; return null; }
+  const origin = Number.isInteger(pending.origin) ? pending.origin : player.position;
+  const target = pending.target;
+  state.ext.portalPending = null;
+  player.position = target;
+  player.isMoving = false;
+  state.lastRoll = {
+    playerId: player.id, value: 0, from: origin, path: [target], animationPath: [target],
+    tileIndex: target, tileType: boardOf(state)[target]?.type, struck: false,
+    passedStart: false, effects: [], resolved: false, portal: true
+  };
+  state.pendingLanding = { playerId: player.id, from: origin, value: 0, path: [target], leverage: false, noReward: false, forcedRed: false };
+  state.phase = 'resolve';
+  try { resolveLanding(state); }
+  finally { player.isHandlingEvent = false; }
+  state.ext.portalEvent = { ...pending, origin, target, resolvedAt: Date.now() };
+  log(state, `🪞 ${player.name} 已瞬移至第 ${tileNo(target)} 格，觸發落地效果。`);
+  return state.ext.portalEvent;
+}
+
 // 落後補償：優先替換該玩家本季剛抽到的普通道具，否則在空位放入或替換最後一個普通道具。
 function extGrantFateDice(state, player) {
   extPlayerExt(player);
@@ -2963,6 +3060,7 @@ function extGrantFateDice(state, player) {
   }
   const meta = extAddSpecial(state, player, FATE_DICE_ID, { silent: true, force: true });
   if (!meta) return null;
+  markSpecialUnlock(state, player, meta);
   if (replaced) {
     log(state, `✨ ${player.name} 的落後補償生效：將本季獲得的「${replaced}」替換為特殊道具「${meta.icon} ${meta.name}」。`);
   } else {
@@ -3567,6 +3665,16 @@ function extFinishDoom(state) {
   ext.doomCount += 1;
   ext.doomEvent = { ...pending, at: Date.now() };
   delete ext.doomPending;
+  // 毀滅日扣款與處決全部完成後，恰好剩下 0 元的生還者下回合可取得傳送門。
+  if (ext.mode === 'evil') {
+    for (const player of state.players) {
+      if (!extIsGhost(player) && Number(player.cash) === 0) {
+        extPlayerExt(player);
+        player.ext.grantPortalNextTurn = true;
+        log(state, `🪞 ${player.name} 毀滅日結算後總資產恰好為 0，下一回合將取得傳送門。`);
+      }
+    }
+  }
   ext.lastEvent = { type: 'doomComplete', ...ext.doomEvent };
   log(state, `💀 毀滅日結束：${pending.paid.length} 人付款、${pending.resisted.length} 人抵抗、${pending.executed.length} 人被處決。下次保護費 ${extMoney(ext.doomPrice)}。`);
   if (!pending.early) extRecordRound(state, pending.finishedRound, { final: pending.finishedRound >= state.maxRounds });
@@ -5047,7 +5155,7 @@ globalThis.PartyNet = PartyNet;
 
 // ============================================================================
 // 全域音效管理器（非破壞性新增）
-// 使用 WebAudio 即時合成，不需外部音檔；所有音效由 Hook 觸發。
+// 內建音效使用 WebAudio 即時合成；外部 MP3 只走獨立音量係數，避免被內建增益放大。
 // ============================================================================
 const SoundManager = (() => {
   let ctx = null;
@@ -5056,6 +5164,8 @@ const SoundManager = (() => {
   let muted = false;
   let unlocked = false;
   const media = new Map();
+  const external = new Set();
+  const BUILTIN_GAIN_BOOST = 3;
   try {
     const saved = JSON.parse(localStorage.getItem('party-audio-v1') || '{}');
     if (typeof saved.volume === 'number') volume = Math.max(0, Math.min(1, saved.volume));
@@ -5068,8 +5178,14 @@ const SoundManager = (() => {
       if (!AC) return null;
       ctx = new AC();
       master = ctx.createGain();
-      master.gain.value = muted ? 0 : volume;
-      master.connect(ctx.destination);
+      master.gain.value = muted ? 0 : volume * BUILTIN_GAIN_BOOST;
+      const compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -12;
+      compressor.ratio.value = 6;
+      compressor.attack.value = 0.003;
+      compressor.release.value = 0.15;
+      master.connect(compressor);
+      compressor.connect(ctx.destination);
     }
     if (ctx.state === 'suspended') ctx.resume().catch(() => { });
     return ctx;
@@ -5077,9 +5193,12 @@ const SoundManager = (() => {
 
   function save() {
     try { localStorage.setItem('party-audio-v1', JSON.stringify({ volume, muted })); } catch { }
-    if (master) master.gain.value = muted ? 0 : volume;
+    if (master) master.gain.value = muted ? 0 : volume * BUILTIN_GAIN_BOOST;
     for (const rec of media.values()) {
       try { rec.el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * (rec.gain || 1))); } catch { }
+    }
+    for (const rec of external) {
+      try { rec.el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * rec.gain)); } catch { }
     }
     const el = document.querySelector('#volume-slider');
     if (el) el.value = String(Math.round(volume * 100));
@@ -5103,6 +5222,20 @@ const SoundManager = (() => {
       const task = rec.el.play();
       if (task?.catch) task.catch(() => { });
     } catch { }
+  }
+
+  // 直接由畫面建立的自訂 MP3 也掛入同一個靜音／音量控制；gain 是該檔案
+  // 原本的音量係數，不套用內建 Web Audio 的增益提升。
+  function trackExternalAudio(el, gain = 1) {
+    if (!el) return el;
+    const rec = { el, gain: Number(gain) || 1 };
+    external.add(rec);
+    const sync = () => {
+      try { el.volume = muted ? 0 : Math.max(0, Math.min(1, volume * rec.gain)); } catch { }
+    };
+    sync();
+    el.addEventListener?.('ended', () => external.delete(rec), { once: true });
+    return el;
   }
 
   function tone({ freq = 440, endFreq = freq, dur = 0.12, type = 'sine', gain = 0.15, delay = 0, sweep = false }) {
@@ -5168,6 +5301,7 @@ const SoundManager = (() => {
     frozen() { playMedia('frozen', new URL('./frozen.mp3', document.baseURI).href, { gain: 1 }); },
     // 矢量傳送與幽靈專屬音效原本偏大，統一壓到約 45%，避免突然爆音。
     swing() { playMedia('swing', new URL('./swing.mp3', document.baseURI).href, { gain: .45 }); },
+    portal() { playMedia('portal', new URL('./portal.mp3', document.baseURI).href, { gain: .8 }); },
     totem() { playMedia('totem', new URL('./minecraft-totem-sound.mp3', document.baseURI).href, { gain: 1 }); },
     ghostLaugh() { playMedia('king-boos-laugh', new URL('./king-boos-laugh.mp3', document.baseURI).href, { gain: .45 }); },
     cuff() {
@@ -5225,6 +5359,7 @@ const SoundManager = (() => {
     get volume() { return volume; },
     get muted() { return muted; },
     setVolume(v) { volume = Math.max(0, Math.min(1, Number(v))); save(); },
+    trackExternalAudio,
     toggleMute() { muted = !muted; save(); return muted; }
   };
 })();
@@ -5318,6 +5453,9 @@ const PartyUI = (() => {
   let lastIndulgenceKey = '';
   let lastVectorKey = '';
   let lastVectorPendingKey = '';
+  let lastPortalPendingKey = '';
+  let lastPortalResolvedKey = '';
+  const portalSmokeKeys = new Set();
   const playedShieldBlocks = new Set();
   let vectorLockUntil = 0;
   let vectorLockTimer = null;
@@ -5520,7 +5658,7 @@ const PartyUI = (() => {
     const homeHero = $('.home-hero');
     if (homeHero && !homeHero.querySelector('[data-party-fullscreen]')) {
       const button = makeFullscreenButton('home-fullscreen-btn');
-      const anchor = $('#home-play-btn');
+      const anchor = $('#home-entry-actions');
       if (anchor) anchor.insertAdjacentElement('afterend', button);
       else homeHero.append(button);
     }
@@ -5895,6 +6033,18 @@ const PartyUI = (() => {
     }
   }
 
+  // 首頁多人入口使用同一套連線表單與大廳 DOM，但改掛在首頁區塊內，
+  // 讓原有 id、事件綁定與 PeerJS 流程可以直接沿用。
+  function setHomeInline(enabled) {
+    ensureRoot();
+    const root = $('#party-ext-root');
+    const host = $('#home-online-panel');
+    if (!root) return;
+    if (enabled && host && root.parentElement !== host) host.appendChild(root);
+    if (!enabled && root.parentElement !== document.body) document.body.appendChild(root);
+    root.classList.toggle('home-inline', Boolean(enabled));
+  }
+
   // -------------------------------------------------------------------------
   // 棋子顏色選擇
   // -------------------------------------------------------------------------
@@ -6106,7 +6256,7 @@ const PartyUI = (() => {
         ${['star', 'tycoon', 'evil', 'random'].map(id => {
           const m = GAME_MODES?.[id];
           if (!m) return '';
-          return `<button type="button" class="mode-card ${id === mode ? 'active' : ''}" data-mode-id="${id}"><span>${m.icon}</span><strong>${h(m.name)}</strong><small>${h(m.desc)}</small></button>`;
+          return `<button type="button" class="mode-card ${id === mode ? 'active' : ''}" data-mode-id="${id}"><span>${m.icon}</span><strong>${h(m.name)}</strong></button>`;
         }).join('')}
       </div>
       <input type="hidden" id="mode-select" value="${h(mode)}">
@@ -6122,11 +6272,6 @@ const PartyUI = (() => {
         <label class="ext-check"><input id="debug-mode" type="checkbox"> 🧪 開啟測試（單機沙盒）</label>
       </div>
       ${advancedSettingsMarkup()}
-      <div class="multi-entry">
-        <div><strong>🌐 多人房間</strong><small>WebRTC 房間代碼大廳，支援 2–8 人</small></div>
-        <div class="multi-buttons"><button type="button" id="create-room-btn" class="secondary">建立房間</button><button type="button" id="join-room-btn" class="quiet">輸入代碼加入</button></div>
-      </div>
-      <p id="room-brief" class="room-brief"></p>
     `;
     document.querySelectorAll('#setup-players [data-setup-role]').forEach(select => {
       if (select.parentElement.querySelector('.setup-role-info')) return;
@@ -6146,21 +6291,26 @@ const PartyUI = (() => {
       setupFieldVisibility(box, id, true);
       sound('click');
     }));
-    $('#create-room-btn').onclick = () => openConnect('create');
-    $('#join-room-btn').onclick = () => openConnect('join');
-    if (window.PartyNet?.active && window.PartyNet.lobby) {
+    const createRoom = $('#create-room-btn');
+    const joinRoom = $('#join-room-btn');
+    if (createRoom) createRoom.onclick = () => { app()?.openHomeOnline?.(); setHomeInline(true); openConnect('create'); };
+    if (joinRoom) joinRoom.onclick = () => { app()?.openHomeOnline?.(); setHomeInline(true); openConnect('join'); };
+    if (window.PartyNet?.active && window.PartyNet.lobby && $('#room-brief')) {
       $('#room-brief').textContent = `目前房間：${window.PartyNet.code} · ${window.PartyNet.lobby.players.length} 人`;
     }
   }
 
   function openConnect(kind, presetCode = '', presetName = '') {
+    app()?.openHomeOnline?.();
+    setHomeInline(true);
+    $('#home-online-entry')?.setAttribute('hidden', '');
+    $('#home-online-back')?.removeAttribute('hidden');
     const el = $('#party-connect');
     if (!el) return;
     const roles = window.__partyData?.LOBBY_ROLES || [];
     const selfName = presetName || document.querySelector('[data-setup-name="0"]')?.value || '玩家 1';
     const joinCopy = presetCode ? '已帶入房間代碼，輸入你的名稱後按「加入房間」。' : '向房主取得 5 碼房間代碼，加入後在大廳選擇企業。';
     el.innerHTML = `
-      <div class="ext-modal-backdrop"></div>
       <div class="connect-card">
         <button class="ext-modal-close" data-connect-close type="button">×</button>
         <p class="ext-kicker">${kind === 'create' ? 'CREATE ROOM' : 'JOIN ROOM'}</p>
@@ -6177,7 +6327,7 @@ const PartyUI = (() => {
     `;
     el.hidden = false;
     el.dataset.kind = kind;
-    el.querySelectorAll('[data-connect-close]').forEach(b => b.onclick = () => { el.hidden = true; });
+    el.querySelectorAll('[data-connect-close]').forEach(b => b.onclick = () => hideConnect());
     $('#connect-go').onclick = () => {
       const name = $('#connect-name').value.trim() || '玩家';
       try {
@@ -6203,6 +6353,7 @@ const PartyUI = (() => {
   }
 
   function showConnecting() {
+    setHomeInline(true);
     const form = $('#party-connect');
     const loading = $('#party-connecting');
     if (form) form.hidden = true;
@@ -6214,16 +6365,44 @@ const PartyUI = (() => {
     if (loading) loading.hidden = true;
   }
 
+  function hideConnect({ leave = false } = {}) {
+    if (leave && window.PartyNet?.active) window.PartyNet.leave(false);
+    const form = $('#party-connect');
+    if (form) {
+      form.hidden = true;
+      form.innerHTML = '';
+    }
+    hideConnecting();
+    $('#home-online-entry')?.removeAttribute('hidden');
+    $('#home-online-back')?.removeAttribute('hidden');
+  }
+
   // -------------------------------------------------------------------------
   // 大廳
   // -------------------------------------------------------------------------
   function showLobby(lobby) {
+    app()?.openHomeOnline?.();
+    setHomeInline(true);
     ensureRoot();
     const el = $('#party-lobby');
     if (!el) return;
     getAdvancedSettings();
-    if (!lobby) { clearTurnLock(); el.hidden = true; return; }
-    if (lobby.status === 'playing' && state()?.status === 'playing') { el.hidden = true; return; }
+    if (!lobby) {
+      clearTurnLock();
+      el.hidden = true;
+      $('#home-online-entry')?.removeAttribute('hidden');
+      $('#home-online-back')?.removeAttribute('hidden');
+      $('#home-online-heading')?.removeAttribute('hidden');
+      return;
+    }
+    $('#home-online-entry')?.setAttribute('hidden', '');
+    $('#home-online-back')?.setAttribute('hidden', '');
+    $('#home-online-heading')?.setAttribute('hidden', '');
+    if (lobby.status === 'playing' && state()?.status === 'playing') {
+      el.hidden = true;
+      $('#home-online-heading')?.removeAttribute('hidden');
+      return;
+    }
     clearTurnLock();
     const net = window.PartyNet;
     const activeNameInput = !lobbyNameSubmitting && document.activeElement?.matches?.('[data-lobby-name]')
@@ -6265,7 +6444,6 @@ const PartyUI = (() => {
       ? `<div class="lobby-qr"><div class="lobby-qr-code" id="lobby-qr" role="img" aria-label="加入房間的 QR Code">${qr}</div><small>其他人用手機相機掃描，會打開遊戲並自動帶入房間代碼。</small></div>`
       : lobby.code && !invite ? '<p class="lobby-qr-note">用線上網址開啟遊戲才會顯示 QR Code（本機網址別的裝置打不開）。</p>' : '';
     el.innerHTML = `
-      <div class="ext-modal-backdrop"></div>
       <div class="lobby-card">
         <div class="lobby-top">
           <div><p class="ext-kicker">MULTIPLAYER LOBBY · WebRTC</p><h2>派對大廳</h2><p class="lobby-code-line">房間代碼 <strong id="lobby-code">${h(lobby.code)}</strong><button class="quiet" id="copy-code" type="button">複製</button></p>${qrBlock}</div>
@@ -6293,15 +6471,23 @@ const PartyUI = (() => {
             }).join('')}
             ${rolePicker}
           </div>
+          <div class="lobby-footer lobby-actions">
+            <span id="lobby-status">${isHost ? hostStatus : '等待房主開始對局…'}</span>
+            ${isHost ? `<button class="primary" id="lobby-start" type="button" ${online.length < 2 ? 'disabled' : ''}>開始對局 →</button>` : `<span class="waiting-dot">等待房主</span>`}
+          </div>
           <div class="lobby-settings">
             <div class="lobby-section-head"><span>對局設定</span><small>${isHost ? '房主可調整' : '由房主設定'}</small></div>
-            <label>模式
-              <select id="lobby-mode" ${isHost ? '' : 'disabled'}>${['star', 'tycoon', 'evil', 'random'].map(id => `<option value="${id}" ${lobby.mode === id ? 'selected' : ''}>${modes[id]?.icon || ''} ${h(modes[id]?.name || id)}</option>`).join('')}</select>
-            </label>
+            <div class="mode-picker lobby-mode-picker" id="lobby-mode-picker" aria-label="選擇對局模式">
+              ${['star', 'tycoon', 'evil', 'random'].map(id => `<button type="button" class="mode-card ${lobby.mode === id ? 'active' : ''}" data-lobby-mode-id="${id}" aria-pressed="${lobby.mode === id}" ${isHost ? '' : 'disabled'}><span>${modes[id]?.icon || ''}</span><strong>${h(modes[id]?.name || id)}</strong></button>`).join('')}
+            </div>
+            <select id="lobby-mode" class="lobby-mode-select" aria-hidden="true" tabindex="-1" ${isHost ? '' : 'disabled'}>${['star', 'tycoon', 'evil', 'random'].map(id => `<option value="${id}" ${lobby.mode === id ? 'selected' : ''}>${modes[id]?.icon || ''} ${h(modes[id]?.name || id)}</option>`).join('')}</select>
             <div class="lobby-mode-desc" id="lobby-mode-desc">${h(meta.desc || '')}</div>
-            <div class="lobby-row">
+            <div class="lobby-row lobby-primary-row">
               ${field('rounds', 'lobby-rounds', '最多季數', lobby.rounds || meta.defaultRounds || 10, 'min="3" max="30"')}
               ${field('starGoal', 'lobby-star-goal', '勝利星數', lobby.starGoal || meta.starGoal || 3, 'min="1" max="10"')}
+              <label class="ext-check lobby-debug-check"><input id="lobby-debug" type="checkbox" ${lobby.debug ? 'checked' : ''} ${isHost ? '' : 'disabled'}> 🧪 開啟測試</label>
+            </div>
+            <div class="lobby-row lobby-extra-row">
               ${field('target', 'lobby-target', '總資產目標', lobby.target || meta.defaultTarget || 8000, 'min="2000" step="500"')}
               ${field('doomEvery', 'lobby-doom-every', '保護費間隔（季）', lobby.doomEvery || 5, 'min="1" max="30"')}
               ${field('doomPrice', 'lobby-doom-price', '初始保護費', lobby.doomPrice || 1000, 'min="100" step="100"')}
@@ -6309,13 +6495,8 @@ const PartyUI = (() => {
             </div>
             <p class="lobby-lock-note" ${activeMode === 'random' ? '' : 'hidden'}>🎲 隨機模式鎖定數值：企業之星 10 季／3 星；首富競爭 24 季／8,000；邪惡企業 20 季／首期 1,000／抬升 500。</p>
             ${advancedSettingsMarkup({ disabled: !isHost })}
-            <label class="ext-check"><input id="lobby-debug" type="checkbox" ${lobby.debug ? 'checked' : ''} ${isHost ? '' : 'disabled'}> 🧪 開啟測試</label>
             <div class="lobby-hint">Tips：每人只能操作自己的回合；所有狀態（道具、星數、護盾、通膨）都會同步。</div>
           </div>
-        </div>
-        <div class="lobby-footer">
-          <span id="lobby-status">${isHost ? hostStatus : '等待房主開始對局…'}</span>
-          ${isHost ? `<button class="primary" id="lobby-start" type="button" ${online.length < 2 ? 'disabled' : ''}>開始對局 →</button>` : `<span class="waiting-dot">等待房主</span>`}
         </div>
       </div>
     `;
@@ -6333,9 +6514,14 @@ const PartyUI = (() => {
     $('#copy-code').onclick = async () => {
       try { await navigator.clipboard.writeText(lobby.code); $('#copy-code').textContent = '已複製'; setTimeout(() => { const b = $('#copy-code'); if (b) b.textContent = '複製'; }, 1500); } catch { }
     };
-    $('#lobby-leave').onclick = () => { window.PartyNet.leave(); el.hidden = true; renderSetupExtras(); };
+    $('#lobby-leave').onclick = () => { window.PartyNet.leave(); el.hidden = true; $('#home-online-entry')?.removeAttribute('hidden'); $('#home-online-heading')?.removeAttribute('hidden'); renderSetupExtras(); };
     $('#lobby-mode').onchange = e => {
       const id = e.target.value;
+      $$('[data-lobby-mode-id]').forEach(button => {
+        const active = button.dataset.lobbyModeId === id;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+      });
       window.PartyNet.setMode(id);
       const m = modes[id];
       if (!m) return;
@@ -6346,6 +6532,13 @@ const PartyUI = (() => {
       if (id === 'tycoon') window.PartyNet.setTarget(m.defaultTarget || 8000);
       if (id === 'evil') { window.PartyNet.setDoomEvery(5); window.PartyNet.setDoomPrice(1000); window.PartyNet.setDoomStep(500); }
     };
+    $$('[data-lobby-mode-id]').forEach(button => button.onclick = () => {
+      const select = $('#lobby-mode');
+      if (!select || button.disabled) return;
+      select.value = button.dataset.lobbyModeId;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      sound('click');
+    });
     const bind = (id, fn) => { const node = $(id); if (node) node.onchange = e => fn(e.target.value); };
     bind('#lobby-rounds', v => window.PartyNet.setRounds(v));
     bind('#lobby-star-goal', v => window.PartyNet.setStarGoal(v));
@@ -6412,7 +6605,7 @@ const PartyUI = (() => {
     };
   }
 
-  function hideLobby() { const el = $('#party-lobby'); if (el) el.hidden = true; closeColorPicker(); }
+  function hideLobby() { const el = $('#party-lobby'); if (el) el.hidden = true; $('#home-online-entry')?.removeAttribute('hidden'); $('#home-online-back')?.removeAttribute('hidden'); $('#home-online-heading')?.removeAttribute('hidden'); closeColorPicker(); }
 
   // -------------------------------------------------------------------------
   // 開場 / 事件動畫
@@ -7339,6 +7532,65 @@ const PartyUI = (() => {
       : `⬆️ ${names[0] || '玩家'} 被矢量操作傳送到第 ${tileNo(destination)} 格！`);
   }
 
+  function portalTileElement(index) {
+    return $('#board')?.querySelector(`[data-tile-index="${index}"]`) || null;
+  }
+  // 傳送門煙霧掛在 body，使用文件座標，避免被棋盤或格子的 overflow 裁切。
+  function spawnPortalSmoke(cellElement, colorType) {
+    if (!cellElement || !document.body) return null;
+    const rect = cellElement.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const cloud = document.createElement('span');
+    const tone = colorType === 'purple' ? 'purple' : 'grey';
+    cloud.className = `portal-smoke-cloud portal-smoke-${tone}`;
+    cloud.setAttribute('aria-hidden', 'true');
+    cloud.style.left = `${rect.left + rect.width / 2 + window.scrollX}px`;
+    cloud.style.top = `${rect.top + rect.height / 2 + window.scrollY}px`;
+    const count = 6 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i += 1) {
+      const puff = document.createElement('i');
+      const angle = (Math.PI * 2 * i / count) + (Math.random() - .5) * .45;
+      const distance = 22 + Math.random() * 34;
+      puff.style.setProperty('--smoke-size', `${18 + Math.random() * 22}px`);
+      puff.style.setProperty('--smoke-x', `${Math.cos(angle) * distance}px`);
+      puff.style.setProperty('--smoke-y', `${-18 - Math.random() * 34 + Math.sin(angle) * distance * .45}px`);
+      puff.style.animationDelay = `${Math.random() * .12}s`;
+      cloud.appendChild(puff);
+    }
+    document.body.appendChild(cloud);
+    setTimeout(() => cloud.remove(), 1150);
+    return cloud;
+  }
+  function emitPortalSmoke(event) {
+    const key = String(event?.at || event?.resolvedAt || '');
+    if (!key || portalSmokeKeys.has(key)) return;
+    portalSmokeKeys.add(key);
+    if (portalSmokeKeys.size > 24) portalSmokeKeys.delete(portalSmokeKeys.values().next().value);
+    spawnPortalSmoke(portalTileElement(event.origin), 'grey');
+    spawnPortalSmoke(portalTileElement(event.target), 'purple');
+  }
+  function playPortalPending(event) {
+    if (!event?.at) return;
+    const key = String(event.at);
+    const tile = $('#board')?.querySelector(`[data-tile-index="${event.target}"]`);
+    tile?.classList.add('portal-purple-glow');
+    sound('portal');
+    app()?.notify?.('🪞 請稍候，傳送門正在蓄能…');
+    setTimeout(() => {
+      const current = state(), pending = current?.ext?.portalPending;
+      $('#board')?.querySelector(`[data-tile-index="${event.target}"]`)?.classList.remove('portal-purple-glow');
+      if (pending && String(pending.at) === key && (!current?.net || window.PartyNet?.isHost)) {
+        // 房主先完成瞬移與落地結算，煙霧緊接著在兩個座標浮層出現；
+        // resolvePortal 會廣播 PORTAL_RESOLVED，其他裝置由同步事件播放同一特效。
+        const resolving = app()?.resolvePortal?.(event.at);
+        Promise.resolve(resolving).then(() => emitPortalSmoke(state()?.ext?.portalEvent || event));
+      } else {
+        // 客機不能直接改狀態，先播放本機視覺效果，之後由房主快照／事件校正狀態。
+        emitPortalSmoke(event);
+      }
+    }, 1000);
+  }
+
   function eventSound(event) {
     const kind = event?.kind;
     const amount = Number(event?.amount) || 0;
@@ -8067,6 +8319,16 @@ const PartyUI = (() => {
       lastVectorPendingKey = String(vectorPending.at);
       beginVectorLock(vectorPending);
     }
+    const portalPending = p.ext?.portalPending;
+    if (portalPending?.at && String(portalPending.at) !== lastPortalPendingKey) {
+      lastPortalPendingKey = String(portalPending.at);
+      playPortalPending(portalPending);
+    }
+    const portalEvent = p.ext?.portalEvent;
+    if (portalEvent?.resolvedAt && String(portalEvent.resolvedAt) !== lastPortalResolvedKey) {
+      lastPortalResolvedKey = String(portalEvent.resolvedAt);
+      emitPortalSmoke(portalEvent);
+    }
     const vector = p.ext?.vectorEvent;
     if (vector?.at && String(vector.at) !== lastVectorKey) {
       lastVectorKey = String(vector.at);
@@ -8444,12 +8706,12 @@ const PartyUI = (() => {
   }
 
   return {
-    init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, onGameStart, afterRender, isHostPlayer,
+    init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, hideConnect, onGameStart, afterRender, isHostPlayer, setHomeInline,
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
     openSettlement, hideSettlement, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
     closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock,
-    playGhostInterference: flashGhostInterference, playSkillCue,
+    playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,
     decisionBlocked, flashFrozen
@@ -8465,7 +8727,8 @@ globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS
 globalThis.__partyEngine={
   extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
-  extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn
+  extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn,
+  extUsePortal,extResolvePortal
 };
 globalThis.PartyNet=PartyNet;
 globalThis.SoundManager=SoundManager;
@@ -8492,7 +8755,8 @@ const viewKey='economy-party-view-v1';
 const tabId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
 let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
-let state=null,page='home',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+let state=null,page='home',homeMode='choose',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+const seenSpecialUnlocks=new Set();
 let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:60,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
 let setupMode='star',setupDebug=false,setupNetConfig=null;
@@ -8513,6 +8777,118 @@ try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
 
 function notify(message){const el=$('#toast');el.textContent=message;el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3400)}
+function showSpecialItemUnlockBanner(){
+  const boardEl=document.querySelector('#board,.board-container');
+  const rect=boardEl?.getBoundingClientRect?.();
+  const centerX=rect&&rect.width>0?rect.left+rect.width/2:window.innerWidth/2;
+  const centerY=rect&&rect.height>0?rect.top+rect.height/2:window.innerHeight/2;
+  const banner=document.createElement('div');
+  banner.className='special-item-unlock-banner';
+  banner.setAttribute('role','status');
+  banner.setAttribute('aria-live','assertive');
+  banner.style.left=`${centerX}px`;
+  banner.style.top=`${centerY}px`;
+  banner.innerHTML='達成隱藏條件<br>獲得特殊道具';
+  document.body.appendChild(banner);
+  try{
+    const chimeAudio=new Audio(new URL('./chime.mp3',document.baseURI).href);
+    chimeAudio.volume=.85;
+    SoundManager.trackExternalAudio?.(chimeAudio,.85);
+    if(!SoundManager.muted)chimeAudio.play().catch(()=>{});
+  }catch{}
+  let removed=false;
+  const remove=()=>{if(removed)return;removed=true;banner.remove()};
+  banner.addEventListener('animationend',remove,{once:true});
+  setTimeout(remove,2000);
+  return banner;
+}
+globalThis.showSpecialItemUnlockBanner=showSpecialItemUnlockBanner;
+
+// 真理之門成功交易時的棋盤中央電弧特效。特效只由「交易已完成」的
+// afterCommit／房主事件呼叫，因此取消或驗證失敗不會播放。
+function playGateOfTruthEffect(){
+  const boardEl=document.querySelector('#board,.board-container');
+  const rect=boardEl?.getBoundingClientRect?.();
+  const centerX=rect&&rect.width>0?rect.left+rect.width/2:window.innerWidth/2;
+  const centerY=rect&&rect.height>0?rect.top+rect.height/2:window.innerHeight/2;
+  try{
+    const sfx=new Audio(new URL('./electric_impact.mp3',document.baseURI).href);
+    sfx.volume=.9;
+    SoundManager.trackExternalAudio?.(sfx,.9);
+    if(!SoundManager.muted)sfx.play().catch(()=>{});
+  }catch{}
+  const size=280;
+  const dpr=Math.max(1,Math.min(2,window.devicePixelRatio||1));
+  const canvas=document.createElement('canvas');
+  canvas.width=size*dpr;
+  canvas.height=size*dpr;
+  canvas.style.cssText=`position:fixed;left:${centerX}px;top:${centerY}px;width:${size}px;height:${size}px;transform:translate(-50%,-50%);pointer-events:none;z-index:9600;`;
+  document.body.appendChild(canvas);
+  const ctx=canvas.getContext('2d');
+  if(!ctx){canvas.remove();return null}
+  ctx.scale(dpr,dpr);
+  const started=performance.now();
+  const center=size/2;
+  const drawArc=(time,offset,phase)=>{
+    ctx.beginPath();
+    const points=42;
+    for(let i=0;i<=points;i++){
+      const t=i/points;
+      const angle=offset+t*Math.PI*2+Math.sin(time*.018+t*19+phase)*.075+(Math.random()-.5)*.055;
+      const radius=85+Math.sin(time*.024+t*23+phase)*7+(Math.random()-.5)*8;
+      const x=center+Math.cos(angle)*radius;
+      const y=center+Math.sin(angle)*radius;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+  };
+  const frame=now=>{
+    const elapsed=now-started;
+    if(elapsed>=1000){canvas.remove();return}
+    ctx.clearRect(0,0,size,size);
+    ctx.globalAlpha=elapsed>=800?Math.max(0,1-(elapsed-800)/200):1;
+    ctx.lineJoin='round';
+    ctx.lineCap='round';
+    ctx.lineWidth=2.5;
+    ctx.strokeStyle='#ffffff';
+    ctx.shadowBlur=18;
+    ctx.shadowColor='#38bdf8';
+    for(let i=0;i<3;i++)drawArc(now,i*Math.PI*2/3, i*2.1);
+    ctx.shadowBlur=7;
+    ctx.lineWidth=1.15;
+    for(let i=0;i<10;i++){
+      const angle=Math.random()*Math.PI*2;
+      const inner=91+Math.random()*5;
+      const outer=inner+4+Math.random()*12;
+      ctx.beginPath();
+      ctx.moveTo(center+Math.cos(angle)*inner,center+Math.sin(angle)*inner);
+      ctx.lineTo(center+Math.cos(angle+(Math.random()-.5)*.12)*outer,center+Math.sin(angle+(Math.random()-.5)*.12)*outer);
+      ctx.stroke();
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  return canvas;
+}
+globalThis.playGateOfTruthEffect=playGateOfTruthEffect;
+
+function observeSpecialUnlock(game,prime=false){
+  const ext=game?.ext;
+  const events=Array.isArray(ext?.specialUnlockEvents)&&ext.specialUnlockEvents.length
+    ? ext.specialUnlockEvents
+    : ext?.specialUnlockEvent ? [ext.specialUnlockEvent] : [];
+  let announced=false;
+  for(const event of events){
+    if(!event?.playerId||!event?.itemId||!event?.at)continue;
+    const key=`${event.playerId}:${event.itemId}:${event.at}`;
+    if(seenSpecialUnlocks.has(key))continue;
+    seenSpecialUnlocks.add(key);
+    if(seenSpecialUnlocks.size>64)seenSpecialUnlocks.delete(seenSpecialUnlocks.values().next().value);
+    if(prime)continue;
+    announced=true;
+  }
+  if(announced)showSpecialItemUnlockBanner();
+}
 function enableDeveloperMode(){
   try{
     const url=new URL(window.location.href);
@@ -8736,9 +9112,9 @@ function visibleInvestmentSettlement(settlement){
   const results=settlement.results.filter(result=>result.playerId===playerId);
   return results.length?{...settlement,results}:null;
 }
-function beginMapPick(message,callback){
+function beginMapPick(message,callback,kind='map'){
   if(animation){notify('請等待動畫結束。');return;}
-  mapPick={callback};
+  mapPick={callback,kind};
   document.body.classList.add('map-pick-mode');
   notify(message||'請直接點擊地圖上的格子（Esc 取消）。');
 }
@@ -8757,6 +9133,22 @@ function cleanupMovingToken(){
   const cleanup=movingTokenCleanup;
   movingTokenCleanup=null;
   try{cleanup?.()}catch(error){console.warn('moving token cleanup failed',error)}
+}
+// 傳送門是瞬間換格，不應沿用擲骰動畫留下的 absolute/transform 狀態。
+// 先把現有棋子節點放進目標格並強制重繪，再交給下一次 render 產生正常的格內棋子。
+function snapPortalToken(playerId,targetPosition){
+  const piece=Array.from(document.querySelectorAll('#board .token[data-player-id]'))
+    .find(el=>el.dataset.playerId===String(playerId));
+  const destination=$(`#board [data-tile-index="${targetPosition}"] .tile-tokens`);
+  if(!piece||!destination)return false;
+  const transition=piece.style.transition;
+  piece.style.transition='none';
+  piece.style.transform='none';
+  destination.appendChild(piece);
+  ['position','left','top','width','height','margin','transform','z-index','display','place-items','font-size','font-weight','line-height'].forEach(key=>piece.style.removeProperty(key));
+  void piece.offsetWidth;
+  piece.style.transition=transition;
+  return true;
 }
 function cancelAnimation({resumeTimer=true}={}){
   animationSerial++;
@@ -8907,8 +9299,12 @@ function save(){
   state.sync.revision++;
   state.sync.updatedAt=Math.max(Date.now(),state.sync.updatedAt+1);
   state.sync.writerId=tabId;
-  try{localStorage.setItem(storageKey,exportGame(state));$('#save-status').textContent=state.net?'房間即時同步中':'多頁籤已同步'}catch{$('#save-status').textContent=channel?'即時同步中；請匯出備份':'本機儲存不可用，請匯出備份'}
-  try{channel?.postMessage({type:'state',writerId:tabId,game:state})}catch{}
+  if(PartyNet.active&&state.net){
+    $('#save-status').textContent='房間狀態同步中';
+  }else{
+    try{localStorage.setItem(storageKey,exportGame(state));$('#save-status').textContent='多頁籤已同步'}catch{$('#save-status').textContent=channel?'即時同步中；請匯出備份':'本機儲存不可用，請匯出備份'}
+    try{channel?.postMessage({type:'state',writerId:tabId,game:state})}catch{}
+  }
   try{PartyNet.publish(state)}catch(e){console.warn('room publish failed',e)}
 }
 // UI rendering is optional; the landed position and turn state are authoritative.
@@ -8983,7 +9379,7 @@ function adoptShared(incoming){
   const sharedRetreat=sameGame&&incoming.phase==='moving'&&incoming.lastRoll?.backward===true&&['resolve','moving'].includes(previous.phase);
   const from=sharedRoll?previous.players[previous.turnIndex]?.position:sharedRetreat?incoming.lastRoll.from:null;
   const before=cashSnapshot();
-  cancelAnimation();state=incoming;render();
+  cancelAnimation();state=incoming;observeSpecialUnlock(state,!previous);render();
   if(before)animateCashChanges(before);
   $('#save-status').textContent='已從其他頁籤同步';
   if(sharedRoll||sharedRetreat)beginRollAnimation(incoming.lastRoll,from,incoming.players[incoming.turnIndex]?.id,false);
@@ -9005,6 +9401,7 @@ async function run(fn,options={}){
   if(PartyNet.isClient){notify('此操作尚未加入房主指令白名單。');return}
   if(animation){notify('請等待骰子與棋子移動完成。');return}
   if(state?.ext?.vectorPending){notify('矢量操作鎖定中，請稍候。');return}
+  if(state?.ext?.portalPending&&!options.allowPortal){notify('傳送門效果處理中，請稍候。');return}
   const auctionOwner=options.allowAuction&&state?.ext?.auction&&window.__partyEngine?.extAuctionCurrent?.(state)?.id===PartyNet.myPlayerId;
   if(state?.net&&!PartyNet.canAct(state)&&!auctionOwner&&!options.authoritative){notify('現在不是你的回合，請等待其他玩家。');return}
   let before=null;
@@ -9013,6 +9410,7 @@ async function run(fn,options={}){
     before=cashSnapshot();
     const auctionBefore=state?.ext?.auction;
     fn();
+    observeSpecialUnlock(state);
     if(options.clearTurnInteractions)PartyUI.clearTurnInteractions?.();
     save();
     render();
@@ -9031,10 +9429,19 @@ function dispatchSkillCue(playerId){
   else PartyUI.playSkillCue?.(event);
 }
 
+function dispatchTruthGateCue(playerId){
+  const event={type:'TRUTH_GATE_TRIGGERED',playerId,at:Date.now()};
+  if(PartyNet.active&&PartyNet.isHost)PartyNet.broadcastEvent(event);
+  else playGateOfTruthEffect();
+}
+
 function runAction(action,fn,options={}){
   const playerId=action?.playerId||PartyNet.myPlayerId||activePlayer()?.id;
   const skillAction=action?.type==='USE_SKILL'||(action?.type==='TARGET_ACTION'&&action.action==='skill');
-  const runOptions=skillAction?{...options,afterCommit:()=>dispatchSkillCue(playerId)}:options;
+  const truthGateAction=action?.type==='TRUTH_GATE';
+  const runOptions=truthGateAction
+    ? {...options,afterCommit:()=>dispatchTruthGateCue(playerId)}
+    : skillAction?{...options,afterCommit:()=>dispatchSkillCue(playerId)}:options;
   if(PartyNet.isClient){
     PartyNet.sendAction({...action,playerId});
     return;
@@ -9071,14 +9478,14 @@ function animateCashChanges(before){
   if(gained)SoundManager.play('cashGain');
   if(lost)setTimeout(()=>SoundManager.play('cashLoss'),gained?120:0);
 }
-function renderHomeRoles(){  $('#home-roles').innerHTML=PARTY_ROLES.map(r=>`<article class="home-role party-role"><div class="home-role-title"><span class="home-role-icon" aria-hidden="true">${r.icon}</span><div><span class="home-role-sector">${h(r.sector)} · 起始總資產 ${money(1200)}</span><h3>${h(r.name)}</h3></div></div><p class="home-role-story">${h(roleStories[r.id])}</p><div class="home-role-skill"><span class="skill-icon" aria-hidden="true">${r.skill.icon}</span><div><small>專屬技能 · 消耗 1 能量</small><strong>${h(r.skill.name)}</strong><p>${h(r.skill.desc)}</p></div></div></article>`).join('');
+function renderHomeRoles(){  $('#home-roles').innerHTML=PARTY_ROLES.map(r=>`<article class="home-role party-role"><div class="home-role-title"><span class="home-role-icon" aria-hidden="true">${r.icon}</span><div><span class="home-role-sector">${h(r.sector)}</span><h3>${h(r.name)}</h3></div></div><p class="home-role-story">${h(roleStories[r.id])}</p><div class="home-role-skill"><span class="skill-icon" aria-hidden="true">${r.skill.icon}</span><div><small>專屬技能 · 消耗 1 能量</small><strong>${h(r.skill.name)}</strong><p>${h(r.skill.desc)}</p></div></div></article>`).join('');
 }
 function getRulesHTML(){return `<div class="rules-grid">
   <article class="rule-block"><span class="rule-icon">🎲</span><h3>骰子與移動</h3><ul><li>廢除舊版雙輪 0–6 拉霸，改為單顆六面骰，點數 1–6。</li><li>點「擲骰」後方塊旋轉 1–2 秒，停定後棋子逐格移動。</li><li>在地圖四個角落取得所有顏色記號後，經過出發點即可領取1000元補助金，領取後記號將重置。</li><li>123／456 骰子會覆蓋先前的變骰效果；緊縮銀根強制只走 1 格。</li></ul></article>
   <article class="rule-block"><span class="rule-icon">🧱</span><h3>格子效果</h3><ul><li><b class="tag blue">發財</b>獲得 300 總資產。</li><li><b class="tag red">蕭條</b>扣除 150 營運費。</li><li><b class="tag yellow">技能</b>獲得 1 點技能能量。</li><li><b class="tag green">事件</b>抽即時事件：全體 +400、全體 −200、個人補助等。</li><li><b class="tag ghost">幽靈</b>只有「踩在幽靈格」才觸發：直接扣 1,000 總資產並隨機沒收 1 個道具；幽靈格顯示灰色斜線，滑鼠移上去可看效果。</li></ul></article>
-  <article class="rule-block"><span class="rule-icon">🛡️</span><h3>道具系統</h3><p>每回合開始自動抽 1 個道具，普通道具與黑市神話道具共用 3 格；滿了必須先丟棄才能取得新道具。擲骰前可無限次使用，點擊即發動並消耗；道具欄旁的 🗑️ 可直接丟棄。</p><div class="rules-items" data-rules-items="normal"></div></article>
+  <article class="rule-block wide"><span class="rule-icon">🛡️</span><h3>道具系統</h3><p>每回合開始自動抽 1 個道具，普通道具與黑市神話道具共用 3 格；滿了必須先丟棄才能取得新道具。擲骰前可無限次使用，點擊即發動並消耗；道具欄旁的 🗑️ 可直接丟棄。</p><div class="rules-items" data-rules-items="normal"></div></article>
   <article class="rule-block wide special-rules-block"><span class="rule-icon">🎲</span><h3>特殊道具</h3><div class="rules-items" data-rules-items="special"></div></article>
-  <article class="rule-block"><span class="rule-icon">⭐</span><h3>勝利條件</h3><ul><li><b>企業之星</b>：起步後每次經過或停留在起點格，都能購買星星；每賣出 1 顆星星，起點星價就上漲。任意玩家獲得 3 顆星會在當季結算，星數最高者獲勝。</li><li><b>首富競爭</b>：總資產率先達到 8,000 獲勝；季數過半通膨 ×2，倒數兩季 ×4。</li><li><b>邪惡企業</b>：每 5 季毀滅日收保護費，付不出來化為藍色罷工幽靈，最後存活者獲勝；保護費每次收取後都會漲價。</li><li>企業之星／首富競爭第一名平手時觸發驟死賽：憤怒幽靈移動 ×1.5、扣錢 ×2。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">⭐</span><h3>勝利條件</h3><ul><li><b>企業之星</b>：起步後每次經過或停留在起點格，都能購買星星；每賣出 1 顆星星，起點星價就上漲。任意玩家獲得 3 顆星會在當季結算，星數最高者獲勝。</li><li><b>首富競爭</b>：總資產率先達到 8,000 獲勝；季數過半通膨 ×2，倒數兩季 ×4。</li><li><b>邪惡企業</b>：每 5 季毀滅日收保護費，付不出來化為藍色罷工幽靈，最後存活者獲勝；保護費每次收取後都會漲價。</li><li>企業之星／首富競爭第一名平手時觸發驟死賽：憤怒幽靈移動 ×1.5、扣錢 ×2。</li></ul></article>
   <article class="rule-block wide"><span class="rule-icon">🎮</span><h3>模式與連線大廳</h3><ul><li>建立對局可選企業之星、首富競爭、邪惡企業或隨機模式；隨機模式開局從三種模式中抽一種，並套用固定預設數值。</li><li>多人房間以 5 碼房間代碼建立（也可以掃大廳的 QR Code 加入）；大廳可選 10 家企業或「未定新創集團 🎲」，後者開局隨機分配企業。</li><li>支援 2–8 人；WebRTC DataChannel 為主，同瀏覽器與 HTTP 伺服器另有備援通道。</li><li>結算後每位玩家按「確認結果」，畫面顯示等待確認比例（例如 2/8）；全員確認後統一回到同一個大廳。</li></ul></article>
   <article class="rule-block wide"><span class="rule-icon">🗺️</span><h3>動態地圖與特殊格</h3><ul><li>每局隨機生成 24 格；黑市 ×3、投資 ×2、查稅局 ×1、內線交易 ×1，所有特殊格絕對不相鄰。</li><li><b>黑市</b>：神話道具起標 1,000，每次抬價 250，輪流詢問到最後一人得標。</li><li><b>投資</b>：投入 50% 總資產換股票憑證；季末大牛市 3 倍（10%）、平穩期 1.5 倍（40%）、龐氏騙局歸零（50%）。</li><li><b>查稅局</b>：繳 50% 總資產，或接受 2 回合羈押；贖罪券可全額抵銷稅金。</li><li><b>內線交易</b>：花 100 轉命運輪盤，用完變回普通格並在別的普通格重生。</li></ul></article>
   <article class="rule-block wide"><span class="rule-icon">🗿</span><h3>八款神話道具</h3><p>黑市限定，部分道具受模式限制；被動道具會自動觸發。</p><div class="rules-items" data-rules-items="mythics"></div></article>
@@ -9227,8 +9634,9 @@ function renderBoard(){
   const domainOwner=domain?state.players.find(p=>p.id===domain.ownerId):null;
   const domainPosition=domainOwner?(animation?.playerId===domainOwner.id?animation.position:domainOwner.position):null;
   const domainTiles=new Set(domainOwner?[-1,0,1].map(d=>(domainPosition+d+boardData.length)%boardData.length):[]);
-  const movingId=animation?.playerId||((state.phase==='moving'&&state.lastRoll?.playerId)?state.lastRoll.playerId:null);
-  const movingFrom=state.phase==='moving'&&Number.isInteger(state.lastRoll?.from)?state.lastRoll.from:null;
+  const portalPending=Boolean(state.ext?.portalPending);
+  const movingId=animation?.playerId||((state.phase==='moving'&&!portalPending&&state.lastRoll?.playerId)?state.lastRoll.playerId:null);
+  const movingFrom=state.phase==='moving'&&!portalPending&&Number.isInteger(state.lastRoll?.from)?state.lastRoll.from:null;
   const pos=state.players.map(p=>({p,index:animation?.playerId===p.id?animation.position:(p.id===movingId&&movingFrom!==null?movingFrom:p.position)}));
   const tiles=boardData.map((tile,i)=>{
     const [row,col]=boardCoords(i,boardData.length);
@@ -9662,7 +10070,16 @@ function render(){
   $('#round-badge').hidden=onHome||!state;
   $('#home').hidden=!onHome;
   $('#home-btn').classList.toggle('active',onHome);
-  if(onHome){$('#setup').hidden=true;$('#game').hidden=true;closeModal();$('#home-play-btn').textContent=state?'返回對局 →':'設定玩家，開始派對 →';$('#home-status').textContent=state?`已有對局 · 第 ${state.round} 季，返回後可繼續遊玩。`:'一台電腦就能開始，大家輪流操作。';return}
+  const resumable=Boolean(state?.status==='playing');
+  $('#home-entry-actions')?.toggleAttribute('hidden',resumable||homeMode!=='choose');
+  $('#home-resume-actions')?.toggleAttribute('hidden',!resumable||homeMode!=='choose');
+  $('#home-online-panel')?.toggleAttribute('hidden',homeMode!=='online');
+  document.body.classList.toggle('home-online',onHome&&homeMode==='online');
+  if(onHome){
+    $('#setup').hidden=true;$('#game').hidden=true;closeModal();
+    $('#home-status').textContent=resumable?`已有進行中的對局 · 第 ${state.round} 季。`:'選擇本地單機或線上多人遊玩開始。';
+    return;
+  }
   if(!state){$('#setup').hidden=false;$('#game').hidden=true;closeModal();renderSetup();return}
   $('#setup').hidden=true;$('#game').hidden=false;
   $('#round-number').textContent=String(state.round).padStart(2,'0');$('#round-limit').textContent=`／${state.maxRounds} 季`;
@@ -9694,6 +10111,7 @@ async function startGameFromConfig(config){
   if(config.net)next.net=config.net;
   extInitGame(next,{mode:config.mode||'star',debug:Boolean(config.debug),target:config.target,rounds:config.rounds,starGoal:config.starGoal,doomEvery:config.doomEvery,doomPrice:config.doomPrice,doomStep:config.doomStep,startingCash});
   prepareNewSession(next);
+  PartyUI.setHomeInline?.(false);
   state=next;page='game';tab='board';rememberView();
   mapPick=null;document.body.classList.remove('map-pick-mode');
   $('#setup-error').textContent='';
@@ -9764,6 +10182,10 @@ $('#game').addEventListener('click',e=>{
   if(specialBtn&&state&&!animation){
     const id=specialBtn.dataset.specialId;
     if(id==='fateDice'){PartyUI.openFateDice();}
+    else if(id==='portal'){
+      if(mapPick?.kind==='portal'){cancelMapPick();return;}
+      beginMapPick('請選擇要傳送的目標格子，或再次點擊傳送門取消。',index=>runAction({type:'USE_PORTAL',tileIndex:index},()=>{extUsePortal(state,index);pauseTurnClock();notify('傳送門已開啟，目標格子正在蓄能…');}), 'portal');
+    }
     return;
   }
   const mythicBtn=e.target.closest('[data-mythic-id]');
@@ -9858,8 +10280,73 @@ function returnToLobby(lobby){
   render();
   PartyUI.showLobby?.(lobby||PartyNet.lobby);
 }
-$('#home-btn').addEventListener('click',()=>{page='home';closeModal();render();window.scrollTo({top:0,behavior:'smooth'})});
-$('#home-play-btn').addEventListener('click',()=>{page='game';render();window.scrollTo({top:0,behavior:'smooth'})});
+function resetToHome(){
+  // 首頁按鈕可從大廳、連線表單或對局畫面進入；先清掉所有多人 UI，
+  // 再把多人根節點移回 body，避免舊的 overlay/backdrop 留在畫面上。
+  const leavingRoom=Boolean(PartyNet.active||state?.net?.roomCode);
+  PartyUI.hideLobby?.();
+  PartyUI.hideConnecting?.();
+  PartyUI.closeExtModal?.();
+  document.querySelector('#party-connect')?.setAttribute('hidden','');
+  if(PartyNet.active)PartyNet.leave(false);
+  if(leavingRoom){
+    const saved=readStored();
+    state=saved?.status==='playing'?saved:null;
+  }
+  PartyUI.setHomeInline?.(false);
+  homeMode='choose';
+  document.body.classList.remove('home-online');
+  page='home';
+  closeModal();
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+$('#home-btn').addEventListener('click',resetToHome);
+function showHomeChoice(){
+  homeMode='choose';
+  PartyUI.hideLobby?.();
+  PartyUI.hideConnect?.();
+  PartyUI.hideConnecting?.();
+  PartyUI.setHomeInline?.(false);
+  document.body.classList.remove('home-online');
+  page='home';
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+$('#home-local-btn')?.addEventListener('click',()=>{
+  homeMode='local';
+  PartyUI.setHomeInline?.(false);
+  document.body.classList.remove('home-online');
+  page='game';
+  render();
+  window.scrollTo({top:0,behavior:'smooth'});
+});
+$('#home-online-btn')?.addEventListener('click',()=>{
+  homeMode='online';
+  page='home';
+  PartyUI.setHomeInline?.(true);
+  render();
+  PartyUI.renderHomeOnline?.();
+  window.scrollTo({top:0,behavior:'smooth'});
+});
+$('#home-online-back')?.addEventListener('click',()=>{
+  const connect=$('#party-connect');
+  const connecting=$('#party-connecting');
+  if((connect&&!connect.hidden)||(connecting&&!connecting.hidden)){
+    PartyUI.hideConnect?.({leave:true});
+    return;
+  }
+  showHomeChoice();
+});
+$('#setup-back-btn')?.addEventListener('click',showHomeChoice);
+$('#home-continue-btn')?.addEventListener('click',()=>{
+  if(!state||state.status!=='playing')return;
+  homeMode='choose';page='game';render();window.scrollTo({top:0,behavior:'smooth'});
+});
+$('#home-new-btn')?.addEventListener('click',()=>{
+  if(!confirm('確定清除目前的進行中存檔並建立新遊戲嗎？'))return;
+  clearSave();state=null;homeMode='choose';page='home';render();
+});
 $('#home-rules-disclosure')?.addEventListener('toggle',event=>{
   if(event.target.open)renderRulesContent($('#home-rules-accordion'));
 });
@@ -9951,10 +10438,11 @@ PartyNet.onState = (game,fromPeer) => {
       const turnChanged=Boolean(currentActiveId&&incomingActiveId&&incomingActiveId!==currentActiveId);
       const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
       const incomingAuctionResolved=Boolean(state?.ext?.auction&&!incoming.ext?.auction);
+      const incomingPortalResolved=Boolean(state?.ext?.portalPending&&!incoming.ext?.portalPending&&incoming.ext?.portalEvent?.resolvedAt);
       // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
       // resolve 快照進來解除 moving，否則會永久卡在移動階段。
       const protectingMove=localOwnsTurn&&!flushingDeferredRoomState&&animation?.playerId===localId&&isMoving(localId);
-      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId)&&!incomingAuctionResolved;
+      const protectingEvent=localOwnsTurn&&isHandlingEvent(localId)&&!incomingAuctionResolved&&!incomingPortalResolved;
       if(protectingMove){
         // 移動中的主動玩家是本機唯一真實來源；記住最新快照，等落地後再套用。
         deferredRoomState={game,fromPeer};
@@ -9975,13 +10463,17 @@ PartyNet.onState = (game,fromPeer) => {
       const starting=incoming.status==='playing'&&(!sameRoom||state?.status!=='playing');
       cancelAnimation();
       if(turnChanged)PartyUI.clearTurnInteractions?.();
-      if(starting){page='game';tab='board';rememberView();PartyUI.hideLobby?.()}
+      if(starting){PartyUI.setHomeInline?.(false);page='game';tab='board';rememberView();PartyUI.hideLobby?.()}
       state=incoming;
+      observeSpecialUnlock(state,starting);
       // 先建立移動動畫，再繪製畫面。引擎會先把 player.position 寫成終點，
       // 若先 render，客機會短暫看到終點棋子，接著才跳回起點重播動畫。
       // beginRollAnimation 會以 lastRoll.from 建立起點 DOM，避免閃爍。
       const startedMoving=moving&&beginRollAnimation(incoming.lastRoll,from,incoming.lastRoll.playerId,false);
       if(!startedMoving)render();
+      if(incomingPortalResolved&&incoming.ext?.portalEvent){
+        snapPortalToken(incoming.ext.portalEvent.playerId,incoming.ext.portalEvent.target);
+      }
       if(starting&&!PartyNet.isHost)PartyUI.onGameStart?.(state,{fromLobby:true});
       if(before)animateCashChanges(before);
       $('#save-status').textContent='房間狀態已同步';
@@ -10022,6 +10514,17 @@ PartyNet.onAction = (action,fromPeer) => {
       execute(()=>useItem(state,action.itemId,action.targetId));return;
     case 'USE_MYTHIC':
       execute(()=>extUseMythic(state,action.id,action.payload));return;
+    case 'USE_PORTAL':
+      execute(()=>extUsePortal(state,action.tileIndex));return;
+    case 'PORTAL_RESOLVE':
+      execute(()=>{
+        const event=extResolvePortal(state,action.at);
+        if(event)snapPortalToken(event.playerId,event.target);
+        return event;
+      },{afterCommit:()=>{
+        const event=state?.ext?.portalEvent;
+        if(event?.resolvedAt)snapPortalToken(event.playerId,event.target);
+      }});return;
     case 'DISCARD':
       execute(()=>extDiscard(state,activePlayer(),action.kind,action.index));return;
     case 'BUY_STAR':
@@ -10061,7 +10564,7 @@ PartyNet.onAction = (action,fromPeer) => {
     case 'RESOLVE_WHEEL':
       execute(()=>extResolveWheel(state,{playerId:actorId,at:action.at}));return;
     case 'TRUTH_GATE':
-      execute(()=>extUseMythic(state,'truthGate',action.payload));return;
+      execute(()=>extUseMythic(state,'truthGate',action.payload),{afterCommit:()=>dispatchTruthGateCue(action.playerId)});return;
     case 'DEBUG_GIVE':
       execute(()=>extDebugGive(state,action.kind,action.id));return;
     case 'DEBUG_TELEPORT':
@@ -10083,6 +10586,8 @@ PartyNet.onEvent = event => {
   if(event?.type==='PLAYER_KICKED')notify(`${event.name||'玩家'} 已被房主移出對局。`);
   if(event?.type==='GHOST_ATTACK')PartyUI.playGhostInterference?.(event);
   if(event?.type==='SKILL_TRIGGERED')PartyUI.playSkillCue?.(event);
+  if(event?.type==='TRUTH_GATE_TRIGGERED')playGateOfTruthEffect();
+  if(event?.type==='PORTAL_RESOLVED')PartyUI.playPortalSmokeEvent?.(event);
 };
 PartyNet.onReturnLobby = lobby => { PartyUI.hideSettlement?.();returnToLobby(lobby); };
 PartyNet.onStatus = text => { const el=$('#save-status');if(el)el.textContent=text; };
@@ -10115,16 +10620,29 @@ window.PartyApp={
   get page(){return page},
   get tab(){return tab},
   get setupPlayers(){return setupPlayers},
+  openHomeOnline:()=>{homeMode='online';page='home';render();PartyUI.setHomeInline?.(true)},
   setSetupPlayerColor,
   renderSetup,
   get animation(){return animation},
   isAnimating:()=>Boolean(animation),
   isMapPicking:()=>Boolean(mapPick),
   cancelMapPick,
-  run, runAction, render, notify, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
+  run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
   cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
+  resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
+    const event=extResolvePortal(state,at);
+    if(event)snapPortalToken(event.playerId,event.target);
+    return event;
+  },{
+    allowDoom:true,allowPortal:true,authoritative:true,
+    afterCommit:()=>{
+      const event=state?.ext?.portalEvent;
+      if(event?.resolvedAt)snapPortalToken(event.playerId,event.target);
+      if(event&&PartyNet.active&&PartyNet.isHost)PartyNet.broadcastEvent({type:'PORTAL_RESOLVED',...event});
+    }
+  }),
   buyStar:()=>runAction({type:'BUY_STAR'},()=>extBuyStar(state)),
   useMythic:(id,payload)=>runAction({type:'USE_MYTHIC',id,payload},()=>extUseMythic(state,id,payload)),
   discard:(kind,index)=>runAction({type:'DISCARD',kind,index},()=>extDiscard(state,activePlayer(),kind,index)),
@@ -10142,7 +10660,7 @@ window.PartyApp={
 };
 
 const savedAtStart=readStored();
-if(savedAtStart){
+if(savedAtStart?.status==='playing'){
   state=savedAtStart;extEnsureState(state);
   if(state.status==='playing'&&state.phase==='moving'){
     // 重新載入或從背景返回時，避免停在「移動中」而卡住整場對局。
@@ -10150,5 +10668,8 @@ if(savedAtStart){
     if(!roll){state.phase='resolve';state.pendingLanding=null}
     save();
   }
+} else if(savedAtStart?.status==='finished') {
+  // 已結束的存檔不應在首頁顯示「繼續遊戲」。
+  try{localStorage.removeItem(storageKey)}catch{}
 }
 renderHomeRoles();renderRules();render();PartyUI.init?.();checkDeveloperUpdate();

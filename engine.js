@@ -169,6 +169,12 @@ export function consumeShield(state,target,label){
 }
 
 export function drawItem(state,player){
+  // 擴充模式可在回合開始時以特殊道具取代一般抽卡結果。
+  // 回傳 undefined 代表沿用原本的隨機道具流程；其他回傳值代表掛鉤已處理。
+  if(engineHooks.drawItem){
+    const handled=engineHooks.drawItem(state,player);
+    if(handled!==undefined)return handled;
+  }
   if(engineHooks.canDrawItem&&!engineHooks.canDrawItem(state,player))return null;
   if(player.items.length>=3)return null;
   const item=getRandomItem(state);
