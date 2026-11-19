@@ -1066,6 +1066,13 @@ export const PartyUI = (() => {
     const isHost = net?.isHost;
     const modes = window.__partyData?.GAME_MODES || {};
     const roles = window.__partyData?.LOBBY_ROLES || [];
+    const aiDifficulties = window.__partyData?.AI_DIFFICULTIES || [
+      { id: 'easy', name: '簡單', badge: '🤖 簡單' },
+      { id: 'normal', name: '普通', badge: '🤖 普通' },
+      { id: 'hard', name: '困難', badge: '🤖 困難' },
+      { id: 'expert', name: '專家', badge: '🤖 專家' }
+    ];
+    const aiDifficulty = value => aiDifficulties.find(item => item.id === value) || aiDifficulties[1];
     const activeMode = lobby.mode || 'star';
     const meta = modes[activeMode] || modes.star || {};
     const allowed = activeMode === 'star' ? ['rounds', 'starGoal']
@@ -1106,22 +1113,32 @@ export const PartyUI = (() => {
         </div>
         <div class="lobby-grid">
           <div class="lobby-players">
-            <div class="lobby-section-head"><span>玩家 ${lobby.players.length}/8</span><small>${net?.connectedPeers?.size || 1} 條連線</small></div>
+            <div class="lobby-section-head"><span>玩家 ${lobby.players.length}/8</span><span class="lobby-section-actions"><small>${net?.connectedPeers?.size || 1} 條連線</small>${isHost && lobby.status === 'waiting' ? `<button type="button" class="secondary lobby-add-ai" data-add-ai ${lobby.players.length >= 8 ? 'disabled' : ''}>＋ 新增電腦玩家</button>` : ''}</span></div>
             ${lobby.players.map((p, i) => {
               const isMe = p.peerId === net?.peerId;
               const isLobbyHost = p.host === true || p.peerId === lobby.hostId || p.peerId === net?.hostId;
+              const isAI = Boolean(p.isAI);
+              const canEditAI = isHost && isAI && lobby.status === 'waiting';
               const role = roles.find(r => r.id === p.roleId) || roles[0];
               const color = colorMeta(p.color ?? i);
-              const colorLabel = `棋子顏色：${color.name}${isMe ? '（點擊更改）' : '（只有本人可以更改）'}`;
-              const colorButton = `<button class="lobby-color-btn" type="button" data-lobby-color="${h(p.peerId)}" style="--swatch:${color.hex}" aria-label="${h(colorLabel)}" title="${h(colorLabel)}" ${isMe && lobby.status === 'waiting' ? '' : 'disabled'}></button>`;
+              const colorLabel = `棋子顏色：${color.name}${isMe || canEditAI ? '（點擊更改）' : '（只有本人可以更改）'}`;
+              const colorButton = `<button class="lobby-color-btn" type="button" data-lobby-color="${h(p.peerId)}" style="--swatch:${color.hex}" aria-label="${h(colorLabel)}" title="${h(colorLabel)}" ${(isMe || canEditAI) && lobby.status === 'waiting' ? '' : 'disabled'}></button>`;
               const hostBadge = isLobbyHost ? '<span class="lobby-host-badge"><span class="host-crown" aria-label="房主" title="房主">👑</span><span>房主</span></span>' : '';
-              const kickButton = isHost && !isMe
+              const aiBadge = isAI ? `<span class="ai-badge" title="電腦難度：${h(aiDifficulty(p.aiDifficulty).name)}">${h(aiDifficulty(p.aiDifficulty).badge)}</span>` : '';
+              const kickButton = isHost && !isMe && !isAI
                 ? `<button class="kick-player-btn lobby-kick-btn" type="button" data-lobby-kick="${h(p.peerId)}" data-kick-name="${h(p.name)}">踢出</button>`
                 : '';
-              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${p.connected === false ? 'offline' : ''}">
+              const removeAIButton = canEditAI ? `<button class="kick-player-btn lobby-kick-btn" type="button" data-ai-remove="${h(p.peerId)}" data-kick-name="${h(p.name)}">移除</button>` : '';
+              const nameControl = isMe || canEditAI
+                ? `<input class="lobby-name-input" data-lobby-name data-peer-id="${h(p.peerId)}" aria-label="${isAI ? '電腦玩家' : '你的玩家'}名稱，按 Enter 或點擊欄外確定" maxlength="16" value="${h(p.name)}">`
+                : `<strong>${h(p.name)}</strong>`;
+              const difficultyControl = isAI && canEditAI
+                ? `<select class="lobby-ai-difficulty" data-lobby-difficulty="${h(p.peerId)}" aria-label="${h(p.name)} 電腦難度">${aiDifficulties.map(d => `<option value="${d.id}" ${d.id === p.aiDifficulty ? 'selected' : ''}>🤖 ${h(d.name)}</option>`).join('')}</select>`
+                : '';
+              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${isAI ? 'ai-player' : ''} ${p.connected === false ? 'offline' : ''}">
                 <span class="lobby-avatar">${role?.icon || '🎲'}</span>
-                <div class="lobby-player-main">${isMe ? `<div class="lobby-player-name-line"><input class="lobby-name-input" data-lobby-name data-peer-id="${h(p.peerId)}" aria-label="你的玩家名稱，按 Enter 或點擊欄外確定" maxlength="16" value="${h(p.name)}">${hostBadge}</div>` : `<div class="lobby-player-name-line"><strong>${h(p.name)}</strong>${hostBadge}</div>`}<div class="lobby-player-company-line">${colorButton}<small>${h(role?.name || '未定新創集團')}${p.connected === false ? ' · 已離線' : ' · 已連線'}</small>${kickButton}</div></div>
-                <div class="lobby-player-controls">${(isHost && !isMe) ? `<select data-lobby-role="${i}" class="lobby-role-select" aria-label="替 ${h(p.name)} 選擇企業">${roles.map(r => { const taker = takenBy(r.id, p.peerId); return `<option value="${r.id}" ${r.id === p.roleId ? 'selected' : ''} ${taker ? 'disabled' : ''}>${r.icon} ${h(r.name)}${taker ? `（${h(shorten(taker.name, 6))}）` : ''}</option>`; }).join('')}</select>` : `<span class="lobby-role">${role?.icon || ''} ${h(role?.name || '')}</span>`}</div>
+                <div class="lobby-player-main"><div class="lobby-player-name-line">${nameControl}${aiBadge}${hostBadge}</div><div class="lobby-player-company-line">${colorButton}<small>${h(role?.name || '未定新創集團')}${isAI ? ' · 電腦' : p.connected === false ? ' · 已離線' : ' · 已連線'}</small>${kickButton}${removeAIButton}</div></div>
+                <div class="lobby-player-controls">${(isHost && !isMe) ? `<select data-lobby-role="${h(p.peerId)}" class="lobby-role-select" aria-label="替 ${h(p.name)} 選擇企業">${roles.map(r => { const taker = takenBy(r.id, p.peerId); return `<option value="${r.id}" ${r.id === p.roleId ? 'selected' : ''} ${taker ? 'disabled' : ''}>${r.icon} ${h(r.name)}${taker ? `（${h(shorten(taker.name, 6))}）` : ''}</option>`; }).join('')}</select>` : `<span class="lobby-role">${role?.icon || ''} ${h(role?.name || '')}</span>`}${difficultyControl}</div>
               </div>`;
             }).join('')}
             ${rolePicker}
@@ -1209,10 +1226,14 @@ export const PartyUI = (() => {
     });
     // 房主替別人換企業（例如兩個人搶同一家時）：一樣不能選已被選走的。
     $$('[data-lobby-role]').forEach(sel => sel.onchange = e => {
-      const p = lobby.players[Number(sel.dataset.lobbyRole)];
+      const p = lobby.players.find(entry => entry.peerId === sel.dataset.lobbyRole) || lobby.players[Number(sel.dataset.lobbyRole)];
       if (!p || !isHost) return;
       const error = window.PartyNet.assignRole(p.peerId, e.target.value);
       if (error) { roleError(error); showLobby(window.PartyNet.lobby); }
+    });
+    $$('[data-lobby-difficulty]').forEach(sel => sel.onchange = e => {
+      if (!isHost) return;
+      if (!window.PartyNet.setAIDifficulty(sel.dataset.lobbyDifficulty, e.target.value)) showLobby(window.PartyNet.lobby);
     });
     $$('[data-lobby-name]').forEach(input => {
       const submit = () => {
@@ -1221,7 +1242,11 @@ export const PartyUI = (() => {
         if (input.dataset.submittedName === name || current?.name === name) return;
         input.dataset.submittedName = name;
         lobbyNameSubmitting = true;
-        try { window.PartyNet.renameSelf(name); }
+        try {
+          const currentPlayer = window.PartyNet.lobby?.players?.find(entry => entry.peerId === input.dataset.peerId);
+          if (currentPlayer?.isAI && isHost) window.PartyNet.renamePlayer(input.dataset.peerId, name);
+          else window.PartyNet.renameSelf(name);
+        }
         finally { lobbyNameSubmitting = false; }
       };
       input.onkeydown = event => {
@@ -1234,22 +1259,31 @@ export const PartyUI = (() => {
       window.PartyNet.kickPlayer(button.dataset.lobbyKick, '已由房主移出大廳。');
       sound('error');
     });
+    $$('[data-ai-remove]').forEach(button => button.onclick = () => {
+      if (!isHost || lobby.status !== 'waiting') return;
+      if (confirm(`確定移除「${button.dataset.kickName || '電腦玩家'}」嗎？`)) window.PartyNet.removeAI(button.dataset.aiRemove);
+    });
+    $('[data-add-ai]')?.addEventListener('click', () => {
+      try { window.PartyNet.addAI(); sound('click'); }
+      catch (error) { roleError(error.message); }
+    });
     $$('[data-lobby-color]').forEach(button => button.onclick = () => {
       if (button.disabled) return;
       const net = window.PartyNet;
       if (!net?.active || net.lobby?.status !== 'waiting') return;
-      if (button.dataset.lobbyColor !== net.peerId) {
+      const target = net.lobby?.players?.find(player => player.peerId === button.dataset.lobbyColor);
+      if (button.dataset.lobbyColor !== net.peerId && !(net.isHost && target?.isAI)) {
         app()?.notify?.('只能更改自己的棋子顏色。');
         return;
       }
-      const me = net.myPlayer;
+      const me = target || net.myPlayer;
       openColorPicker({
         current: Number(me?.color ?? 0),
-        taken: net.lobby.players.filter(p => p.peerId !== net.peerId).map(p => ({ color: p.color, name: p.name })),
-        title: '你的棋子顏色',
-        subtitle: '這個房間裡只能更改自己的顏色',
+        taken: net.lobby.players.filter(p => p.peerId !== button.dataset.lobbyColor).map(p => ({ color: p.color, name: p.name })),
+        title: target?.isAI ? `${target.name} 的棋子顏色` : '你的棋子顏色',
+        subtitle: target?.isAI ? '房主可以調整電腦玩家顏色' : '這個房間裡只能更改自己的顏色',
         onPick: color => {
-          const ok = net.setColor(color);
+          const ok = target?.isAI && net.isHost ? !net.assignColor(target.peerId, color) : net.setColor(color);
           sound(ok ? 'click' : 'error');
         }
       });
@@ -2756,8 +2790,27 @@ export const PartyUI = (() => {
 
   function clearTurnLock() {
     document.body.classList.remove('spectator-mode');
+    document.body.classList.remove('ai-thinking');
     const overlay = $('#spectator-note');
-    if (overlay) overlay.hidden = true;
+    if (overlay && overlay.dataset.aiThinking === 'true') { overlay.hidden = true; delete overlay.dataset.aiThinking; }
+  }
+
+  // 房主執行器把這個狀態寫進快照；訪客只顯示提示，不會在本地重跑 AI。
+  function setAIThinking(active, name = '', phase = 'turn') {
+    document.body.classList.toggle('ai-thinking', Boolean(active));
+    let overlay = $('#spectator-note');
+    if (!active) {
+      if (overlay?.dataset.aiThinking === 'true') { overlay.hidden = true; delete overlay.dataset.aiThinking; }
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'spectator-note';
+      document.body.appendChild(overlay);
+    }
+    overlay.dataset.aiThinking = 'true';
+    overlay.innerHTML = `🤖 <strong>${h(name || '電腦玩家')}</strong> 電腦思考中...`;
+    overlay.hidden = false;
   }
 
   function lockForeignTurn(p) {
@@ -2939,6 +2992,9 @@ export const PartyUI = (() => {
     ensureDebugPanel(p);
     document.body.classList.toggle('debug-mode', Boolean(p.ext?.debug));
     lockForeignTurn(p);
+    const active = p.players?.[p.turnIndex];
+    const thinking = Boolean(active?.isAI && (p.net?.aiThinking?.playerId === active.id || !p.net));
+    setAIThinking(thinking, active?.name, p.net?.aiThinking?.phase || 'turn');
     const net = window.PartyNet;
     if (net?.active && net.lobby && net.lobby.status !== 'playing') showLobby(net.lobby);
     const subsidy = p.cornerSubsidyEvent;
@@ -3415,7 +3471,7 @@ export const PartyUI = (() => {
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
     openSettlement, hideSettlement, showHostLeftNotice, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
-    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, resetTurnInteractions,
+    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, setAIThinking, resetTurnInteractions,
     playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,

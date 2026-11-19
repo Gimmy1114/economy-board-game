@@ -1,4 +1,4 @@
-import {ITEMS,BOARD,SECTORS,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST} from './data.js';
+import {ITEMS,BOARD,SECTORS,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,AI_DIFFICULTIES,DEFAULT_AI_DIFFICULTY,normalizeAIDifficulty} from './data.js';
 import {PARTY_ROLES,GAME_MODES,MODE_IDS,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,QUICK_DECISIONS,SPECIAL_TILE_META,SPECIAL_ITEM_BY_ID,RANDOM_ROLE_ID,WHEEL_EFFECTS,PLAYER_COLORS} from './party_data.js';
 import {createGame,finish,rollDie,resolveLanding,chooseDecision,useItem,acquireTarget,acquisitionCost,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,boardOf,startTurn,cornerMarksForBoard,tileNo,resumeRoundAfterDoom} from './engine.js';
 import {
@@ -15,9 +15,10 @@ import {syncInfo,isNewerGame} from './sync.js';
 import {PartyNet} from './net.js';
 import {PartyUI} from './ui_party.js';
 import {SoundManager} from './audio_system.js';
+import {aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard} from './ai_engine.js';
 
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
-globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
+globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS,AI_DIFFICULTIES,DEFAULT_AI_DIFFICULTY};
 globalThis.__partyEngine={
   extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
@@ -26,11 +27,15 @@ globalThis.__partyEngine={
 };
 globalThis.PartyNet=PartyNet;
 globalThis.SoundManager=SoundManager;
+// 決策模組保持純函式；暴露唯讀入口供房主回合排程與除錯工具使用。
+globalThis.__partyAI={aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard};
 
 const $=s=>document.querySelector(s),h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>Math.round(n).toLocaleString('zh-TW'),signed=n=>`${n>=0?'+':'−'}${money(Math.abs(n))}`;
 const colors=PLAYER_COLORS.map(c=>c.hex);
 const colorMeta=i=>PLAYER_COLORS[Number(i)]||PLAYER_COLORS[0];
+const aiDifficultyMeta=value=>AI_DIFFICULTIES.find(x=>x.id===normalizeAIDifficulty(value))||AI_DIFFICULTIES[1];
+const aiBadge=p=>p?.isAI?`<span class="ai-badge" title="電腦難度：${h(aiDifficultyMeta(p.aiDifficulty).name)}">${h(aiDifficultyMeta(p.aiDifficulty).badge)}</span>`:'';
 const role=id=>PARTY_ROLES.find(x=>x.id===id)||PARTY_ROLES[0],item=id=>ITEMS.find(x=>x.id===id),mythic=id=>MYTHIC_BY_ID[id],boardTile=(state,i)=>boardOf(state)[i];
 const roleStories={
   social:'一支影片讓全城燒起來。你坐在流量儀表板前，準備把對手的公關危機變成自己的紅利。',
@@ -49,7 +54,7 @@ const viewKey='economy-party-view-v1';
 const tabId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
 let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
-let state=null,page='home',homeMode='choose',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+let state=null,page='home',homeMode='choose',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY},{name:'玩家 2',roleId:'hardware',color:1,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
 const seenSpecialUnlocks=new Set();
 let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:60,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
@@ -72,6 +77,33 @@ const TURN_WATCHDOG_MS=5000;
 let localTurnLocks={isRolling:false,isMoving:false,isHandlingEvent:false,hasRolled:false,isUsingItem:false,pendingAction:null};
 let turnWatchdogTimer=null;
 let turnWatchdogToken=0;
+// 電腦回合只在單機或房主權威端執行。訪客只接收 aiThinking 快照，
+// 因此不會因為各裝置的亂數或動畫時間不同而分叉。
+const AI_STEP_DELAY_MIN=750,AI_STEP_DELAY_MAX=1000,AI_WATCHDOG_MS=45000;
+let aiTurnBusy=false,aiTurnToken=0,aiWatchdogTimer=null,aiAuctionPassKey='';
+const aiAuthority=()=>!PartyNet.active||PartyNet.isHost;
+const aiDelay=(ms=null)=>new Promise(resolve=>setTimeout(resolve,ms==null?(isTestMode()?35:AI_STEP_DELAY_MIN+Math.floor(Math.random()*(AI_STEP_DELAY_MAX-AI_STEP_DELAY_MIN+1))):ms));
+function aiClearWatchdog(){clearTimeout(aiWatchdogTimer);aiWatchdogTimer=null}
+function aiIsCurrent(player=activePlayer()){return Boolean(state?.status==='playing'&&player?.isAI&&aiAuthority())}
+function aiSetThinking(active,phase='turn',player=activePlayer()){
+  if(state?.net){
+    state.net.aiThinking=active&&player?{playerId:player.id,phase,at:Date.now()}:null;
+    try{save()}catch(error){console.warn('AI 思考狀態同步失敗',error)}
+  }
+  try{PartyUI.setAIThinking?.(Boolean(active),player?.name,phase)}catch{}
+}
+function aiWaitForSettled(token,timeout=AI_WATCHDOG_MS){
+  const started=Date.now();
+  return new Promise(resolve=>{
+    const poll=()=>{
+      if(token!==aiTurnToken||!state||state.status!=='playing'||!aiAuthority()){resolve(false);return}
+      if(!animation&&state.phase!=='moving'){resolve(true);return}
+      if(Date.now()-started>=timeout){resolve(false);return}
+      setTimeout(poll,isTestMode()?20:80);
+    };
+    poll();
+  });
+}
 
 function clearTurnWatchdog(){
   clearTimeout(turnWatchdogTimer);
@@ -399,6 +431,20 @@ function syncTurnClock(){
   }
   const key=turnClockKey();
   if(!key)return;
+  // 電腦沒有「未操作」的概念；房主執行器可能需要播放多段動畫，
+  // 所以整個 AI 回合都使用無限計時並同步給訪客。
+  if(activePlayer()?.isAI){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    const playerId=activePlayer().id;
+    const changed=turnClock.key!==key||!turnClock.infinite||turnClock.playerId!==playerId;
+    turnClock={key,playerId,deadline:0,seconds:Infinity,infinite:true,interval:null,expiring:false,paused:false,remaining:0};
+    const timer={key,playerId,deadlineAt:0,seconds:0,infinite:true,paused:false};
+    state.net.turnTimer=timer;
+    if(changed)PartyNet.broadcastEvent({type:'TURN_TIMER',...timer});
+    try{PartyUI.setTurnTimer(timer,true)}catch{}
+    return;
+  }
   if(isTestMode()){
     clearInterval(turnClock.interval);
     const playerId=activePlayer().id;
@@ -437,6 +483,8 @@ function finishRoomByExit(reason,winners,title){
 }
 function checkRoomPlayersAfterExit(){
   if(!PartyNet.isHost||!state||state.status!=='playing'||state.isGameOver)return false;
+  const aiAlive=state.players.some(player=>player.isAI&&!player.ext?.eliminated&&!player.isGhost);
+  if(aiAlive)return false;
   const online=PartyNet.lobby?.players?.filter(player=>player.host||player.connected!==false)||[];
   if(online.length!==1||!online[0]?.host)return false;
   const hostId=Object.entries(state.net?.owners||{}).find(([,peerId])=>peerId===PartyNet.peerId)?.[0]||PartyNet.myPlayerId;
@@ -806,8 +854,11 @@ async function run(fn,options={}){
     if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore);
     options.afterCommit?.();
   })}
-  catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return}
+  catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return false}
   if(before)animateCashChanges(before);
+  // 人類或訪客動作可能剛好把回合交給電腦；由房主排程下一個權威回合。
+  if(!PartyNet.isClient)setTimeout(aiScheduleTurn,0);
+  return true;
 }
 
 function dispatchSkillCue(playerId){
@@ -836,6 +887,190 @@ function runAction(action,fn,options={}){
     return;
   }
   return run(fn,runOptions);
+}
+
+// ---------------------------------------------------------------------------
+// 電腦玩家回合執行器
+// ---------------------------------------------------------------------------
+function aiAction(type,payload,fn,options={}){
+  const player=activePlayer();
+  if(!player?.isAI||!aiAuthority())return Promise.resolve(false);
+  return Promise.resolve(runAction({type,playerId:player.id,...(payload||{})},fn,{...options,authoritative:true})).then(result=>{
+    if(result===false)throw Error('AI 動作未能完成');
+    return true;
+  });
+}
+async function aiResolvePending(player,token){
+  for(let guard=0;guard<24;guard++){
+    if(token!==aiTurnToken||!state||state.status!=='playing')return false;
+    const ext=state.ext||{};
+    if(ext.portalPending?.playerId===player.id){
+      await aiDelay();
+      await aiAction('PORTAL_RESOLVE',{at:ext.portalPending.at},()=>extResolvePortal(state,ext.portalPending.at),{allowPortal:true});
+      continue;
+    }
+    if(ext.vectorPending?.ownerId===player.id){
+      await aiDelay();
+      await aiAction('VECTOR_RESOLVE',{},()=>extResolveVectorPending(state));
+      continue;
+    }
+    if(state.phase==='moving'||animation){
+      if(!await aiWaitForSettled(token))return false;
+      continue;
+    }
+    if(state.pendingDecision?.playerId===player.id){
+      const choice=aiChooseDecisionAction(state,player);
+      if(!choice)return false;
+      await aiDelay();
+      await aiAction('DECISION',{optionId:choice.optionId},()=>chooseDecision(state,choice.optionId));
+      continue;
+    }
+    if(ext.replaceOffer?.playerId===player.id){
+      const discard=aiChooseDiscard(state,player);
+      await aiDelay();
+      if(discard){
+        await aiAction('REPLACE_ITEM',{kind:discard.kind,index:discard.index},()=>extResolveReplace(state,{kind:discard.kind,index:discard.index}));
+      }else{
+        await aiAction('REPLACE_ITEM',{dropNew:true},()=>extResolveReplace(state,{dropNew:true}));
+      }
+      continue;
+    }
+    if(ext.starOffer?.playerId===player.id){
+      const buy=Number(player.cash)>=Number(ext.starOffer.price||Infinity)&&(!player.ext?.bankFreeze);
+      await aiDelay();
+      await aiAction('STAR_OFFER',{buy},()=>buy?extBuyStar(state):extSkipStarOffer(state));
+      continue;
+    }
+    if(ext.forcedStarOffer?.targetId===player.id||ext.forcedStarOffer?.playerId===player.id){
+      const info=extForcedStarInfo(state);
+      const buy=Boolean(info&&Number(player.cash)>=Number(info.cost||Infinity));
+      await aiDelay();
+      if(buy)await aiAction('FORCE_BUY_STAR',{targetId:info.targetId},()=>extForcedBuyStar(state,info.targetId));
+      else await aiAction('FORCE_BUY_STAR',{targetId:info?.targetId},()=>{state.ext.forcedStarOffer=null});
+      continue;
+    }
+    if(ext.investOffer?.playerId===player.id){
+      const decision=aiChooseInvestAction(state,player);
+      await aiDelay();
+      await aiAction('INVEST',{yes:decision.action==='invest'},()=>extInvest(state,decision.action==='invest'));
+      continue;
+    }
+    if(ext.taxChoice?.playerId===player.id){
+      const decision=aiChooseTaxAction(state,player);
+      await aiDelay();
+      await aiAction('TAX',{action:decision.action==='pay'?'pay':'detain'},()=>decision.action==='pay'?extTaxPay(state):extTaxDetain(state));
+      continue;
+    }
+    if(ext.insiderOffer?.playerId===player.id){
+      const decision=aiChooseInsiderAction(state,player);
+      await aiDelay();
+      await aiAction('INSIDER',{yes:decision.action==='pay'},()=>decision.action==='pay'?extInsiderPay(state):(state.ext.insiderOffer=null));
+      continue;
+    }
+    if(ext.wheelPending?.playerId===player.id){
+      await aiDelay();
+      await aiAction('RESOLVE_WHEEL',{at:ext.wheelPending.at},()=>extResolveWheel(state,{playerId:player.id,at:ext.wheelPending.at}));
+      continue;
+    }
+    if(ext.eventPrompt?.playerId===player.id){
+      await aiDelay();
+      await aiAction('CLEAR_EVENT_PROMPT',{},()=>extClearEventPrompt(state));
+      continue;
+    }
+    if(ext.auction){
+      const current=extAuctionCurrent(state);
+      if(current?.id===player.id){
+        const auctionKey=`${auctionWaitId(ext.auction)}:${player.id}`;
+        const forcedPass=aiAuctionPassKey===auctionKey;
+        const decision=forcedPass?{action:'pass'}:aiChooseAuctionAction(state,player);
+        await aiDelay(600+Math.floor(Math.random()*301));
+        await aiAction('AUCTION_ACTION',{action:decision.action},()=>extAuctionAction(state,decision.action),{allowAuction:true});
+        if(!forcedPass&&decision.willPassAfterBid&&decision.action==='bid')aiAuctionPassKey=auctionKey;
+        if(forcedPass)aiAuctionPassKey='';
+        continue;
+      }
+      // 黑市輪到人類時交還控制權；人類完成一手後 run() 會再次排程 AI。
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+async function aiRunTurn(){
+  if(aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return;
+  const player=activePlayer();
+  if(!player?.isAI)return;
+  aiTurnBusy=true;
+  const token=++aiTurnToken;
+  let watchdogFired=false;
+  aiWatchdogTimer=setTimeout(()=>{watchdogFired=true},AI_WATCHDOG_MS);
+  try{
+    aiSetThinking(true,'turn',player);
+    await aiDelay();
+    // 滿包先依難度丟棄，避免黑市或事件獎勵把流程鎖在替換視窗。
+    const discard=aiChooseDiscard(state,player);
+    if(discard&&state.phase==='roll'){
+      await aiAction('DISCARD',{kind:discard.kind,index:discard.index},()=>extDiscard(state,player,discard.kind,discard.index));
+      await aiDelay();
+    }
+    const plan=aiPlanTurn(state,player);
+    const pre=plan.preRoll;
+    if(pre&&pre.type==='USE_ITEM'&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_ITEM',{itemId:pre.id,targetId:pre.targetId},()=>useItem(state,pre.id,pre.targetId));
+    }else if(pre&&pre.type==='USE_MYTHIC'&&pre.id&&pre.id!=='truthGate'&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_MYTHIC',{id:pre.id,payload:pre.payload||{}},()=>extUseMythic(state,pre.id,pre.payload||{}));
+    }else if(pre&&pre.type==='USE_SKILL'&&pre.targetId&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_SKILL',{targetId:pre.targetId},()=>extUseSkill(state,pre.targetId));
+    }
+    if(token!==aiTurnToken||state.status!=='playing')return;
+    if(state.phase==='roll'){
+      await aiDelay();
+      await rollWithAnimation(true);
+      if(!await aiWaitForSettled(token)){watchdogFired=true;throw Error('棋子動畫逾時')}
+    }
+    const pendingDone=await aiResolvePending(player,token);
+    if(!pendingDone&&state?.phase==='moving'){watchdogFired=true;throw Error('特殊格動畫逾時')}
+    if(pendingDone&&token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&!state.ext?.auction&&['roll','resolve'].includes(state.phase)){
+      const latest=aiPlanTurn(state,player);
+      const target=latest.merger?.targetId&&state.players.find(entry=>entry.id===latest.merger.targetId);
+      if(latest.merger?.action==='acquire'&&target&&canAcquire(state,player,target)){
+        await aiDelay();
+        await aiAction('TARGET_ACTION',{action:'acquire',targetId:target.id},()=>acquireTarget(state,target.id));
+      }
+    }
+    if(token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&['resolve','skipped'].includes(state.phase)){
+      await aiDelay();
+      await aiAction('END_TURN',{},()=>endTurn(state),{clearTurnInteractions:true});
+    }
+  }catch(error){
+    console.error('AI 回合執行失敗',error);
+    notify(`電腦玩家回合已安全收束：${error?.message||'請稍候'}`);
+  }finally{
+    aiClearWatchdog();
+    // 任何子步驟失敗都不能把房間留在 moving／decision 鎖定狀態。
+    if((watchdogFired||state?.phase==='moving')&&state?.status==='playing'&&activePlayer()?.id===player.id){
+      try{
+        cancelAnimation({resumeTimer:false});
+        if(state.phase==='moving'){state.phase='resolve';state.pendingLanding=null;if(state.lastRoll)state.lastRoll.resolved=true}
+        extForceEndTurn(state,'電腦玩家回合逾時，系統自動收束');
+        save();render();
+      }catch(fallbackError){console.error('AI watchdog 收束失敗',fallbackError)}
+    }
+    if(state?.net&&state.net.aiThinking?.playerId===player.id)aiSetThinking(false,'idle',player);
+    aiTurnBusy=false;
+    if(state?.status==='playing')setTimeout(aiScheduleTurn,0);
+  }
+}
+function aiScheduleTurn(){
+  if(aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return;
+  const player=activePlayer();
+  if(!player?.isAI)return;
+  const auction=state.ext?.auction;
+  if(auction&&extAuctionCurrent(state)?.id!==player.id)return;
+  setTimeout(()=>{if(!aiTurnBusy)void aiRunTurn()},0);
 }
 
 function cashSnapshot(){
@@ -896,7 +1131,10 @@ function renderRulesContent(container){
 }
 function renderRules(){renderRulesContent($('#rules-content'))}
 function renderSetup(){
-  $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{const c=colorMeta(p.color??i);return `<div class="setup-player"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`}).join('');
+  $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{
+    const c=colorMeta(p.color??i), ai=Boolean(p.isAI), difficulty=normalizeAIDifficulty(p.aiDifficulty);
+    return `<div class="setup-player ${ai?'is-ai':''}"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><select class="setup-kind" data-setup-kind="${i}" aria-label="玩家 ${i+1} 類型"><option value="human" ${ai?'':'selected'}>人類</option><option value="ai" ${ai?'selected':''}>電腦</option></select>${ai?`<select class="setup-difficulty" data-setup-difficulty="${i}" aria-label="玩家 ${i+1} 電腦難度">${AI_DIFFICULTIES.map(d=>`<option value="${d.id}" ${d.id===difficulty?'selected':''}>🤖 ${h(d.name)}</option>`).join('')}</select>`:''}<button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`;
+  }).join('');
   $('#add-player').disabled=setupPlayers.length>=8;
   PartyUI?.renderSetupExtras?.();
 }
@@ -1121,7 +1359,8 @@ function renderTurn(){
     $('#turn-content').innerHTML=`<h2 class="turn-name">${h(finishHeading)}</h2><p class="turn-role">${h(reason)}</p><p class="turn-meta">勝出：<strong>${h(winners||'無')}</strong></p><div class="final-rank">${[...state.players].sort((a,b)=>b.stars-a.stars||b.cash-a.cash).map((x,i)=>`<div><span>${i+1}</span><strong>${h(x.name)}${hostCrown?hostCrown(x.id,state)?'<span class="host-crown" aria-label="房主">👑</span>':'':''}</strong><em>${x.stars}★ · ${money(x.cash)}</em></div>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button>`;
     return;
   }
-  const localTurn=PartyNet.canAct(state);
+  const aiTurn=Boolean(p.isAI);
+  const localTurn=PartyNet.canAct(state)&&!aiTurn;
   const localLocked=localActionLocked();
   const canRoll=(Boolean(state.ext?.debug)||state.phase==='roll')&&localTurn&&!localLocked,
     canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
@@ -1130,10 +1369,10 @@ function renderTurn(){
   const canAct=['roll','resolve'].includes(state.phase);
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
-  const status=state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
-  const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
+  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
+  const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${aiTurn?' · 🤖 電腦思考中...':localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
+  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
 }
 function renderPlayers(){
   $('#player-cards').innerHTML=state.players.map((p,index)=>{
@@ -1147,7 +1386,7 @@ function renderPlayers(){
       ? `<button type="button" class="kick-player-btn" data-kick-peer="${h(ownerPeerId)}" data-kick-name="${h(p.name)}">踢出</button>`:'';
     const cornerMarks=CORNER_PLAYER_MARKS.map(([color,label])=>`<span class="corner-player-mark ${color} ${p.marks?.[color]?'collected':''}" title="${CORNER_MARK_LABELS[color]}角落記號 ${p.marks?.[color]?'已取得':'未取得'}"><i></i>${label}</span>`).join('');
     const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-    return `<article class="player-card party-player-card ${turnState} ${localClass} ${p.ext?.eliminated?'eliminated':''}" style="--player-color:${p.ext?.eliminated?'#5f8ec4':colors[p.color]}" data-player-card="${h(p.id)}"><div class="player-card-head"><div class="player-identity"><span class="role-icon">${r.icon}</span><div><h3>${h(p.name)}${hostCrown}</h3><div class="player-company-line"><span class="player-color-dot" style="--swatch:${colorMeta(p.color).hex}" title="棋子顏色：${h(colorMeta(p.color).name)}"></span><small>${h(r.name)} · ${h(r.sector)}</small>${kickButton}</div></div></div><div class="player-card-side"><span class="position-label">第 ${tileNo(p.position)} 格</span></div></div><div class="party-money"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 能量</span><strong>${p.energy}</strong></div></div><div class="corner-player-marks" aria-label="四角記號"><small>四角記號</small>${cornerMarks}</div>${chipMarkup(chips)}${p.parentId?`<p class="subsidiary-note">🏢 子公司，每回合收益 40% 上繳 ${h(state.players.find(x=>x.id===p.parentId)?.name||'母公司')}${p.cash>=REBEL_COST?' · 可獨立反撲':''}</p>`:''}${children.length?`<p class="subsidiary-note parent">👑 母公司：${children.map(x=>h(x.name)).join('、')}</p>`:''}<div class="player-items">${Array.from({length:3},(_,i)=>{const slot=inventory[i];return `<span class="mini-item ${slot?(slot.kind==='mythic'?'mythic filled':slot.kind==='special'?'special filled':'filled'):''}" title="${slot?h(slot.meta.desc):'空欄位'}">${slot?slot.meta.icon:'·'}</span>`}).join('')}<small>${inventory.length}/3 道具</small></div></article>`;
+    return `<article class="player-card party-player-card ${turnState} ${localClass} ${p.ext?.eliminated?'eliminated':''}" style="--player-color:${p.ext?.eliminated?'#5f8ec4':colors[p.color]}" data-player-card="${h(p.id)}"><div class="player-card-head"><div class="player-identity"><span class="role-icon">${r.icon}</span><div><h3>${h(p.name)}${aiBadge(p)}${hostCrown}</h3><div class="player-company-line"><span class="player-color-dot" style="--swatch:${colorMeta(p.color).hex}" title="棋子顏色：${h(colorMeta(p.color).name)}"></span><small>${h(r.name)} · ${h(r.sector)}</small>${kickButton}</div></div></div><div class="player-card-side"><span class="position-label">第 ${tileNo(p.position)} 格</span></div></div><div class="party-money"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 能量</span><strong>${p.energy}</strong></div></div><div class="corner-player-marks" aria-label="四角記號"><small>四角記號</small>${cornerMarks}</div>${chipMarkup(chips)}${p.parentId?`<p class="subsidiary-note">🏢 子公司，每回合收益 40% 上繳 ${h(state.players.find(x=>x.id===p.parentId)?.name||'母公司')}${p.cash>=REBEL_COST?' · 可獨立反撲':''}</p>`:''}${children.length?`<p class="subsidiary-note parent">👑 母公司：${children.map(x=>h(x.name)).join('、')}</p>`:''}<div class="player-items">${Array.from({length:3},(_,i)=>{const slot=inventory[i];return `<span class="mini-item ${slot?(slot.kind==='mythic'?'mythic filled':slot.kind==='special'?'special filled':'filled'):''}" title="${slot?h(slot.meta.desc):'空欄位'}">${slot?slot.meta.icon:'·'}</span>`}).join('')}<small>${inventory.length}/3 道具</small></div></article>`;
   }).join('');
 }
 function renderGoals(){
@@ -1413,7 +1652,7 @@ async function rollWithAnimation(authoritative=false){
     PartyNet.sendAction({type:'ROLL_DICE',playerId:PartyNet.myPlayerId});
     return;
   }
-  if(PartyNet.isHost&&state?.net&&!authoritative){
+  if(PartyNet.isHost&&state?.net&&!authoritative&&!activePlayer()?.isAI){
     const owner=state.net.owners?.[activePlayer()?.id];
     if(owner!==PartyNet.peerId){notify('現在不是房主的回合，已等待玩家擲骰。');return}
   }
@@ -1489,6 +1728,9 @@ function targetOptions(){
 function renderModal(){
   const el=$('#party-modal');
   if(page!=='game'||!state){el.hidden=true;return}
+  // AI 的特殊格由房主執行器直接呼叫純函式；房主與訪客都只看回合提示，
+  // 不建立可點擊的本機視窗，避免誤操作或讓訪客各自做出不同決策。
+  if(activePlayer()?.isAI){modal=null;el.hidden=true;return}
   if(state.net&&PartyNet.active){
     const decisionOwner=state.pendingDecision?.playerId;
     if(!PartyNet.canAct(state)||(decisionOwner&&decisionOwner!==PartyNet.myPlayerId)){
@@ -1545,9 +1787,9 @@ function render(){
   try{PartyUI.afterRender(state);}catch(e){console.error(e)}
 }
 
-$('#add-player').addEventListener('click',()=>{if(setupPlayers.length<8){const used=new Set(setupPlayers.map(x=>x.roleId));let number=1;while(setupPlayers.some(x=>x.name===`玩家 ${number}`))number++;const free=PARTY_ROLES.find(x=>!used.has(x.id));const usedColors=new Set(setupPlayers.map(x=>x.color));let color=0;while(usedColors.has(color))color++;setupPlayers.push({name:`玩家 ${number}`,roleId:free?free.id:'random',color});renderSetup()}});
+$('#add-player').addEventListener('click',()=>{if(setupPlayers.length<8){const used=new Set(setupPlayers.map(x=>x.roleId));let number=1;while(setupPlayers.some(x=>x.name===`玩家 ${number}`))number++;const free=PARTY_ROLES.find(x=>!used.has(x.id));const usedColors=new Set(setupPlayers.map(x=>x.color));let color=0;while(usedColors.has(color))color++;setupPlayers.push({name:`玩家 ${number}`,roleId:free?free.id:'random',color,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY});renderSetup()}});
 $('#setup-players').addEventListener('input',e=>{if(e.target.dataset.setupName!==undefined)setupPlayers[Number(e.target.dataset.setupName)].name=e.target.value});
-$('#setup-players').addEventListener('change',e=>{if(e.target.dataset.setupRole!==undefined)setupPlayers[Number(e.target.dataset.setupRole)].roleId=e.target.value});
+$('#setup-players').addEventListener('change',e=>{const i=Number(e.target.dataset.setupRole??e.target.dataset.setupKind??e.target.dataset.setupDifficulty);if(!Number.isInteger(i)||!setupPlayers[i])return;if(e.target.dataset.setupRole!==undefined)setupPlayers[i].roleId=e.target.value;if(e.target.dataset.setupKind!==undefined)setupPlayers[i].isAI=e.target.value==='ai';if(e.target.dataset.setupDifficulty!==undefined)setupPlayers[i].aiDifficulty=normalizeAIDifficulty(e.target.value);if(e.target.dataset.setupKind!==undefined)renderSetup()});
 $('#setup-players').addEventListener('click',e=>{const i=e.target.dataset.removePlayer;if(i!==undefined&&setupPlayers.length>2){setupPlayers.splice(Number(i),1);renderSetup()}});
 async function startGameFromConfig(config){
   resetLocalTurnLocks();
@@ -1569,6 +1811,7 @@ async function startGameFromConfig(config){
   $('#setup-error').textContent='';
   save();render();
   try{PartyUI.onGameStart(state,{fromLobby:Boolean(config.net)});}catch(e){console.error(e)}
+  aiScheduleTurn();
   return next;
 }
 window.__partyStartGame=startGameFromConfig;
@@ -2106,6 +2349,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
+  aiScheduleTurn, aiRunTurn, aiResolvePending,
   cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
@@ -2150,3 +2394,4 @@ if(savedAtStart?.status==='playing'){
   try{localStorage.removeItem(storageKey)}catch{}
 }
 renderHomeRoles();renderRules();render();PartyUI.init?.();checkDeveloperUpdate();
+aiScheduleTurn();

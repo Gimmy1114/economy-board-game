@@ -7,6 +7,7 @@ const files=[
   'party_data.js',
   'engine.js',
   'party_engine.js',
+  'ai_engine.js',
   'sync.js',
   'net.js',
   'audio_system.js',
