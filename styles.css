@@ -684,6 +684,30 @@ html,body{margin:0}
 @keyframes shield-text{0%,38%{opacity:0;transform:scale(.7)}52%{opacity:1;transform:scale(1.05)}72%,100%{opacity:0;transform:scale(1.1)}}
 @keyframes shield-fx-out{0%,65%{opacity:1}100%{opacity:0}}
 @media(max-width:600px){.shield-block-fx strong{margin-top:112px}.setup-player{grid-template-columns:24px minmax(0,1fr) minmax(0,.8fr) minmax(0,.8fr) 30px minmax(0,1fr) 25px 24px}.setup-player select,.setup-player input{min-width:0;font-size:11px}}
+
+/* 單機玩家設定：前段欄位固定共用，電腦只在右側控制區多一個難度欄。 */
+.setup-add-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:5px 0 12px}
+.setup-add-grid .add-player{width:100%;margin:0}
+.setup-card .primary.big{margin-top:10px}
+#setup-error:empty{display:none}
+.setup-player{grid-template-columns:30px minmax(0,1fr) 30px minmax(0,1.25fr) 24px}
+.setup-player-controls{display:flex;align-items:center;gap:6px;min-width:0}
+.setup-player-controls [data-setup-role]{flex:1;min-width:0}
+.setup-player .setup-role-info{margin:0;flex:none}
+.setup-player .setup-difficulty{flex:0 0 112px;width:112px;min-width:112px;line-height:1.2;padding:8px 24px 8px 8px}
+.setup-player input,.setup-player select{min-width:0}
+@media(max-width:600px){
+  .setup-add-grid{gap:8px}
+  .setup-player{grid-template-columns:24px minmax(48px,.6fr) 26px minmax(0,1.4fr) 22px;gap:5px}
+  .setup-player select,.setup-player input{font-size:11px;padding-left:5px;padding-right:5px}
+  .setup-player .setup-difficulty{flex-basis:88px;width:88px;min-width:88px;padding-left:4px;padding-right:16px;font-size:11px}
+  .setup-player .setup-role-info{width:22px;height:22px;font-size:12px}
+}
+@media(max-width:360px){
+  .setup-player .setup-difficulty{flex-basis:78px;width:78px;min-width:78px;padding-left:3px;padding-right:14px;font-size:10px}
+  .setup-player .setup-role-info{width:20px;height:20px;font-size:11px}
+  .setup-player-controls{gap:3px}
+}
 .evil-survivor-scene{min-height:100%;padding:18px 14px}
 .market-phase{flex:none;margin:0 0 2px;padding:4px 11px;border:1px solid #f0d4b8;border-radius:999px;background:rgba(255,247,237,.94);color:#a6532b;font-size:clamp(11px,1.3vw,14px);font-weight:900;line-height:1.2;box-shadow:0 2px 8px rgba(116,67,35,.08)}
 .market-phase.stage-2,.market-phase.stage-3{border-color:#edc6ae;color:#a8462e}

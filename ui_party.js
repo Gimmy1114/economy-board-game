@@ -36,6 +36,9 @@ export const PartyUI = (() => {
     if (!p?.net || !window.PartyNet?.active) return true;
     return Boolean(playerId) && localPlayerId() === playerId;
   }
+  function isAIPlayer(p, playerId) {
+    return Boolean(playerId && p?.players?.find(player => player.id === playerId)?.isAI);
+  }
   function specialOwnerId(p) {
     const ext = p?.ext;
     if (!ext) return null;
@@ -52,9 +55,14 @@ export const PartyUI = (() => {
     return Boolean(p?.ext?.auction || p?.ext?.replaceOffer || p?.ext?.starOffer || p?.ext?.investOffer || p?.ext?.taxChoice || p?.ext?.insiderOffer || p?.ext?.eventPrompt);
   }
   function canUseLocalAction(p) {
+    if (!p) return false;
+    if (hasSpecialOffer(p)) {
+      const ownerId = specialOwnerId(p);
+      return Boolean(ownerId && !isAIPlayer(p, ownerId) && isLocalOwner(p, ownerId));
+    }
+    if (p.players?.[p.turnIndex]?.isAI) return false;
     if (!p?.net || !window.PartyNet?.active) return true;
     if (!window.PartyNet.canAct(p)) return false;
-    if (hasSpecialOffer(p)) return isLocalOwner(p, specialOwnerId(p));
     return true;
   }
   function playerName(p, id) {
@@ -129,7 +137,12 @@ export const PartyUI = (() => {
   let decisionTimer = null;
   let wheelResolving = false;
   let wheelOpen = false;
+  let wheelReadyKey = '';
+  let wheelReadyDone = false;
+  let wheelReadyPromise = null;
+  let resolveWheelReady = null;
   let lobbyNameSubmitting = false;
+  let lobbyTargetPeerId = null;
   let colorPickerState = null;
   const advancedSettingsDefaults = Object.freeze({
     turnTimerSeconds: 60,
@@ -548,6 +561,11 @@ export const PartyUI = (() => {
     wheelTimers = [];
     wheelResolving = false;
     wheelOpen = false;
+    resolveWheelReady?.();
+    resolveWheelReady = null;
+    wheelReadyPromise = null;
+    wheelReadyKey = '';
+    wheelReadyDone = false;
     const overlay = $('#wheel-overlay');
     if (overlay) overlay.hidden = true;
   }
@@ -929,11 +947,14 @@ export const PartyUI = (() => {
       ${advancedSettingsMarkup()}
     `;
     document.querySelectorAll('#setup-players [data-setup-role]').forEach(select => {
-      if (select.parentElement.querySelector('.setup-role-info')) return;
-      const info = document.createElement('button');
-      info.type = 'button'; info.className = 'setup-role-info'; info.dataset.skillInfo = select.value;
-      info.textContent = 'i'; info.setAttribute('aria-label', '查看企業技能說明');
-      select.insertAdjacentElement('afterend', info);
+      let info = select.parentElement.querySelector('.setup-role-info');
+      if (!info) {
+        info = document.createElement('button');
+        info.type = 'button'; info.className = 'setup-role-info';
+        info.textContent = 'i'; info.setAttribute('aria-label', '查看企業技能說明');
+        select.insertAdjacentElement('afterend', info);
+      }
+      info.dataset.skillInfo = select.value;
     });
     bindAdvancedSettings(box);
     setupFieldVisibility(box, mode, true);
@@ -1067,10 +1088,10 @@ export const PartyUI = (() => {
     const modes = window.__partyData?.GAME_MODES || {};
     const roles = window.__partyData?.LOBBY_ROLES || [];
     const aiDifficulties = window.__partyData?.AI_DIFFICULTIES || [
-      { id: 'easy', name: '簡單', badge: '🤖 簡單' },
-      { id: 'normal', name: '普通', badge: '🤖 普通' },
-      { id: 'hard', name: '困難', badge: '🤖 困難' },
-      { id: 'expert', name: '專家', badge: '🤖 專家' }
+      { id: 'easy', name: '簡單', badge: '😇 簡單' },
+      { id: 'normal', name: '普通', badge: '😐 普通' },
+      { id: 'hard', name: '困難', badge: '😡 困難' },
+      { id: 'expert', name: '專家', badge: '😈 專家' }
     ];
     const aiDifficulty = value => aiDifficulties.find(item => item.id === value) || aiDifficulties[1];
     const activeMode = lobby.mode || 'star';
@@ -1085,16 +1106,21 @@ export const PartyUI = (() => {
     };
     const online = lobby.players.filter(p => p.host || p.connected !== false);
     const me = lobby.players.find(p => p.peerId === net?.peerId);
+    const hostPlayer = lobby.players.find(p => p.peerId === lobby.hostId) || lobby.players.find(p => p.host) || me;
+    const editableTargets = isHost ? lobby.players.filter(p => p.host || p.peerId === lobby.hostId || p.isAI) : [];
+    if (!editableTargets.some(p => p.peerId === lobbyTargetPeerId)) lobbyTargetPeerId = hostPlayer?.peerId || null;
+    const selectedTarget = (isHost ? editableTargets : [me]).find(p => p?.peerId === lobbyTargetPeerId) || (isHost ? hostPlayer : me);
     const takenBy = (roleId, peerId) => roleId !== 'random' && lobby.players.find(p => p.peerId !== peerId && p.roleId === roleId);
-    // 選企業用按鈕：別人選走的變灰並寫出是誰，加進來的人一眼就知道哪些不能選。
-    const rolePicker = me && lobby.status === 'waiting' ? `
+    // 房主可先點自己或電腦玩家的頭像，再用下方企業卡直接替該玩家選企業。
+    const roleTarget = selectedTarget || me;
+    const rolePicker = roleTarget && lobby.status === 'waiting' ? `
       <div class="lobby-role-pick">
-        <div class="lobby-section-head"><span>選擇你的企業</span><small>灰色＝已被別人選走</small></div>
+        <div class="lobby-section-head"><span>${roleTarget.isAI ? `為「${h(roleTarget.name)}」選擇企業` : '選擇你的企業'}</span><small>灰色＝已被別人選走</small></div>
         <div class="lobby-role-grid">${roles.map(r => {
-          const taker = takenBy(r.id, me.peerId);
-          const mine = me.roleId === r.id;
+          const taker = takenBy(r.id, roleTarget.peerId);
+          const mine = roleTarget.roleId === r.id;
           const note = taker ? `${h(shorten(taker.name, 6))} 已選` : mine ? '✓ 你選的' : r.id === 'random' ? '開局時隨機分配' : h(r.sector || '');
-          return `<div class="lobby-role-wrap"><button type="button" class="lobby-role-btn ${mine ? 'mine' : ''} ${taker ? 'taken' : ''}" data-pick-role="${r.id}" aria-pressed="${mine}" ${taker ? 'disabled' : ''} title="${h(r.name)}"><span>${r.icon}</span><div><strong>${h(r.name)}</strong><small>${note}</small></div></button><button type="button" class="role-skill-info" data-skill-info="${r.id}" aria-label="查看${h(r.name)}技能說明">i</button></div>`;
+          return `<div class="lobby-role-wrap"><button type="button" class="lobby-role-btn ${mine ? 'mine' : ''} ${taker ? 'taken' : ''}" data-pick-role="${r.id}" data-pick-peer="${h(roleTarget.peerId)}" aria-pressed="${mine}" ${taker ? 'disabled' : ''} title="${h(r.name)}"><span>${r.icon}</span><div><strong>${h(r.name)}</strong><small>${note}</small></div></button><button type="button" class="role-skill-info" data-skill-info="${r.id}" aria-label="查看${h(r.name)}技能說明">i</button></div>`;
         }).join('')}</div>
       </div>` : '';
     const offline = lobby.players.filter(p => !p.host && p.connected === false).map(p => `「${h(p.name)}」`).join('、');
@@ -1119,12 +1145,13 @@ export const PartyUI = (() => {
               const isLobbyHost = p.host === true || p.peerId === lobby.hostId || p.peerId === net?.hostId;
               const isAI = Boolean(p.isAI);
               const canEditAI = isHost && isAI && lobby.status === 'waiting';
+              const canSelectTarget = isHost && lobby.status === 'waiting' && (isLobbyHost || isAI);
+              const selected = isHost && p.peerId === lobbyTargetPeerId;
               const role = roles.find(r => r.id === p.roleId) || roles[0];
               const color = colorMeta(p.color ?? i);
               const colorLabel = `棋子顏色：${color.name}${isMe || canEditAI ? '（點擊更改）' : '（只有本人可以更改）'}`;
               const colorButton = `<button class="lobby-color-btn" type="button" data-lobby-color="${h(p.peerId)}" style="--swatch:${color.hex}" aria-label="${h(colorLabel)}" title="${h(colorLabel)}" ${(isMe || canEditAI) && lobby.status === 'waiting' ? '' : 'disabled'}></button>`;
               const hostBadge = isLobbyHost ? '<span class="lobby-host-badge"><span class="host-crown" aria-label="房主" title="房主">👑</span><span>房主</span></span>' : '';
-              const aiBadge = isAI ? `<span class="ai-badge" title="電腦難度：${h(aiDifficulty(p.aiDifficulty).name)}">${h(aiDifficulty(p.aiDifficulty).badge)}</span>` : '';
               const kickButton = isHost && !isMe && !isAI
                 ? `<button class="kick-player-btn lobby-kick-btn" type="button" data-lobby-kick="${h(p.peerId)}" data-kick-name="${h(p.name)}">踢出</button>`
                 : '';
@@ -1132,13 +1159,17 @@ export const PartyUI = (() => {
               const nameControl = isMe || canEditAI
                 ? `<input class="lobby-name-input" data-lobby-name data-peer-id="${h(p.peerId)}" aria-label="${isAI ? '電腦玩家' : '你的玩家'}名稱，按 Enter 或點擊欄外確定" maxlength="16" value="${h(p.name)}">`
                 : `<strong>${h(p.name)}</strong>`;
-              const difficultyControl = isAI && canEditAI
-                ? `<select class="lobby-ai-difficulty" data-lobby-difficulty="${h(p.peerId)}" aria-label="${h(p.name)} 電腦難度">${aiDifficulties.map(d => `<option value="${d.id}" ${d.id === p.aiDifficulty ? 'selected' : ''}>🤖 ${h(d.name)}</option>`).join('')}</select>`
+              const difficultyControl = isAI
+                ? canEditAI
+                  ? `<button type="button" class="lobby-ai-difficulty-btn" data-lobby-difficulty="${h(p.peerId)}" aria-label="變更 ${h(p.name)} 的電腦難度" title="點擊切換電腦難度">${h(aiDifficulty(p.aiDifficulty).badge)}</button>`
+                  : `<span class="lobby-ai-difficulty-btn readonly" aria-label="${h(p.name)} 的電腦難度">${h(aiDifficulty(p.aiDifficulty).badge)}</span>`
                 : '';
-              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${isAI ? 'ai-player' : ''} ${p.connected === false ? 'offline' : ''}">
-                <span class="lobby-avatar">${role?.icon || '🎲'}</span>
-                <div class="lobby-player-main"><div class="lobby-player-name-line">${nameControl}${aiBadge}${hostBadge}</div><div class="lobby-player-company-line">${colorButton}<small>${h(role?.name || '未定新創集團')}${isAI ? ' · 電腦' : p.connected === false ? ' · 已離線' : ' · 已連線'}</small>${kickButton}${removeAIButton}</div></div>
-                <div class="lobby-player-controls">${(isHost && !isMe) ? `<select data-lobby-role="${h(p.peerId)}" class="lobby-role-select" aria-label="替 ${h(p.name)} 選擇企業">${roles.map(r => { const taker = takenBy(r.id, p.peerId); return `<option value="${r.id}" ${r.id === p.roleId ? 'selected' : ''} ${taker ? 'disabled' : ''}>${r.icon} ${h(r.name)}${taker ? `（${h(shorten(taker.name, 6))}）` : ''}</option>`; }).join('')}</select>` : `<span class="lobby-role">${role?.icon || ''} ${h(role?.name || '')}</span>`}${difficultyControl}</div>
+              const avatar = canSelectTarget
+                ? `<button type="button" class="lobby-avatar lobby-avatar-select ${selected ? 'selected' : ''}" data-lobby-target="${h(p.peerId)}" aria-pressed="${selected}" aria-label="為 ${h(p.name)} 選擇企業">${role?.icon || '🎲'}</button>`
+                : `<span class="lobby-avatar">${role?.icon || '🎲'}</span>`;
+              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${isAI ? 'ai-player' : ''} ${selected ? 'selected-target' : ''} ${p.connected === false ? 'offline' : ''}">
+                ${avatar}
+                <div class="lobby-player-main"><div class="lobby-player-name-line">${nameControl}${difficultyControl}${hostBadge}</div><div class="lobby-player-company-line">${colorButton}<span class="lobby-company-label"><span aria-hidden="true">${role?.icon || '🎲'}</span><small>${h(role?.name || '未定新創集團')}</small></span>${p.connected === false ? '<small class="lobby-offline-label"> · 已離線</small>' : ''}${kickButton}${removeAIButton}</div></div>
               </div>`;
             }).join('')}
             ${rolePicker}
@@ -1220,20 +1251,30 @@ export const PartyUI = (() => {
     bind('#lobby-doom-step', v => window.PartyNet.setDoomStep(v));
     $('#lobby-debug').onchange = e => window.PartyNet.setDebug(e.target.checked);
     const roleError = message => { const status = $('#lobby-status'); if (status) status.textContent = message; app()?.notify?.(message); sound('error'); };
+    $$('[data-lobby-target]').forEach(button => button.onclick = () => {
+      if (!isHost || lobby.status !== 'waiting') return;
+      lobbyTargetPeerId = button.dataset.lobbyTarget;
+      showLobby(window.PartyNet.lobby);
+      sound('click');
+    });
     $$('[data-pick-role]').forEach(btn => btn.onclick = () => {
       if (btn.classList.contains('mine')) return;
-      try { window.PartyNet.selectRole(btn.dataset.pickRole); sound('click'); } catch (e) { roleError(e.message); }
+      try {
+        if (isHost) {
+          const error = window.PartyNet.assignRole(btn.dataset.pickPeer || lobbyTargetPeerId || net.peerId, btn.dataset.pickRole);
+          if (error) throw Error(error);
+        } else window.PartyNet.selectRole(btn.dataset.pickRole);
+        sound('click');
+      } catch (e) { roleError(e.message); }
     });
-    // 房主替別人換企業（例如兩個人搶同一家時）：一樣不能選已被選走的。
-    $$('[data-lobby-role]').forEach(sel => sel.onchange = e => {
-      const p = lobby.players.find(entry => entry.peerId === sel.dataset.lobbyRole) || lobby.players[Number(sel.dataset.lobbyRole)];
-      if (!p || !isHost) return;
-      const error = window.PartyNet.assignRole(p.peerId, e.target.value);
-      if (error) { roleError(error); showLobby(window.PartyNet.lobby); }
-    });
-    $$('[data-lobby-difficulty]').forEach(sel => sel.onchange = e => {
-      if (!isHost) return;
-      if (!window.PartyNet.setAIDifficulty(sel.dataset.lobbyDifficulty, e.target.value)) showLobby(window.PartyNet.lobby);
+    $$('[data-lobby-difficulty]').forEach(button => button.onclick = () => {
+      if (!isHost || button.classList.contains('readonly')) return;
+      const target = lobby.players.find(player => player.peerId === button.dataset.lobbyDifficulty);
+      if (!target?.isAI) return;
+      const current = aiDifficulties.findIndex(item => item.id === target.aiDifficulty);
+      const next = aiDifficulties[(current + 1 + aiDifficulties.length) % aiDifficulties.length];
+      if (!window.PartyNet.setAIDifficulty(target.peerId, next.id)) showLobby(window.PartyNet.lobby);
+      sound('click');
     });
     $$('[data-lobby-name]').forEach(input => {
       const submit = () => {
@@ -1329,6 +1370,11 @@ export const PartyUI = (() => {
     wheelTimers = [];
     wheelResolving = false;
     wheelOpen = false;
+    resolveWheelReady?.();
+    resolveWheelReady = null;
+    wheelReadyPromise = null;
+    wheelReadyKey = '';
+    wheelReadyDone = false;
     clearTimeout(decisionTimer);
     decisionTimer = null;
     decisionGateKey = '';
@@ -2300,6 +2346,7 @@ export const PartyUI = (() => {
   function openEventPrompt(p) {
     const ev = p?.ext?.eventPrompt;
     if (!ev) return;
+    if (isAIPlayer(p, ev.playerId)) { closeExtModal(); return; }
     if (!isLocalOwner(p, ev.playerId)) return;
     const key = eventPromptKeyOf(p);
     if (modal === 'event' && eventPromptKey === key) return;
@@ -2368,7 +2415,7 @@ export const PartyUI = (() => {
     actionsEl.innerHTML = actions;
     el.dataset.type = type;
     const closeButton = el.querySelector('.ext-modal-close');
-    const mandatoryDecision = ['auction', 'invest', 'tax', 'insider'].includes(type);
+    const mandatoryDecision = ['auction', 'invest', 'tax', 'insider'].includes(type) || type === 'ai-wait';
     if (closeButton) {
       closeButton.hidden = mandatoryDecision;
       closeButton.setAttribute('aria-hidden', String(mandatoryDecision));
@@ -2379,6 +2426,22 @@ export const PartyUI = (() => {
   }
   function closeExtModal() { const el = $('#ext-modal'); if (el) el.hidden = true; modal = null; replaceDropConfirm = false; }
   function updateExtModal(data) { openExtModal(data); }
+
+  function openAIWaitModal(p, kind = 'auction') {
+    if (!p) return;
+    if (modal === 'ai-wait' && !$('#ext-modal')?.hidden) return;
+    const title = kind === 'replace' ? '黑市道具處理中' : '黑市拍賣';
+    modal = 'ai-wait';
+    updateExtModal({
+      kicker: `BLACK MARKET · 第 ${p.round} 季`,
+      icon: '🤖',
+      title,
+      type: 'ai-wait',
+      text: '電腦玩家正在自動處理這次黑市決策。',
+      body: '<div class="ai-decision-wait" role="status" aria-live="polite">等待其他玩家的抉擇...</div>',
+      actions: ''
+    });
+  }
 
   function openStarOffer(p) {
     const offer = p?.ext?.starOffer;
@@ -2460,6 +2523,11 @@ export const PartyUI = (() => {
     const p = state();
     if (!p) return;
     const owner = specialOwnerId(p);
+    if (isAIPlayer(p, owner)) {
+      if (s.type === 'auction' || s.type === 'replace') openAIWaitModal(p, s.type);
+      else closeExtModal();
+      return;
+    }
     if (owner && !isLocalOwner(p, owner)) return;
     modal = s.type;
     const nameOf = id => p.players.find(x => x.id === id)?.name || '';
@@ -2535,7 +2603,7 @@ export const PartyUI = (() => {
     const p = state();
     if (!p) return;
     if (p.status !== 'playing') {
-      if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'event'].includes(modal)) closeExtModal();
+      if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'event', 'ai-wait'].includes(modal)) closeExtModal();
       return;
     }
     // 棋子移動／骰子動畫期間絕不彈出互動視窗，避免提前暴雷。
@@ -2544,6 +2612,7 @@ export const PartyUI = (() => {
     if (wheelOpen || p.ext?.wheelPending) return;
     // 事件格提示優先於所有決策與特殊格視窗。
     if (p.ext?.eventPrompt) {
+      if (isAIPlayer(p, p.ext.eventPrompt.playerId)) { closeExtModal(); return; }
       if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'truth', 'tile', 'debug-items'].includes(modal)) closeExtModal();
       openEventPrompt(p);
       return;
@@ -2553,8 +2622,16 @@ export const PartyUI = (() => {
     const owner = specialOwnerId(p);
     if (hasSpecialOffer(p)) {
       if (modal && ['truth', 'tile', 'debug-items', 'event'].includes(modal)) closeExtModal();
+      if (isAIPlayer(p, owner)) {
+        if (p.ext?.auction || p.ext?.replaceOffer) {
+          openAIWaitModal(p, p.ext?.replaceOffer ? 'replace' : 'auction');
+        } else {
+          closeExtModal();
+        }
+        return;
+      }
       if (!isLocalOwner(p, owner)) {
-        if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace'].includes(modal)) closeExtModal();
+        if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'ai-wait'].includes(modal)) closeExtModal();
         return;
       }
       if (p.ext?.replaceOffer) { openReplaceOffer(p); return; }
@@ -2568,7 +2645,7 @@ export const PartyUI = (() => {
       if (p.ext?.taxChoice) { openSpecialModal({ type: 'tax' }); return; }
       if (p.ext?.insiderOffer) { openSpecialModal({ type: 'insider' }); return; }
     }
-    if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'event'].includes(modal)) closeExtModal();
+    if (modal && ['auction', 'invest', 'tax', 'insider', 'star', 'replace', 'event', 'ai-wait'].includes(modal)) closeExtModal();
   }
 
   // app.js 的快速決策視窗會先詢問這裡，確保事件提示／特殊格／動畫全部結束後才彈出。
@@ -2587,12 +2664,91 @@ export const PartyUI = (() => {
   // -------------------------------------------------------------------------
   // 輪盤
   // -------------------------------------------------------------------------
+  const WHEEL_ANIMATION_TIMEOUT_MS = 5000;
+  const ANIMATION_DURATIONS = Object.freeze({
+    ghostStrike: 2400,
+    witch: 2600,
+    domainHit: 1500,
+    iceMushroom: 520,
+    bankai: 1250,
+    bankrupt: 2600,
+    vector: 1000,
+    shield: 1900,
+    totem: 1500,
+    corner: 1900
+  });
+  const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  function waitForElementAnimation(element, timeout = WHEEL_ANIMATION_TIMEOUT_MS) {
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        element?.removeEventListener?.('transitionend', finish);
+        element?.removeEventListener?.('animationend', finish);
+        element?.removeEventListener?.('transitioncancel', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.max(0, Number(timeout) || 0));
+      element?.addEventListener?.('transitionend', finish, { once: true });
+      element?.addEventListener?.('animationend', finish, { once: true });
+      element?.addEventListener?.('transitioncancel', finish, { once: true });
+    });
+  }
+
+  function eventAnimationBusy(p) {
+    const now = Date.now();
+    const ev = p?.ext?.lastEvent;
+    if (ev?.at && now - Number(ev.at) < (ANIMATION_DURATIONS[ev.type] || 0)) return true;
+    const shield = (p?.ext?.shieldBlockEvents || [p?.ext?.shieldBlockEvent]).filter(Boolean);
+    if (shield.some(event => event.at && now - Number(event.at) < ANIMATION_DURATIONS.shield)) return true;
+    if (p?.ext?.totemEvent?.at && now - Number(p.ext.totemEvent.at) < ANIMATION_DURATIONS.totem) return true;
+    if (p?.cornerSubsidyEvent?.at && now - Number(p.cornerSubsidyEvent.at) < ANIMATION_DURATIONS.corner) return true;
+    return false;
+  }
+
+  function domAnimationBusy() {
+    return Boolean(document.querySelector(
+      '.fx-layer.is-active, #witch-overlay:not([hidden]), .shield-block-fx, .skill-cue, .truth-gate-fx, .domain-hit-label, .portal-smoke-cloud, .vector-smoke, .corner-subsidy-pop'
+    ));
+  }
+
+  // AI 與人類共用同一個動畫收束點。所有效果都有明確的狀態鎖或最大等待時間，
+  // 避免背景分頁遺失 CSS 事件時讓房主永遠停在回合中。
+  async function waitForAnimations({ timeout = WHEEL_ANIMATION_TIMEOUT_MS } = {}) {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      const p = state();
+      if (!p) return true;
+      const wheel = p.ext?.wheelPending;
+      if (wheel) {
+        const key = String(wheel.at || wheel.index || '');
+        if (wheelReadyKey !== key || !wheelReadyDone) {
+          if (!wheelOpen) showWheel(wheel);
+          const remaining = Math.max(20, timeout - (Date.now() - started));
+          await Promise.race([waitForWheel(wheel), pause(Math.min(80, remaining))]);
+          continue;
+        }
+      }
+      const busy = Boolean(
+        app()?.isAnimating?.() || p.phase === 'moving' || p.ext?.portalPending ||
+        p.ext?.vectorPending || p.ext?.doomPending || eventAnimationBusy(p) || domAnimationBusy()
+      );
+      if (!busy) return true;
+      await pause(Math.min(80, Math.max(20, timeout - (Date.now() - started))));
+    }
+    return false;
+  }
+
   function showWheel(data) {
     const p = state();
     if (!p || !data) return;
-    if (data.playerId && !isLocalOwner(p, data.playerId)) { lastWheelKey = String(data.at || data.index || ''); return; }
     const el = $('#wheel-overlay');
-    if (!el) return;
+    if (!el) { wheelReadyKey = String(data.at || data.index || ''); wheelReadyDone = true; return; }
+    const wheelKey = String(data.at || data.index || '');
+    if (wheelOpen && wheelReadyKey === wheelKey) return;
     const effects = window.__partyData?.WHEEL_EFFECTS || [];
     const symbols = (effects.length ? effects.map(e => e.icon) : ['🌟', '💀', '💸', '✂️', '🎒', '🕶️', '🤑', '👻', '⭐', '💱', '🥣', '🤡']);
     const effect = data.effect || effects[data.index] || null;
@@ -2601,6 +2757,10 @@ export const PartyUI = (() => {
     wheelTimers = [];
     wheelResolving = false;
     wheelOpen = true;
+    wheelReadyKey = wheelKey;
+    wheelReadyDone = false;
+    resolveWheelReady?.();
+    wheelReadyPromise = new Promise(resolve => { resolveWheelReady = resolve; });
     el.hidden = false;
     el.innerHTML = `<div class="wheel-card"><p class="ext-kicker">DESTINY WHEEL</p>
       <div class="wheel-stage"><div class="wheel-ring">${symbols.map((s, i) => `<span style="--i:${i}">${s}</span>`).join('')}<div class="wheel-center">🌈</div></div><div class="wheel-pointer">▲</div></div>
@@ -2608,17 +2768,19 @@ export const PartyUI = (() => {
     sound('wheel');
     const ring = el.querySelector('.wheel-ring');
     const rotation = 5 * 360 + ((180 - index * 30) % 360 + 360) % 360;
+    const animationDone = waitForElementAnimation(ring, 2400);
     requestAnimationFrame(() => {
       if (!ring || !el.isConnected) return;
       ring.style.transition = 'transform 2s cubic-bezier(.12,.7,.16,1)';
       ring.style.transform = `rotate(${rotation}deg)`;
     });
-    wheelTimers.push(setTimeout(() => {
+    wheelTimers.push(setTimeout(async () => {
+      await animationDone;
       const title = el.querySelector('.wheel-card h3');
       if (title) title.textContent = '命運已定，等待確認…';
       // 輪盤完全靜止 1 秒後只顯示確認提示；效果必須等玩家按下確認才套用。
       wheelTimers.push(setTimeout(() => readyWheel(el, data, effect), 1000));
-    }, 2000));
+    }, 0));
   }
 
   function readyWheel(el, data, effect) {
@@ -2627,10 +2789,25 @@ export const PartyUI = (() => {
     const resultNode = el.querySelector('.wheel-result');
     if (!resultNode) return;
     resultNode.hidden = false;
-    resultNode.innerHTML = `<strong>${effect?.icon || '🌈'} ${h(effect?.name || '命運結果')}</strong><p>${h(effect?.desc || '按下確認後才會正式套用。')}</p><button class="primary" type="button" data-wheel-confirm>確認並套用</button>`;
+    const p = state();
+    const ownerIsLocal = isLocalOwner(p, data.playerId);
+    const ownerIsAI = isAIPlayer(p, data.playerId);
+    const confirm = ownerIsLocal && !ownerIsAI
+      ? '<button class="primary" type="button" data-wheel-confirm>確認並套用</button>'
+      : '<small>房主正在套用輪盤結果…</small>';
+    resultNode.innerHTML = `<strong>${effect?.icon || '🌈'} ${h(effect?.name || '命運結果')}</strong><p>${h(effect?.desc || '輪盤已停止，正在套用結果。')}</p>${confirm}`;
     sound('click');
     const button = resultNode.querySelector('[data-wheel-confirm]');
     if (button) button.onclick = () => confirmWheel(el, data);
+    wheelReadyDone = true;
+    resolveWheelReady?.();
+    resolveWheelReady = null;
+  }
+
+  function waitForWheel(data) {
+    const key = String(data?.at || data?.index || '');
+    if (!wheelOpen || wheelReadyKey !== key) showWheel(data);
+    return wheelReadyPromise || Promise.resolve();
   }
 
   function confirmWheel(el, data) {
@@ -2814,16 +2991,24 @@ export const PartyUI = (() => {
   }
 
   function lockForeignTurn(p) {
-    if (!p?.net) return;
-    const mine = window.PartyNet?.canAct(p);
+    if (!p) return;
+    const active = p.players?.[p.turnIndex];
+    const aiTurn = Boolean(active?.isAI);
+    const mine = p.net ? window.PartyNet?.canAct(p) : !aiTurn;
     const ownerId = specialOwnerId(p) || p.players[p.turnIndex]?.id || null;
     const ownerLocal = isLocalOwner(p, ownerId);
-    const waiting = p.status === 'playing' && (hasSpecialOffer(p) ? !ownerLocal : !mine);
-    document.body.classList.toggle('spectator-mode', p.status === 'playing' && (!mine || (hasSpecialOffer(p) && !ownerLocal)));
+    const specialLocal = hasSpecialOffer(p) && ownerLocal && !isAIPlayer(p, ownerId);
+    const waiting = p.status === 'playing' && (aiTurn ? !specialLocal : (hasSpecialOffer(p) ? !ownerLocal : !mine));
+    // AI 回合保留操作區但逐項 disabled，讓桌面與手機畫面都能清楚看到鎖定狀態。
+    const spectator = p.status === 'playing' && !aiTurn && (!mine || (hasSpecialOffer(p) && !ownerLocal));
+    document.body.classList.toggle('spectator-mode', spectator);
     $$('#turn-content [data-action]').forEach(btn => {
       if (['open-settlement', 'new-game'].includes(btn.dataset.action)) return;
-      if (!mine) btn.disabled = true;
+      if (!mine || (aiTurn && !specialLocal)) btn.disabled = true;
     });
+    if (aiTurn && !specialLocal) {
+      $$('#turn-content [data-item-id],#turn-content [data-special-id],#turn-content [data-mythic-id],#turn-content [data-discard-index],#turn-content [data-toggle-discard]').forEach(btn => { btn.disabled = true; });
+    }
     let overlay = $('#spectator-note');
     if (waiting) {
       if (!overlay) {
@@ -3146,12 +3331,26 @@ export const PartyUI = (() => {
     }
     const settle = $('#settlement-overlay');
     if (settle && !settle.hidden && window.PartyNet?.lobby?.confirmRatio) updateConfirm(window.PartyNet.lobby.confirmRatio);
+    if (!p.ext?.wheelPending && wheelOpen) {
+      wheelTimers.forEach(timer => clearTimeout(timer));
+      wheelTimers = [];
+      wheelOpen = false;
+      wheelReadyDone = false;
+      resolveWheelReady?.();
+      resolveWheelReady = null;
+      wheelReadyPromise = null;
+      const wheelOverlay = $('#wheel-overlay');
+      if (wheelOverlay) wheelOverlay.hidden = true;
+    }
     afterSpecialChange();
     const wheel = p.ext?.wheelPending;
     if (wheel?.at && String(wheel.at) !== lastWheelKey) {
       lastWheelKey = String(wheel.at);
       showWheel(wheel);
     }
+    // 黑市目前決策者可能不是 state.turnIndex 的玩家；讓房主在視窗
+    // 建立後也檢查一次拍賣 AI，避免落地流程沒有經過一般回合排程。
+    if (p.ext?.auction || p.ext?.replaceOffer) app()?.aiScheduleAuction?.();
   }
 
   // -------------------------------------------------------------------------
@@ -3215,6 +3414,11 @@ export const PartyUI = (() => {
         return;
       }
       if (!ghostTip) document.querySelector('#board .ghost-piece.show-tooltip')?.classList.remove('show-tooltip');
+      const actionControl = e.target.closest('[data-fate-step],[data-event-ok],[data-star-offer],[data-replace-kind],[data-replace-drop],[data-replace-back],[data-replace-drop-confirm],[data-auction],[data-invest],[data-tax],[data-insider],[data-truth],[data-give-id],[data-pick-tile],[data-debug-action]');
+      if (actionControl && p && !canUseLocalAction(p)) {
+        app()?.notify('目前由電腦玩家行動，請等待回合完成。');
+        return;
+      }
       const fateStep = e.target.closest('[data-fate-step]');
       if (fateStep) {
         const value = Number(fateStep.dataset.fateStep);
@@ -3223,7 +3427,7 @@ export const PartyUI = (() => {
         return;
       }
       const specialBtn = e.target.closest('[data-auction],[data-invest],[data-tax],[data-insider],[data-star-offer],[data-replace-kind],[data-replace-drop],[data-replace-drop-confirm],[data-replace-back]');
-      if (specialBtn && p && hasSpecialOffer(p) && !isLocalOwner(p, specialOwnerId(p))) {
+      if (specialBtn && p && hasSpecialOffer(p) && !canUseLocalAction(p)) {
         app()?.notify('現在不是你的決策，請等待目前玩家完成。');
         return;
       }
@@ -3470,7 +3674,7 @@ export const PartyUI = (() => {
     init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, hideConnect, onGameStart, afterRender, isHostPlayer, setHomeInline,
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
-    openSettlement, hideSettlement, showHostLeftNotice, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
+    openSettlement, hideSettlement, showHostLeftNotice, openTilePicker, openTruthGate, openWheel: showWheel, waitForWheel, waitForAnimations, openFateDice,
     closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, setAIThinking, resetTurnInteractions,
     playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,

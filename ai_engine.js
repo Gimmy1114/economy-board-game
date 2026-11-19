@@ -194,6 +194,22 @@ function aiHasItem(player, id) {
   return (player?.items || []).includes(id) || (player?.mythics || []).some(entry => (entry?.id || entry) === id) || (player?.specials || []).includes(id);
 }
 
+function aiPropertySeizeOpportunity(state, player, analysis) {
+  if (player?.roleId !== 'property' || aiInteger(player.energy) < 1) return null;
+  const rivals = (state?.players || []).filter(other => other.id !== player.id && aiAlive(other));
+  const sameTile = rivals.filter(other => other.position === player.position);
+  const routeIndexes = new Set((analysis?.route || []).slice(0, 6).map(entry => entry.index));
+  const alongPath = rivals.filter(other => routeIndexes.has(other.position));
+  const candidates = [...sameTile, ...alongPath];
+  if (!candidates.length) return null;
+  const leader = aiTargetLeader(state, player);
+  candidates.sort((a, b) => {
+    const priority = rival => (rival.detainedTurns > 0 ? 2 : rival.id === leader?.id ? 1 : 0);
+    return priority(b) - priority(a) || aiCash(b) - aiCash(a);
+  });
+  return { target: candidates[0], sameTile: sameTile.length > 0, route: alongPath.length > 0 };
+}
+
 /** 擲骰前使用道具、技能或保留能量的決策。 */
 export function aiChoosePreRollAction(state, player, { random = Math.random } = {}) {
   if (!player || !aiAlive(player)) return null;
@@ -202,6 +218,8 @@ export function aiChoosePreRollAction(state, player, { random = Math.random } = 
   const analysis = aiAnalyzeBoard(state, player, { lookahead: difficulty === 'easy' ? 4 : 6 });
   const inventory = aiInventory(player);
   const has = id => inventory.some(item => item.id === id);
+  const seize = aiPropertySeizeOpportunity(state, player, analysis);
+  if (seize) return { type: 'USE_SKILL', reason: seize.sameTile ? 'seize-same-tile' : 'seize-path' };
   if (difficulty === 'easy') {
     const quick = inventory.find(item => ['shield', 'dice123', 'dice456', 'leverage'].includes(item.id));
     if (quick) return { type: 'USE_ITEM', id: quick.id, reason: 'easy-random-use' };
@@ -297,6 +315,11 @@ export function aiChooseAuctionAction(state, player, { random = Math.random } = 
     willPassAfterBid: difficulty === 'easy' && canBid,
     reason: canBid ? 'within-budget' : 'over-budget'
   };
+}
+
+/** 黑市 AI watchdog 使用的安全動作；保持與一般 AI 決策相同的資料形狀。 */
+export function aiAuctionPassAction(reason = 'watchdog') {
+  return { action: 'pass', maxBid: 0, reason };
 }
 
 /** 投資格判斷；資產門檻永遠以當局初始資產比例計算。 */

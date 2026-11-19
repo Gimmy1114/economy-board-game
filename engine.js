@@ -418,7 +418,7 @@ export function rollDie(state,forced,options={}){
   engineHooks.positionChanged?.(state,player,{from,to:player.position,forced:false,kind:'roll'});
   // 先把棋子移到終點；所有格子效果都延後到 resolveLanding()，
   // 確保 UI 播完移動動畫、棋子真正停下後才結算與彈窗。
-  state.lastRoll={playerId:player.id,value,from,path,tileIndex:player.position,tileType:board[player.position]?.type,struck:false,roadblocked,passedStart:path.includes(0),effects:[],resolved:false,vector:moveMeta?.vector||null};
+  state.lastRoll={playerId:player.id,value,from,path,tileIndex:player.position,tileType:board[player.position]?.type,struck:false,roadblocked,passedStart:path.includes(0),effects:[],resolved:false,vector:moveMeta?.vector||null,seize:moveMeta?.seize||null};
   if(options.defer){
     state.pendingLanding={playerId:player.id,from,value,path,leverage,noReward,forcedRed:Boolean(player.forcedRed)};
     state.pendingDecision=null;

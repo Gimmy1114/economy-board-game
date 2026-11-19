@@ -9,13 +9,13 @@ import {
   extInsiderPay,extAuctionAction,extAuctionCurrent,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extSpinWheel,extTriggerDoom,extResolveDoomPlayer,extFinishDoom,extRefreshInflation,extRecordRound,extEnsureState,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extUseFateDice,extForceEndTurn,extMovementTarget,extAuctionId,
-  extUsePortal,extResolvePortal,extMovePlayer
+  extUsePortal,extResolvePortal,extMovePlayer,extAuctionDecisionPlayer
 } from './party_engine.js';
 import {syncInfo,isNewerGame} from './sync.js';
 import {PartyNet} from './net.js';
 import {PartyUI} from './ui_party.js';
 import {SoundManager} from './audio_system.js';
-import {aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard} from './ai_engine.js';
+import {aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiAuctionPassAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard} from './ai_engine.js';
 
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
 globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS,AI_DIFFICULTIES,DEFAULT_AI_DIFFICULTY};
@@ -23,12 +23,12 @@ globalThis.__partyEngine={
   extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn,
-  extUsePortal,extResolvePortal,extMovePlayer
+  extUsePortal,extResolvePortal,extMovePlayer,extAuctionDecisionPlayer
 };
 globalThis.PartyNet=PartyNet;
 globalThis.SoundManager=SoundManager;
 // 決策模組保持純函式；暴露唯讀入口供房主回合排程與除錯工具使用。
-globalThis.__partyAI={aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard};
+globalThis.__partyAI={aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiAuctionPassAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard};
 
 const $=s=>document.querySelector(s),h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>Math.round(n).toLocaleString('zh-TW'),signed=n=>`${n>=0?'+':'−'}${money(Math.abs(n))}`;
@@ -80,11 +80,25 @@ let turnWatchdogToken=0;
 // 電腦回合只在單機或房主權威端執行。訪客只接收 aiThinking 快照，
 // 因此不會因為各裝置的亂數或動畫時間不同而分叉。
 const AI_STEP_DELAY_MIN=750,AI_STEP_DELAY_MAX=1000,AI_WATCHDOG_MS=45000;
+const AI_WHEEL_RESULT_DELAY_MIN=700,AI_WHEEL_RESULT_DELAY_MAX=900;
+const AI_AUCTION_DELAY_MIN=600,AI_AUCTION_DELAY_MAX=900,AI_AUCTION_WATCHDOG_MS=3000;
 let aiTurnBusy=false,aiTurnToken=0,aiWatchdogTimer=null,aiAuctionPassKey='';
+let aiAuctionBusy=false,aiAuctionKey='',aiAuctionWatchdogTimer=null;
 const aiAuthority=()=>!PartyNet.active||PartyNet.isHost;
 const aiDelay=(ms=null)=>new Promise(resolve=>setTimeout(resolve,ms==null?(isTestMode()?35:AI_STEP_DELAY_MIN+Math.floor(Math.random()*(AI_STEP_DELAY_MAX-AI_STEP_DELAY_MIN+1))):ms));
 function aiClearWatchdog(){clearTimeout(aiWatchdogTimer);aiWatchdogTimer=null}
 function aiIsCurrent(player=activePlayer()){return Boolean(state?.status==='playing'&&player?.isAI&&aiAuthority())}
+function localSpecialActionAllowed(action){
+  const type=action?.type;
+  const ext=state?.ext||{};
+  const ownerId=type==='AUCTION_ACTION'?ext.auction?.currentId
+    :type==='REPLACE_ITEM'?ext.replaceOffer?.playerId
+    :null;
+  if(!ownerId)return false;
+  const owner=state?.players?.find(player=>player.id===ownerId);
+  if(!owner||owner.isAI)return false;
+  return !state?.net||PartyNet.myPlayerId===ownerId;
+}
 function aiSetThinking(active,phase='turn',player=activePlayer()){
   if(state?.net){
     state.net.aiThinking=active&&player?{playerId:player.id,phase,at:Date.now()}:null;
@@ -195,6 +209,7 @@ function playGateOfTruthEffect(){
   const size=280;
   const dpr=Math.max(1,Math.min(2,window.devicePixelRatio||1));
   const canvas=document.createElement('canvas');
+  canvas.className='truth-gate-fx';
   canvas.width=size*dpr;
   canvas.height=size*dpr;
   canvas.style.cssText=`position:fixed;left:${centerX}px;top:${centerY}px;width:${size}px;height:${size}px;transform:translate(-50%,-50%);pointer-events:none;z-index:9600;`;
@@ -831,6 +846,7 @@ async function withGameLock(work){
 async function run(fn,options={}){
   if(state?.ext?.doomPending&&!options.allowDoom){notify('保護費審判進行中，請稍候。');return}
   if(PartyNet.isClient){notify('此操作尚未加入房主指令白名單。');return}
+  if(activePlayer()?.isAI&&!options.authoritative&&!options.allowSpecialAction){notify('目前由電腦玩家行動，請等待回合完成。');return false}
   if(animation){notify('請等待骰子與棋子移動完成。');return}
   if(state?.ext?.vectorPending){notify('矢量操作鎖定中，請稍候。');return}
   if(state?.ext?.portalPending&&!options.allowPortal){notify('傳送門效果處理中，請稍候。');return}
@@ -877,6 +893,17 @@ function dispatchTruthGateCue(playerId){
 
 function runAction(action,fn,options={}){
   const playerId=action?.playerId||PartyNet.myPlayerId||activePlayer()?.id;
+  const allowSpecialAction=localSpecialActionAllowed(action);
+  // 操作層最後一道防線：即使有人繞過 disabled UI 直接呼叫函式，
+  // 非本機座位或電腦回合也不得把動作送給房主。
+  if(!options.authoritative&&!allowSpecialAction){
+    const aiTurn=Boolean(activePlayer()?.isAI);
+    const localTurn=!PartyNet.active||PartyNet.canAct(state);
+    if(aiTurn||!localTurn){
+      notify(aiTurn?'目前由電腦玩家行動，請等待回合完成。':'現在不是你的回合，請等待其他玩家。');
+      return false;
+    }
+  }
   const skillAction=action?.type==='USE_SKILL'||(action?.type==='TARGET_ACTION'&&action.action==='skill');
   const truthGateAction=action?.type==='TRUTH_GATE';
   const runOptions=truthGateAction
@@ -886,31 +913,133 @@ function runAction(action,fn,options={}){
     PartyNet.sendAction({...action,playerId});
     return;
   }
-  return run(fn,runOptions);
+  return run(fn,{...runOptions,allowSpecialAction});
 }
 
 // ---------------------------------------------------------------------------
 // 電腦玩家回合執行器
 // ---------------------------------------------------------------------------
-function aiAction(type,payload,fn,options={}){
-  const player=activePlayer();
-  if(!player?.isAI||!aiAuthority())return Promise.resolve(false);
-  return Promise.resolve(runAction({type,playerId:player.id,...(payload||{})},fn,{...options,authoritative:true})).then(result=>{
-    if(result===false)throw Error('AI 動作未能完成');
+async function aiAction(type,payload,fn,options={}){
+  // 黑市決策者可能不是 state.turnIndex 的玩家；呼叫端可明確傳入
+  // 拍賣目前的 AI，避免人類大回合持有者擋住房主執行器。
+  const player=options.player||activePlayer();
+  if(!player?.isAI||!aiAuthority())return false;
+  const result=await runAction({type,playerId:player.id,...(payload||{})},fn,{...options,authoritative:true});
+  if(result===false)throw Error('AI 動作未能完成');
+  const settled=await PartyUI.waitForAnimations?.({timeout:5000});
+  if(settled===false)throw Error('動畫逾時');
+  return true;
+}
+
+function aiAuctionDecisionKey(player){
+  const auction=state?.ext?.auction;
+  if(auction)return `${auctionWaitId(auction)}:${player?.id||''}`;
+  const offer=state?.ext?.replaceOffer;
+  return offer?`replace:${offer.playerId}:${offer.itemId||''}:${offer.price||0}`:'';
+}
+
+function aiAuctionDelay(){
+  return aiDelay(isTestMode()?35:AI_AUCTION_DELAY_MIN+Math.floor(Math.random()*(AI_AUCTION_DELAY_MAX-AI_AUCTION_DELAY_MIN+1)));
+}
+
+function aiWheelResultDelay(){
+  return aiDelay(isTestMode()?35:AI_WHEEL_RESULT_DELAY_MIN+Math.floor(Math.random()*(AI_WHEEL_RESULT_DELAY_MAX-AI_WHEEL_RESULT_DELAY_MIN+1)));
+}
+
+function aiAuctionStillOwned(player,key){
+  if(!state||state.status!=='playing'||!player?.isAI)return false;
+  const current=extAuctionDecisionPlayer(state);
+  return current?.id===player.id&&aiAuctionDecisionKey(player)===key;
+}
+
+async function aiAuctionForcePass(player,key,reason='watchdog'){
+  if(!aiAuctionStillOwned(player,key))return false;
+  try{
+    const action=aiAuctionPassAction(reason);
+    await aiAction('AUCTION_ACTION',{action:action.action},()=>{
+      if(state?.ext?.auction)extAuctionAction(state,action.action);
+      else if(state?.ext?.replaceOffer)extResolveReplace(state,{dropNew:true});
+    },{allowAuction:true,player});
     return true;
-  });
+  }catch(error){
+    console.error('黑市 AI 強制放棄失敗',error);
+    return false;
+  }
+}
+
+async function aiRunAuction(player,key){
+  let forced=false;
+  let forceStarted=false;
+  const forcePass=async reason=>{
+    if(forceStarted)return;
+    forceStarted=true;
+    forced=true;
+    await aiAuctionForcePass(player,key,reason);
+  };
+  aiAuctionWatchdogTimer=setTimeout(()=>{
+    if(!forced)void forcePass('watchdog');
+  },AI_AUCTION_WATCHDOG_MS);
+  aiAuctionWatchdogTimer?.unref?.();
+  try{
+    if(!aiAuctionStillOwned(player,key))return;
+    let action='pass';
+    if(state.ext?.replaceOffer?.playerId===player.id){
+      const discard=aiChooseDiscard(state,player);
+      await aiAuctionDelay();
+      if(!forced){
+        await aiAction('REPLACE_ITEM',discard?{kind:discard.kind,index:discard.index}:{dropNew:true},()=>extResolveReplace(state,discard?{kind:discard.kind,index:discard.index}:{dropNew:true}),{allowAuction:true,player});
+      }
+    }else if(state.ext?.auction?.currentId===player.id){
+      const forcedPass=aiAuctionPassKey===key;
+      const decision=forcedPass?aiAuctionPassAction('follow-up'):aiChooseAuctionAction(state,player);
+      action=decision?.action==='bid'?'bid':'pass';
+      await aiAuctionDelay();
+      if(!forced){
+        await aiAction('AUCTION_ACTION',{action},()=>extAuctionAction(state,action),{allowAuction:true,player});
+      }
+      if(!forcedPass&&decision?.willPassAfterBid&&action==='bid')aiAuctionPassKey=key;
+      if(forcedPass)aiAuctionPassKey='';
+    }
+  }catch(error){
+    console.error('黑市 AI 決策失敗',error);
+    await forcePass('error');
+  }finally{
+    clearTimeout(aiAuctionWatchdogTimer);
+    aiAuctionWatchdogTimer=null;
+    aiAuctionBusy=false;
+    aiAuctionKey='';
+    if(state?.status==='playing')setTimeout(aiScheduleTurn,0);
+  }
+}
+
+function aiScheduleAuction(){
+  if(aiAuctionBusy||aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return false;
+  const player=extAuctionDecisionPlayer(state);
+  if(!player?.isAI)return false;
+  const key=aiAuctionDecisionKey(player);
+  if(!key||aiAuctionKey===key)return false;
+  aiAuctionBusy=true;
+  aiAuctionKey=key;
+  setTimeout(()=>{
+    if(aiAuctionKey===key)void aiRunAuction(player,key);
+  },0);
+  return true;
 }
 async function aiResolvePending(player,token){
   for(let guard=0;guard<24;guard++){
     if(token!==aiTurnToken||!state||state.status!=='playing')return false;
     const ext=state.ext||{};
     if(ext.portalPending?.playerId===player.id){
-      await aiDelay();
+      const portalSettled=await PartyUI.waitForAnimations?.({timeout:5000});
+      if(!state.ext?.portalPending)continue;
+      if(portalSettled===false)await aiDelay();
       await aiAction('PORTAL_RESOLVE',{at:ext.portalPending.at},()=>extResolvePortal(state,ext.portalPending.at),{allowPortal:true});
       continue;
     }
     if(ext.vectorPending?.ownerId===player.id){
-      await aiDelay();
+      const vectorSettled=await PartyUI.waitForAnimations?.({timeout:5000});
+      if(!state.ext?.vectorPending)continue;
+      if(vectorSettled===false)await aiDelay();
       await aiAction('VECTOR_RESOLVE',{},()=>extResolveVectorPending(state));
       continue;
     }
@@ -918,6 +1047,9 @@ async function aiResolvePending(player,token){
       if(!await aiWaitForSettled(token))return false;
       continue;
     }
+    // 落地後的幽靈、道具、技能與棋盤特效可能仍在播放；先等共同動畫鎖
+    // 收束，再處理二選一或下一個連鎖事件。
+    if(PartyUI.waitForAnimations && !await PartyUI.waitForAnimations({timeout:5000}))return false;
     if(state.pendingDecision?.playerId===player.id){
       const choice=aiChooseDecisionAction(state,player);
       if(!choice)return false;
@@ -925,16 +1057,9 @@ async function aiResolvePending(player,token){
       await aiAction('DECISION',{optionId:choice.optionId},()=>chooseDecision(state,choice.optionId));
       continue;
     }
-    if(ext.replaceOffer?.playerId===player.id){
-      const discard=aiChooseDiscard(state,player);
-      await aiDelay();
-      if(discard){
-        await aiAction('REPLACE_ITEM',{kind:discard.kind,index:discard.index},()=>extResolveReplace(state,{kind:discard.kind,index:discard.index}));
-      }else{
-        await aiAction('REPLACE_ITEM',{dropNew:true},()=>extResolveReplace(state,{dropNew:true}));
-      }
-      continue;
-    }
+    // 黑市出價與得標後的背包處理由獨立執行器負責，因為決策者不一定
+    // 是 state.turnIndex 的玩家，也需要自己的 3 秒 watchdog。
+    if(ext.replaceOffer?.playerId===player.id)return false;
     if(ext.starOffer?.playerId===player.id){
       const buy=Number(player.cash)>=Number(ext.starOffer.price||Infinity)&&(!player.ext?.bankFreeze);
       await aiDelay();
@@ -968,7 +1093,8 @@ async function aiResolvePending(player,token){
       continue;
     }
     if(ext.wheelPending?.playerId===player.id){
-      await aiDelay();
+      await PartyUI.waitForWheel?.(ext.wheelPending);
+      await aiWheelResultDelay();
       await aiAction('RESOLVE_WHEEL',{at:ext.wheelPending.at},()=>extResolveWheel(state,{playerId:player.id,at:ext.wheelPending.at}));
       continue;
     }
@@ -977,21 +1103,7 @@ async function aiResolvePending(player,token){
       await aiAction('CLEAR_EVENT_PROMPT',{},()=>extClearEventPrompt(state));
       continue;
     }
-    if(ext.auction){
-      const current=extAuctionCurrent(state);
-      if(current?.id===player.id){
-        const auctionKey=`${auctionWaitId(ext.auction)}:${player.id}`;
-        const forcedPass=aiAuctionPassKey===auctionKey;
-        const decision=forcedPass?{action:'pass'}:aiChooseAuctionAction(state,player);
-        await aiDelay(600+Math.floor(Math.random()*301));
-        await aiAction('AUCTION_ACTION',{action:decision.action},()=>extAuctionAction(state,decision.action),{allowAuction:true});
-        if(!forcedPass&&decision.willPassAfterBid&&decision.action==='bid')aiAuctionPassKey=auctionKey;
-        if(forcedPass)aiAuctionPassKey='';
-        continue;
-      }
-      // 黑市輪到人類時交還控制權；人類完成一手後 run() 會再次排程 AI。
-      return false;
-    }
+    if(ext.auction)return false;
     return true;
   }
   return false;
@@ -1021,7 +1133,7 @@ async function aiRunTurn(){
     }else if(pre&&pre.type==='USE_MYTHIC'&&pre.id&&pre.id!=='truthGate'&&state.phase==='roll'){
       await aiDelay();
       await aiAction('USE_MYTHIC',{id:pre.id,payload:pre.payload||{}},()=>extUseMythic(state,pre.id,pre.payload||{}));
-    }else if(pre&&pre.type==='USE_SKILL'&&pre.targetId&&state.phase==='roll'){
+    }else if(pre&&pre.type==='USE_SKILL'&&(pre.targetId||activePlayer()?.roleId==='property')&&state.phase==='roll'){
       await aiDelay();
       await aiAction('USE_SKILL',{targetId:pre.targetId},()=>extUseSkill(state,pre.targetId));
     }
@@ -1041,7 +1153,7 @@ async function aiRunTurn(){
         await aiAction('TARGET_ACTION',{action:'acquire',targetId:target.id},()=>acquireTarget(state,target.id));
       }
     }
-    if(token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&['resolve','skipped'].includes(state.phase)){
+    if(token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&!state.ext?.auction&&['resolve','skipped'].includes(state.phase)){
       await aiDelay();
       await aiAction('END_TURN',{},()=>endTurn(state),{clearTurnInteractions:true});
     }
@@ -1065,11 +1177,14 @@ async function aiRunTurn(){
   }
 }
 function aiScheduleTurn(){
-  if(aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return;
+  if(!aiAuthority()||!state||state.status!=='playing')return;
+  // 黑市拍賣有自己的決策鏈；其目前出價者可能與大回合玩家不同。
+  if(aiScheduleAuction())return;
+  if(aiTurnBusy)return;
   const player=activePlayer();
   if(!player?.isAI)return;
   const auction=state.ext?.auction;
-  if(auction&&extAuctionCurrent(state)?.id!==player.id)return;
+  if(auction)return;
   setTimeout(()=>{if(!aiTurnBusy)void aiRunTurn()},0);
 }
 
@@ -1133,9 +1248,13 @@ function renderRules(){renderRulesContent($('#rules-content'))}
 function renderSetup(){
   $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{
     const c=colorMeta(p.color??i), ai=Boolean(p.isAI), difficulty=normalizeAIDifficulty(p.aiDifficulty);
-    return `<div class="setup-player ${ai?'is-ai':''}"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><select class="setup-kind" data-setup-kind="${i}" aria-label="玩家 ${i+1} 類型"><option value="human" ${ai?'':'selected'}>人類</option><option value="ai" ${ai?'selected':''}>電腦</option></select>${ai?`<select class="setup-difficulty" data-setup-difficulty="${i}" aria-label="玩家 ${i+1} 電腦難度">${AI_DIFFICULTIES.map(d=>`<option value="${d.id}" ${d.id===difficulty?'selected':''}>🤖 ${h(d.name)}</option>`).join('')}</select>`:''}<button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`;
+    const roleOptions=LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('');
+    const skillInfo=`<button class="setup-role-info" type="button" data-skill-info="${h(p.roleId)}" aria-label="查看玩家 ${i+1} 的企業技能說明">i</button>`;
+    const difficultySelect=ai?`<select class="setup-difficulty" data-setup-difficulty="${i}" aria-label="玩家 ${i+1} 電腦難度">${AI_DIFFICULTIES.map(d=>`<option value="${d.id}" ${d.id===difficulty?'selected':''}>${h(d.badge)}</option>`).join('')}</select>`:'';
+    return `<div class="setup-player ${ai?'is-ai':''}"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="${ai?'電腦':'玩家'} ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><div class="setup-player-controls">${ai?difficultySelect:''}<select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${roleOptions}</select>${skillInfo}</div><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`;
   }).join('');
   $('#add-player').disabled=setupPlayers.length>=8;
+  $('#add-ai-player').disabled=setupPlayers.length>=8;
   PartyUI?.renderSetupExtras?.();
 }
 function setSetupPlayerColor(index,color){
@@ -1314,20 +1433,22 @@ function inventorySlots(p){
 function itemBarMarkup(p,{interactive=true}={}){
   const chips=statusChips(state,p);
   const blocked=Boolean(p?.isGhost||p?.ext?.eliminated)||chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
-  const usable=interactive&&(state.phase==='roll'||state.ext?.debug)&&!animation&&!blocked;
+  const aiTurn=Boolean(activePlayer()?.isAI);
+  const usable=interactive&&(state.phase==='roll'||state.ext?.debug)&&!animation&&!blocked&&!aiTurn;
   const inventory=inventorySlots(p);
   const slots=Array.from({length:3},(_,i)=>{
     const slot=inventory[i];
     if(!slot)return `<span class="item-slot empty" data-empty-slot="normal"><span class="item-icon">＋</span><span class="item-name">空欄位</span></span>`;
     const {meta,kind,index,entry}=slot;
-    if(kind==='special')return `<span class="item-slot-wrap special-wrap"><button type="button" class="item-slot filled special-slot" data-special-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="special" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
-    if(kind==='mythic')return `<span class="item-slot-wrap"><button type="button" class="item-slot filled mythic-slot" data-mythic-id="${meta.id}" ${usable&&meta.kind!=='passive'?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}${entry.charges>1?` ×${entry.charges}`:''}</span></button><button type="button" class="discard-btn" data-discard-kind="mythic" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
-    return `<span class="item-slot-wrap"><button type="button" class="item-slot filled" data-item-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="normal" data-discard-index="${index}" title="丟棄這個道具">🗑️</button></span>`;
+    if(kind==='special')return `<span class="item-slot-wrap special-wrap"><button type="button" class="item-slot filled special-slot" data-special-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="special" data-discard-index="${index}" ${usable?'':'disabled'} title="丟棄這個道具">🗑️</button></span>`;
+    if(kind==='mythic')return `<span class="item-slot-wrap"><button type="button" class="item-slot filled mythic-slot" data-mythic-id="${meta.id}" data-mythic-index="${index}" ${usable&&meta.kind!=='passive'?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}${entry.charges>1?` ×${entry.charges}`:''}</span></button><button type="button" class="discard-btn" data-discard-kind="mythic" data-discard-index="${index}" ${usable?'':'disabled'} title="丟棄這個道具">🗑️</button></span>`;
+    return `<span class="item-slot-wrap"><button type="button" class="item-slot filled" data-item-id="${meta.id}" ${usable?'':'disabled'} title="${h(meta.desc)}"><span class="item-icon">${meta.icon}</span><span class="item-name">${h(meta.name)}</span></button><button type="button" class="discard-btn" data-discard-kind="normal" data-discard-index="${index}" ${usable?'':'disabled'} title="丟棄這個道具">🗑️</button></span>`;
   }).join('');
-  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>${state.ext?.debug?'測試模式：擲骰後仍可無限使用道具。':'只可在投擲骰子前使用。'}</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false">🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
+  return `<div class="item-bar"><div class="item-bar-head"><span>🎒 道具欄 ${inventory.length}/3</span><small>${aiTurn?'電腦玩家回合，操作已鎖定。':state.ext?.debug?'測試模式：擲骰後仍可無限使用道具。':'只可在投擲骰子前使用。'}</small></div><div class="item-slots">${slots}</div><button type="button" class="item-discard-bar" data-toggle-discard aria-pressed="false" ${usable?'':'disabled'}>🗑️ 點擊此處丟棄道具</button>${p.ext?.bankai?'<p class="bankai-note">🌀 卍解中：收益 +100、免疫負面、禁止獲取新道具。</p>':''}</div>`;
 }
 function setItemDiscardMode(bar, enabled){
   if(!bar)return;
+  if(activePlayer()?.isAI){bar.classList.remove('discard-mode');return}
   bar.classList.toggle('discard-mode',enabled);
   const toggle=bar.querySelector('[data-toggle-discard]');
   if(toggle){toggle.setAttribute('aria-pressed',String(enabled));toggle.textContent=enabled?'🗑️ 丟棄模式已開啟 · 再點取消':'🗑️ 點擊此處丟棄道具'}
@@ -1337,10 +1458,13 @@ function setItemDiscardMode(bar, enabled){
   });
 }
 function discardItem(kind,index){
-  if(!state||animation)return;
+  if(!state||animation)return false;
+  if(activePlayer()?.isAI){notify('目前由電腦玩家行動，請等待回合完成。');return false}
+  if(state.net&&PartyNet.active&&!PartyNet.canAct(state)){notify('現在不是你的回合，請等待其他玩家。');return false}
   const p=activePlayer(),entry=kind==='mythic'?p.mythics?.[index]:null;
   const name=kind==='mythic'?(MYTHIC_BY_ID[entry?.id]?.name||'神話道具'):kind==='special'?(SPECIAL_ITEM_BY_ID[p.specials?.[index]]?.name||'特殊道具'):(item(p.items[index])?.name||'道具');
-  if(confirm(`確定丟棄「${name}」？`))runAction({type:'DISCARD',kind,index},()=>{extDiscard(state,p,kind,index);notify('已丟棄道具。')});
+  if(confirm(`確定丟棄「${name}」？`))return runAction({type:'DISCARD',kind,index},()=>{extDiscard(state,p,kind,index);notify('已丟棄道具。')});
+  return false;
 }
 function renderTurn(){
   const p=activePlayer();
@@ -1366,13 +1490,13 @@ function renderTurn(){
     canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
   const skill=r.skill,blocked=chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
   const acquireTargets=state.players.filter(x=>canAcquire(state,p,x));
-  const canAct=['roll','resolve'].includes(state.phase);
+  const canAct=['roll','resolve'].includes(state.phase)&&localTurn;
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
   const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
   const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${aiTurn?' · 🤖 電腦思考中...':localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
+  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn" ${localTurn?'':'disabled'}>⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
 }
 function renderPlayers(){
   $('#player-cards').innerHTML=state.players.map((p,index)=>{
@@ -1399,7 +1523,10 @@ function renderGoals(){
   $('#goal-progress').innerHTML=state.players.map(p=>`<div class="goal-person ${p.ext?.eliminated?'eliminated':''}"><span>${p.ext?.eliminated?'👻 ':''}${h(p.name)}</span><span>${starTrack(p.stars)} <em>${money(p.cash)}</em></span></div>`).join('');
 }
 function renderLog(){
-  $('#party-log').innerHTML=state.log.length?state.log.slice(0,12).map((x,i)=>`<div class="log-item ${i===0?'latest':''}">${h(x)}</div>`).join(''):'<div class="log-item">等待玩家擲骰。</div>';
+  $('#party-log').innerHTML=state.log.length?state.log.slice(0,12).map((x,i)=>{
+    const aiPlayer=state.players.find(p=>p.isAI&&String(x).includes(p.name));
+    return `<div class="log-item ${i===0?'latest':''}">${h(x)}${aiPlayer?` ${aiBadge(aiPlayer)}`:''}</div>`;
+  }).join(''):'<div class="log-item">等待玩家擲骰。</div>';
 }
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 // 移動提示要顯示「最後會停在哪一格」，而不是目前走到一半的格子。
@@ -1643,6 +1770,7 @@ function beginAngryRetreat(){
   return true;
 }
 async function rollWithAnimation(authoritative=false){
+  if(activePlayer()?.isAI&&!authoritative){notify('目前由電腦玩家行動，請等待回合完成。');return}
   if(PartyNet.isClient){
     if(localActionLocked()||animation)return;
     localTurnLocks.isRolling=true;
@@ -1670,12 +1798,14 @@ async function rollWithAnimation(authoritative=false){
     });
     if(!result){resumeTurnClock();return}
     SoundManager.play('dice');
-    const started=beginRollAnimation(result,from,playerId,true,()=>finishLanding(before,true));
-    if(!started){notify(`擲出 ${result.value} 點`);finishLanding(before,true);if(!state?.ext?.vectorPending)resumeTurnClock()}
+    const interactive=!state.players.find(player=>player.id===playerId)?.isAI;
+    const started=beginRollAnimation(result,from,playerId,interactive,()=>finishLanding(before,interactive));
+    if(!started){if(interactive)notify(`擲出 ${result.value} 點`);finishLanding(before,interactive);if(!state?.ext?.vectorPending)resumeTurnClock()}
   }catch(e){resumeTurnClock();SoundManager.play('error');notify(e.message||'無法擲骰')}
 }
 // 命運骰子：消耗特殊道具後，以玩家自選的 1–6 點強制移動。
 async function fateDiceRoll(value,authoritative=false){
+  if(activePlayer()?.isAI&&!authoritative){notify('目前由電腦玩家行動，請等待回合完成。');return}
   if(PartyNet.isClient){
     if(localActionLocked()||animation)return;
     localTurnLocks.isRolling=true;
@@ -1701,14 +1831,16 @@ async function fateDiceRoll(value,authoritative=false){
     });
     if(!result){resumeTurnClock();return}
     SoundManager.play('dice');
-    const started=beginRollAnimation(result,from,playerId,true,()=>finishLanding(before,true));
-    if(!started){notify(`命運骰子強制 ${result.value} 點`);finishLanding(before,true);if(!state?.ext?.vectorPending)resumeTurnClock()}
+    const interactive=!state.players.find(player=>player.id===playerId)?.isAI;
+    const started=beginRollAnimation(result,from,playerId,interactive,()=>finishLanding(before,interactive));
+    if(!started){if(interactive)notify(`命運骰子強制 ${result.value} 點`);finishLanding(before,interactive);if(!state?.ext?.vectorPending)resumeTurnClock()}
   }catch(e){resumeTurnClock();SoundManager.play('error');notify(e.message||'命運骰子無法使用')}
 }
 
 function closeModal(){modal=null;$('#party-modal').hidden=true}
 function openTarget(action,itemId=null){
   if(state?.pendingDecision)return;
+  if(activePlayer()?.isAI){notify('目前由電腦玩家行動，請等待回合完成。');return}
   if(state?.net&&PartyNet.active&&!PartyNet.canAct(state)){notify('現在不是你的回合，請等待其他玩家。');return}
   modal={kind:'target',action,itemId};renderModal();
 }
@@ -1785,11 +1917,28 @@ function render(){
   if(state?.ext?.auction)armAuctionResolutionTimeout();
   else if(auctionWaitKey)settleAuctionWait();
   try{PartyUI.afterRender(state);}catch(e){console.error(e)}
+  // 特殊格可能在落地動畫完成後直接建立；即使這次狀態更新不是由
+  // runAction 觸發，也要立刻喚醒拍賣內的 AI 決策者。
+  if(!PartyNet.isClient)aiScheduleAuction();
 }
 
-$('#add-player').addEventListener('click',()=>{if(setupPlayers.length<8){const used=new Set(setupPlayers.map(x=>x.roleId));let number=1;while(setupPlayers.some(x=>x.name===`玩家 ${number}`))number++;const free=PARTY_ROLES.find(x=>!used.has(x.id));const usedColors=new Set(setupPlayers.map(x=>x.color));let color=0;while(usedColors.has(color))color++;setupPlayers.push({name:`玩家 ${number}`,roleId:free?free.id:'random',color,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY});renderSetup()}});
+function addSetupPlayer(isAI=false){
+  if(setupPlayers.length>=8)return;
+  const used=new Set(setupPlayers.map(x=>x.roleId));
+  const prefix=isAI?'電腦':'玩家';
+  let number=1;
+  while(setupPlayers.some(x=>x.name===`${prefix} ${number}`))number++;
+  const free=PARTY_ROLES.find(x=>!used.has(x.id));
+  const usedColors=new Set(setupPlayers.map(x=>x.color));
+  let color=0;
+  while(usedColors.has(color))color++;
+  setupPlayers.push({name:`${prefix} ${number}`,roleId:free?free.id:'random',color,isAI,aiDifficulty:DEFAULT_AI_DIFFICULTY});
+  renderSetup();
+}
+$('#add-player').addEventListener('click',()=>addSetupPlayer(false));
+$('#add-ai-player').addEventListener('click',()=>addSetupPlayer(true));
 $('#setup-players').addEventListener('input',e=>{if(e.target.dataset.setupName!==undefined)setupPlayers[Number(e.target.dataset.setupName)].name=e.target.value});
-$('#setup-players').addEventListener('change',e=>{const i=Number(e.target.dataset.setupRole??e.target.dataset.setupKind??e.target.dataset.setupDifficulty);if(!Number.isInteger(i)||!setupPlayers[i])return;if(e.target.dataset.setupRole!==undefined)setupPlayers[i].roleId=e.target.value;if(e.target.dataset.setupKind!==undefined)setupPlayers[i].isAI=e.target.value==='ai';if(e.target.dataset.setupDifficulty!==undefined)setupPlayers[i].aiDifficulty=normalizeAIDifficulty(e.target.value);if(e.target.dataset.setupKind!==undefined)renderSetup()});
+$('#setup-players').addEventListener('change',e=>{const i=Number(e.target.dataset.setupRole??e.target.dataset.setupDifficulty);if(!Number.isInteger(i)||!setupPlayers[i])return;if(e.target.dataset.setupRole!==undefined)setupPlayers[i].roleId=e.target.value;if(e.target.dataset.setupDifficulty!==undefined)setupPlayers[i].aiDifficulty=normalizeAIDifficulty(e.target.value);if(e.target.dataset.setupRole!==undefined)PartyUI?.renderSetupExtras?.()});
 $('#setup-players').addEventListener('click',e=>{const i=e.target.dataset.removePlayer;if(i!==undefined&&setupPlayers.length>2){setupPlayers.splice(Number(i),1);renderSetup()}});
 async function startGameFromConfig(config){
   resetLocalTurnLocks();
@@ -1842,6 +1991,9 @@ $('#game').addEventListener('click',e=>{
   // delegate open the help modal without dispatching the skill itself.
   if(e.target.closest('[data-skill-info]')) return;
   if(e.target.closest('[data-dismiss-investment]')){dismissInvestmentSettlement();return}
+  if(state?.status==='playing'&&activePlayer()?.isAI&&!e.target.closest('[data-action="new-game"],[data-action="open-settlement"]')){
+    notify('目前由電腦玩家行動，請等待回合完成。');return;
+  }
   if(state?.net&&PartyNet.active&&!PartyNet.canAct(state)&&!e.target.closest('[data-action="new-game"],[data-action="open-settlement"],[data-kick-peer]')){
     notify('現在不是你的回合，請等待其他玩家。');return;
   }
@@ -1886,9 +2038,11 @@ $('#game').addEventListener('click',e=>{
   const mythicBtn=e.target.closest('[data-mythic-id]');
   if(mythicBtn&&state&&!animation){
     const id=mythicBtn.dataset.mythicId;
-    if(id==='vector'){beginMapPick('矢量操作：請直接點擊地圖上要設置的格子（Esc 取消）。',index=>runAction({type:'USE_MYTHIC',id,payload:{tileIndex:index}},()=>{extUseMythic(state,'vector',{tileIndex:index});SoundManager.play('whoosh');notify('矢量操作已鎖定目標格。')}));}
+    const slotIndex=Number(mythicBtn.dataset.mythicIndex);
+    const payload=Number.isInteger(slotIndex)?{slotIndex}:{};
+    if(id==='vector'){beginMapPick('矢量操作：請直接點擊地圖上要設置的格子（Esc 取消）。',index=>{const actionPayload={...payload,tileIndex:index};runAction({type:'USE_MYTHIC',id,payload:actionPayload},()=>{extUseMythic(state,'vector',actionPayload);SoundManager.play('whoosh');notify('矢量操作已鎖定目標格。')})});}
     else if(id==='truthGate'){PartyUI.openTruthGate();}
-    else runAction({type:'USE_MYTHIC',id},()=>{extUseMythic(state,id);if(id!=='iceMushroom')SoundManager.play('whoosh');notify('神話道具已發動！')});
+    else runAction({type:'USE_MYTHIC',id,payload},()=>{extUseMythic(state,id,payload);if(id!=='iceMushroom')SoundManager.play('whoosh');notify('神話道具已發動！')});
     return;
   }
   const discard=e.target.closest('[data-discard-index]');
@@ -2349,7 +2503,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
-  aiScheduleTurn, aiRunTurn, aiResolvePending,
+  aiScheduleTurn, aiScheduleAuction, aiRunAuction, aiRunTurn, aiResolvePending,
   cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
