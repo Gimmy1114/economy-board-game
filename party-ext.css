@@ -1640,6 +1640,7 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
 }
 .item-slot-wrap:hover .discard-btn { opacity: 1; }
 .discard-btn:hover { background: #8a4038; border-color: #b56a5e; transform: scale(1.12); }
+.discard-btn:disabled { opacity: .35; cursor: not-allowed; filter: grayscale(.8); transform: none; }
 .bankai-note {
   margin: 7px 0 0;
   font-size: 10.5px;
@@ -1855,6 +1856,20 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
 }
 #spectator-note strong { color: #fff; }
 #spectator-note[hidden] { display: none !important; }
+#ext-modal[data-type="ai-wait"] .ext-modal-close { display: none !important; }
+.ai-decision-wait {
+  display: grid;
+  place-items: center;
+  min-height: 92px;
+  padding: 20px;
+  border: 1px solid #d8e8e1;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #f5fbf8, #eaf5f0);
+  color: #397268;
+  font-size: 17px;
+  font-weight: 800;
+  text-align: center;
+}
 .ai-thinking #turn-panel { position: relative; }
 .ai-thinking #turn-panel::after {
   content: '🤖 電腦思考中...';
@@ -2941,3 +2956,23 @@ body.map-pick-mode .board-panel { box-shadow: 0 0 0 2px rgba(20, 184, 166, .35),
 .lobby-add-ai { padding: 5px 8px; font-size: 11px; }
 .lobby-player.ai-player { border-color: #c9d9f3; background: #f7faff; }
 .lobby-ai-difficulty { min-width: 92px; max-width: 120px; padding: 5px 6px; border: 1px solid #d7e1ed; border-radius: 7px; background: #fff; color: #47627c; font-size: 11px; }
+
+/* 派對大廳玩家列：企業改由頭像選取目標後，在下方企業卡直接套用。 */
+.lobby-player{grid-template-columns:34px minmax(0,1fr);}
+.lobby-player.selected-target{border-color:#0f9688;box-shadow:0 0 0 2px rgba(15,150,136,.18);}
+.lobby-avatar-select{border:1px solid #d8e5df;cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .15s;}
+.lobby-avatar-select:hover{border-color:#0f9688;transform:translateY(-1px);}
+.lobby-avatar-select.selected{border:2px solid #0f9688;background:#dff5ed;box-shadow:0 0 0 2px rgba(15,150,136,.25);}
+.lobby-player-name-line{flex-wrap:wrap;}
+.lobby-ai-difficulty-btn{display:inline-flex;align-items:center;justify-content:center;min-height:25px;padding:3px 8px;border:1px solid #c9d9f3;border-radius:999px;background:#eef5ff;color:#3b629a;font-size:11px;font-weight:800;white-space:nowrap;cursor:pointer;}
+.lobby-ai-difficulty-btn:hover{border-color:#7fa9da;background:#e3efff;}
+.lobby-ai-difficulty-btn.readonly{cursor:default;opacity:.85;}
+.lobby-company-label{display:inline-flex;align-items:center;gap:4px;min-width:0;overflow:hidden;}
+.lobby-company-label small{overflow:hidden;text-overflow:ellipsis;}
+.lobby-offline-label{color:#a06b6b!important;white-space:nowrap;}
+.lobby-player-controls{display:none;}
+@media(max-width:760px){
+  .lobby-player{grid-template-columns:30px minmax(0,1fr);}
+  .lobby-player-main{grid-column:2;}
+  .lobby-ai-difficulty-btn{font-size:10px;padding:3px 6px;}
+}

@@ -6,7 +6,7 @@ import {
   extUseMythic, extUseSkill, extCanBuyStar, extBuyStar, extSkipStarOffer, extApplyWheel,
   extTriggerDoom, extResolveDoomPlayer, extFinishDoom, extResolveReplace, extSettlementData, extCheckBankruptcy, extCheckWin,
   extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extAuctionId, extPrepareWheel, extResolveWheel,
-  extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath, extInvest, extIsDoomApproaching,
+  extResolveVectorPending, extInsiderPay, extAuctionAction, extAuctionCurrent, extAuctionDecisionPlayer, extAngryRetreatPath, extInvest, extIsDoomApproaching,
   extTargets, extIsGhost, extAllowsPostRollItems,
   extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice, extStatusChips,
   extUsePortal, extResolvePortal, extAddSpecial, extTaxTerms, extTaxPay, extTaxDetain, extMovePlayer
@@ -314,6 +314,8 @@ test('內線交易穩定設定會保留用過的格子且不隨機生成新格',
   extInitGame(state, { mode: 'star' });
   state.ext.insiderOffer = { playerId: state.players[0].id, tileIndex: state.board.find(t => t.type === 'insider').index };
   extInsiderPay(state);
+  assert.equal(state.board.filter(t => t.type === 'insider').length, 1);
+  extResolveWheel(state, { playerId: state.players[0].id, at: state.ext.wheelPending.at });
   assert.equal(state.board.filter(t => t.type === 'insider').length, 0);
 });
 
@@ -336,6 +338,32 @@ test('黑市採用房主設定的起標與抬價，並揭露商品或標示爛�
   extAuctionAction(state, 'bid');
   assert.equal(extAuctionId(state), auctionId);
   assert.equal(state.ext.auction.currentPrice, 375);
+});
+
+test('人類喊價後黑市會交給電腦玩家並完成放棄結算', () => {
+  const state = make('star', 111);
+  const [human, cpu] = state.players;
+  cpu.isAI = true;
+  human.cash = 5000;
+  cpu.cash = 5000;
+  state.turnIndex = 0;
+  state.ext.auction = {
+    id: 'auction-human-ai', tileIndex: 1, itemId: null, junk: true,
+    basePrice: 1000, currentPrice: 1000, bidIncrement: 250,
+    highestBidder: null, highestBid: 0, order: [human.id, cpu.id], index: 0,
+    currentId: human.id, initiatorId: human.id, active: [human.id, cpu.id], passed: []
+  };
+
+  extAuctionAction(state, 'bid');
+  assert.equal(state.turnIndex, 0, '大回合仍屬於人類玩家');
+  assert.equal(extAuctionCurrent(state)?.id, cpu.id);
+  assert.equal(extAuctionDecisionPlayer(state)?.isAI, true);
+
+  extAuctionAction(state, 'pass');
+  assert.equal(state.ext.auction, null);
+  assert.equal(state.ext.replaceOffer, null);
+  assert.equal(human.cash, 4000);
+  assert.ok(state.log.some(line => /得標爛貨/.test(line)));
 });
 
 test('舊經典派對存檔自動遷移為企業之星', () => {
@@ -859,8 +887,41 @@ test('神話道具與魔女因子文案符合新版規則', () => {
   assert.equal(MYTHIC_BY_ID.indulgence.name, '贖罪券');
   assert.match(MYTHIC_BY_ID.truthGate.desc, /可使用3次/);
   assert.doesNotMatch(MYTHIC_BY_ID.truthGate.desc, /3 次充能/);
+  assert.equal(MYTHIC_BY_ID.vector.desc, '擲骰前在地圖上指定 1 個格子。本回合自己移動時，出發格、沿途與最後停留格上的其他玩家，會立刻被傳送到該格並強制觸發格子效果。');
+  assert.doesNotMatch(MYTHIC_BY_ID.vector.desc, /使用一次即消耗/);
+  assert.doesNotMatch(MYTHIC_BY_ID.iceMushroom.desc, /使用一次即消耗/);
   assert.doesNotMatch(MYTHIC_BY_ID.iceMushroom.desc, /使用後道具消失/);
   assert.match(MYTHIC_BY_ID.witchFactor.desc, /本次擲骰前/);
+});
+
+test('矢量操作與寒冰蘑菇只消耗一個指定或第一個符合的道具', () => {
+  const state = make('star', 861, {debug: false});
+  const player = state.players[0];
+  state.phase = 'roll';
+
+  player.mythics = [{id: 'vector', charges: 1}, {id: 'vector', charges: 1}];
+  // 沒有索引時只移除第一個矢量操作，另一個仍保留。
+  extUseMythic(state, 'vector', {tileIndex: 3});
+  assert.deepEqual(player.mythics.map(entry => entry.id), ['vector']);
+
+  player.mythics = [{id: 'iceMushroom', charges: 1}, {id: 'iceMushroom', charges: 1}];
+  // 有索引時精準移除指定的第二個寒冰蘑菇，第一個仍保留。
+  extUseMythic(state, 'iceMushroom', {slotIndex: 1});
+  assert.deepEqual(player.mythics.map(entry => entry.id), ['iceMushroom']);
+});
+
+test('測試模式使用矢量操作與寒冰蘑菇不消耗持有道具', () => {
+  const state = make('star', 862, {debug: true});
+  const player = state.players[0];
+  state.phase = 'resolve';
+
+  player.mythics = [{id: 'vector', charges: 1}, {id: 'vector', charges: 1}];
+  extUseMythic(state, 'vector', {tileIndex: 3, slotIndex: 1});
+  assert.deepEqual(player.mythics.map(entry => entry.id), ['vector', 'vector']);
+
+  player.mythics = [{id: 'iceMushroom', charges: 1}, {id: 'iceMushroom', charges: 1}];
+  extUseMythic(state, 'iceMushroom', {slotIndex: 1});
+  assert.deepEqual(player.mythics.map(entry => entry.id), ['iceMushroom', 'iceMushroom']);
 });
 
 test('企業之星開局原地不能買星，必須先有經過或停在起點的邀請', () => {
@@ -1689,6 +1750,64 @@ test('vector operation shield blocks forced teleport before position changes', (
   assert.equal(state.ext.shieldBlockEvent.playerId, target.id);
 });
 
+test('強制徵收不需指定目標，發動時立即命中同格對手', () => {
+  const state = make('star');
+  const [owner, target] = state.players;
+  owner.roleId = 'property'; owner.energy = 2; owner.position = 5;
+  target.position = 5; target.cash = 1000;
+  const ownerCash = owner.cash;
+  extUseSkill(state);
+  assert.equal(target.position, 2);
+  assert.equal(target.cash, 800);
+  assert.equal(owner.cash, ownerCash + 200);
+  assert.equal(state.ext.seize.ownerId, owner.id);
+});
+
+test('強制徵收會在單次移動路徑複數命中對手', () => {
+  const state = make('star');
+  const [owner, first] = state.players;
+  state.players.push({ ...state.players[1], id: 'third', name: '丙', roleId: 'finance', position: 0, cash: 1000, energy: 1, shields: 0, items: [], mythics: [], specials: [], ext: { eliminated: false } });
+  const third = state.players.at(-1);
+  owner.roleId = 'property'; owner.energy = 2; owner.position = 2;
+  first.position = 3; first.cash = 1000;
+  third.position = 4; third.cash = 1000;
+  state.ghostPosition = 20;
+  const ownerBefore = owner.cash;
+  extUseSkill(state);
+  rollDie(state, 3);
+  assert.equal(first.position, 0);
+  assert.equal(third.position, 1);
+  assert.equal(first.cash, 800);
+  assert.equal(third.cash, 800);
+  assert.ok(owner.cash >= ownerBefore + 400);
+});
+
+test('強制徵收的買保險會完整擋下擊退與扣款', () => {
+  const state = make('star');
+  const [owner, target] = state.players;
+  owner.roleId = 'property'; owner.energy = 2; owner.position = 5;
+  target.position = 5; target.cash = 1000; target.shields = 1;
+  const ownerCash = owner.cash;
+  extUseSkill(state);
+  assert.equal(target.position, 5);
+  assert.equal(target.cash, 1000);
+  assert.equal(owner.cash, ownerCash);
+  assert.equal(target.shields, 0);
+});
+
+test('強制徵收的贖罪券只擋扣款，擊退仍照常執行', () => {
+  const state = make('star');
+  const [owner, target] = state.players;
+  owner.roleId = 'property'; owner.energy = 2; owner.position = 5;
+  target.position = 5; target.cash = 1000; target.mythics = [{ id: 'indulgence', charges: 5 }];
+  const ownerCash = owner.cash;
+  extUseSkill(state);
+  assert.equal(target.position, 2);
+  assert.equal(target.cash, 1000);
+  assert.equal(owner.cash, ownerCash);
+  assert.equal(target.mythics[0].charges, 4);
+});
+
 test('多人移動同步保護主動玩家，落點先同步再觸發格子 UI', async () => {
   const {readFileSync} = await import('node:fs');
   const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
@@ -1704,4 +1823,32 @@ test('多人移動同步保護主動玩家，落點先同步再觸發格子 UI',
   assert.match(ui, /function openSpecialModal\(s\)\s*\{\s*try\s*\{/);
   assert.match(ui, /function openEventPrompt\(p\)[\s\S]*?try\s*\{/);
   assert.match(ui, /app\(\)\?\.recoverAfterUiError\?\./);
+});
+
+test('電腦回合不顯示事件互動，黑市改用等待提示並鎖定全部操作', async () => {
+  const {readFileSync} = await import('node:fs');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./party-ext.css', import.meta.url), 'utf8');
+  assert.match(app, /if\(activePlayer\(\)\?\.isAI&&\!options\.authoritative/);
+  assert.match(app, /const aiTurn=Boolean\(activePlayer\(\)\?\.isAI\)/);
+  assert.match(app, /data-discard-kind="special"[^>]*\$\{usable\?'':'disabled'\}/);
+  assert.match(ui, /if \(isAIPlayer\(p, ev\.playerId\)\) \{ closeExtModal\(\); return; \}/);
+  assert.match(ui, /function openAIWaitModal\(p, kind = 'auction'\)/);
+  assert.match(ui, /等待其他玩家的抉擇\.\.\./);
+  assert.match(ui, /if \(isAIPlayer\(p, owner\)\)/);
+  assert.match(ui, /data-toggle-discard/);
+  assert.match(css, /#ext-modal\[data-type="ai-wait"\]/);
+  assert.match(css, /\.discard-btn:disabled/);
+});
+
+test('單機設定移除新增玩家提示並壓縮開始按鈕間距', async () => {
+  const {readFileSync} = await import('node:fs');
+  const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /setup-mode-helper/);
+  assert.doesNotMatch(html, /可分別新增人類或電腦玩家/);
+  assert.match(css, /\.setup-add-grid\{[^}]*margin:5px 0 12px\}/);
+  assert.match(css, /\.setup-card \.primary\.big\{margin-top:10px\}/);
+  assert.match(css, /#setup-error:empty\{display:none\}/);
 });

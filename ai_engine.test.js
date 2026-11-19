@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createGame } from './engine.js';
 import { extInitGame } from './party_engine.js';
+import { AI_DIFFICULTIES } from './data.js';
 import {
   aiReadSettings, aiAnalyzeBoard, aiChooseDiscard, aiChoosePreRollAction,
-  aiPredictRoll, aiChooseAuctionAction, aiChooseInvestAction, aiChooseTaxAction,
+  aiPredictRoll, aiChooseAuctionAction, aiAuctionPassAction, aiChooseInvestAction, aiChooseTaxAction,
   aiChooseInsiderAction, aiChooseDecisionAction, aiPlanTurn
 } from './ai_engine.js';
 
@@ -24,6 +25,15 @@ const make = (settings = {}) => {
   extInitGame(state, { mode: 'star', debug: true, startingCash: 2000 });
   return state;
 };
+
+test('黑市 AI watchdog 的保底動作固定為放棄', () => {
+  assert.deepEqual(aiAuctionPassAction(), { action: 'pass', maxBid: 0, reason: 'watchdog' });
+  assert.equal(aiAuctionPassAction('error').action, 'pass');
+});
+
+test('電腦難度使用統一表情圖示', () => {
+  assert.deepEqual(AI_DIFFICULTIES.map(item => item.badge), ['😇 簡單', '😐 普通', '😡 困難', '😈 專家']);
+});
 
 test('AI 讀取實際棋盤與進階設定開關', () => {
   const state = make({ blackMarketStartingPrice: 0, blackMarketBidIncrement: 0, ghostExorcismAssets: 0, ghostExorcismEnergy: 0 });
@@ -71,6 +81,20 @@ test('四種難度的背包與骰前行為有可觀察差異', () => {
   state.players[0].detainedTurns = 2;
   player.aiDifficulty = 'hard';
   assert.equal(aiChoosePreRollAction(state, player).reason, 'escape-trap');
+});
+
+test('炒房地產集團的 AI 看到同格或前方路徑對手時使用無目標強制徵收', () => {
+  const state = make();
+  const player = state.players[1];
+  player.roleId = 'property';
+  player.energy = 2;
+  player.position = state.players[0].position;
+  const sameTile = aiChoosePreRollAction(state, player);
+  assert.equal(sameTile.type, 'USE_SKILL');
+  assert.equal('targetId' in sameTile, false);
+  player.position = (state.players[0].position + state.board.length - 3) % state.board.length;
+  const pathTarget = aiChoosePreRollAction(state, player);
+  assert.equal(pathTarget.type, 'USE_SKILL');
 });
 
 test('普通以上 AI 依自動回能設定調整能量政策', () => {

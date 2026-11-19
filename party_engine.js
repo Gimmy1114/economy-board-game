@@ -404,6 +404,8 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     insiderOffer: null,
     wheelResult: null,
     forcedStarOffer: null,
+    seize: null,
+    seizeEvent: null,
     vector: null,
     domain: null,
     certificates: [],
@@ -510,6 +512,8 @@ export function extEnsureState(state) {
     if (!('totemEvent' in state.ext)) state.ext.totemEvent = null;
     if (!('vectorEvent' in state.ext)) state.ext.vectorEvent = null;
     if (!('vectorPending' in state.ext)) state.ext.vectorPending = null;
+    if (!('seize' in state.ext)) state.ext.seize = null;
+    if (!('seizeEvent' in state.ext)) state.ext.seizeEvent = null;
     if (!('fateDice' in state.ext)) state.ext.fateDice = null;
     if (!('portalPending' in state.ext)) state.ext.portalPending = null;
     if (!('portalEvent' in state.ext)) state.ext.portalEvent = null;
@@ -547,7 +551,7 @@ export function extEnsureState(state) {
     doomPrice: DOOM_START, doomStep: DOOM_STEP, doomCount: 0, doomEvery: DOOM_EVERY, suddenDeath: false, enraged: false,
     auctionSequence: 0,
     auction: null, investOffer: null, taxChoice: null, insiderOffer: null, wheelResult: null,
-    forcedStarOffer: null, vector: null, domain: null, certificates: [], history: [],
+    forcedStarOffer: null, seize: null, seizeEvent: null, vector: null, domain: null, certificates: [], history: [],
     turnSnapshot: null, doomEvent: null, suddenDeathEvent: null, pendingVictory: null, finishTitle: null, lastEvent: null,
     noInflation: false, noRedemption: false, confirmed: [], lobbyPlayers: null, replicas: null, migrated: true,
     starOffer: null, replaceOffer: null, eventPrompt: null, wheelPending: null,
@@ -903,10 +907,29 @@ engineHooks.blockedReason = (state, player, kind, itemId) => {
 engineHooks.adjustMovePath = (state, player, fullPath, { from } = {}) => {
   const ext = state.ext;
   const vector = ext?.vector;
-  if (!vector || !vector.active || !Number.isInteger(vector.destination)) return null;
+  const seize = ext?.seize;
+  let seizeMeta = null;
+  if (seize?.active && seize.ownerId === player.id && seize.round === state.round && !player.ext?.eliminated) {
+    const route = [Number.isInteger(from) ? from : player.position, ...fullPath];
+    const seen = new Set(Array.isArray(seize.triggeredIds) ? seize.triggeredIds : []);
+    const candidates = [];
+    for (const tile of route) {
+      for (const other of state.players) {
+        if (other.id === player.id || other.ext?.eliminated || seen.has(other.id)) continue;
+        if (other.position !== tile) continue;
+        seen.add(other.id);
+        candidates.push({ playerId: other.id, name: other.name, from: other.position });
+      }
+    }
+    seize.triggeredIds = [...seen];
+    if (candidates.length) seizeMeta = { ownerId: player.id, route, candidates };
+  }
+  if (!vector || !vector.active || !Number.isInteger(vector.destination)) {
+    return seizeMeta ? { path: fullPath, meta: { seize: seizeMeta } } : null;
+  }
   // 不是使用者本人移動，或使用者已幽靈化，都不能觸發。
-  if (vector.ownerId !== player.id || player.ext?.eliminated) return null;
-  if (vector.round !== state.round) { ext.vector = null; return null; }
+  if (vector.ownerId !== player.id || player.ext?.eliminated) return seizeMeta ? { path: fullPath, meta: { seize: seizeMeta } } : null;
+  if (vector.round !== state.round) { ext.vector = null; return seizeMeta ? { path: fullPath, meta: { seize: seizeMeta } } : null; }
   const start = Number.isInteger(from) ? from : player.position;
   const route = [start, ...fullPath];
   const seen = new Set();
@@ -923,10 +946,10 @@ engineHooks.adjustMovePath = (state, player, fullPath, { from } = {}) => {
   ext.vector = null;
   if (!candidates.length) {
     log(state, `⬆️ ${player.name} 的矢量操作沒有在移動路徑上遇到其他玩家，能量消散。`);
-    return null;
+    return seizeMeta ? { path: fullPath, meta: { seize: seizeMeta } } : null;
   }
   log(state, `⬆️ ${player.name} 發動矢量操作，掃描移動路徑第 ${tileNoText(route)} 格。`);
-  return { path: fullPath, meta: { vector: { ownerId: player.id, destination, route, candidates } } };
+  return { path: fullPath, meta: { vector: { ownerId: player.id, destination, route, candidates }, ...(seizeMeta ? { seize: seizeMeta } : {}) } };
 };
 
 // 贖罪券只攔截非自願負面扣款；主動交易會在 addCash() 帶入 source 後略過。
@@ -1060,6 +1083,49 @@ function extApplyVectorResolution(state, vector, ownerId, roll = null) {
   return state.ext.vectorEvent;
 }
 
+// 強制徵收的路徑命中在棋子完成滑行後才結算，避免移動動畫中途改變目標位置。
+function extApplySeizeHit(state, owner, target, effects = []) {
+  if (!owner || !target || owner.id === target.id || extIsGhost(target)) return null;
+  if (extShieldBlock(state, target, owner, '強制徵收')) {
+    effects.push({ icon: '🛡️', text: `${target.name} 的買保險擋下強制徵收，沒有被擊退或扣款。`, tone: 'good' });
+    return { playerId: target.id, blocked: 'shield', from: target.position, to: target.position };
+  }
+  if (target.ext?.bankai) {
+    effects.push({ icon: '🌀', text: `${target.name} 的卍解擋下強制徵收。`, tone: 'good' });
+    return { playerId: target.id, blocked: 'immune', from: target.position, to: target.position };
+  }
+  const len = boardOf(state).length;
+  const from = target.position;
+  const path = Array.from({ length: 3 }, (_, i) => (from - i - 1 + len) % len);
+  const to = path.at(-1);
+  extMovePlayer(state, target, to, { forced: true, kind: 'skill' });
+  applyCornerProgress(state, target, path, { passedStart: path.includes(0), effects });
+  const paid = extDamage(state, target, 200, { label: '強制徵收', sourceId: owner.id });
+  if (paid) addCash(state, owner, paid);
+  effects.push({ icon: '🚜', text: `${target.name} 被強制徵收擊退 3 格${paid ? '，並被搶奪 200 總資產' : '，贖罪券擋下 200 總資產損失'}。`, tone: paid ? 'bad' : 'event' });
+  log(state, `🚜 ${owner.name} 的強制徵收命中 ${target.name}：擊退 3 格${paid ? '並轉交 200 總資產' : '，贖罪券擋下扣款'}。`);
+  return { playerId: target.id, from, to, paid };
+}
+
+function extApplySeizeResolution(state, seize, ownerId, roll = null) {
+  if (!seize || !Array.isArray(seize.candidates)) return null;
+  const owner = state.players.find(player => player.id === ownerId);
+  if (!owner || owner.ext?.eliminated) return null;
+  const hits = [];
+  const travelled = Array.isArray(roll?.path) ? new Set(roll.path) : null;
+  for (const candidate of seize.candidates) {
+    if (travelled && Number.isInteger(candidate.from) && !travelled.has(candidate.from)) continue;
+    const target = state.players.find(player => player.id === candidate.playerId);
+    if (!target || target.ext?.eliminated || hits.some(hit => hit.playerId === target.id)) continue;
+    const hit = extApplySeizeHit(state, owner, target, roll?.effects || []);
+    if (hit) hits.push(hit);
+    if (state.status !== 'playing' || state.ext?.rewound) break;
+  }
+  if (!hits.length) return null;
+  state.ext.seizeEvent = { type: 'seize', ownerId, hits, at: Date.now() };
+  return state.ext.seizeEvent;
+}
+
 function extResolveVector(state, player, roll, { defer = false } = {}) {
   const vector = roll?.vector;
   if (!vector || !Array.isArray(vector.candidates) || !vector.candidates.length) return;
@@ -1156,6 +1222,9 @@ engineHooks.afterRoll = (state, player, roll, options = {}) => {
   }
   // 矢量操作在本次移動路徑確定後結算；被傳送的玩家會立即承受指定格效果。
   if (!rewound) {
+    extApplySeizeResolution(state, roll.seize, player.id, roll);
+    if (ext.seize?.ownerId === player.id) ext.seize = null;
+    if (state.status !== 'playing') return;
     extResolveVector(state, player, roll, { defer: Boolean(options.deferVector) });
     if (state.status !== 'playing') return;
   }
@@ -1287,6 +1356,7 @@ engineHooks.beforeEndTurn = (state, player) => {
     ext.vector = null;
     log(state, `⬆️ ${player.name} 未在移動中觸發矢量操作，能量消散。`);
   }
+  if (ext.seize?.ownerId === player.id) ext.seize = null;
   // 未處理的起點買星／黑市滿包替換不得跨回合殘留，否則會鎖住下一位玩家。
   if (ext.starOffer?.playerId === player.id) ext.starOffer = null;
   // 命運輪盤、內線交易、投資邀請和事件提示也一樣：殘留的話下一位玩家的二選一視窗永遠不會出現。
@@ -1704,17 +1774,15 @@ export function extUseSkill(state, targetId, sectorOrTile) {
       break;
     }
     case 'property': {
-      if (!target) throw Error('請選擇一位對手。');
-      if (extShieldBlock(state, target, p, skill.name)) { result.push(`${target.name} 的護盾擋下強制移動`); break; }
-      if (target.ext?.bankai) { result.push(`${target.name} 的卍解擋下強制徵收`); break; }
-      const len = boardOf(state).length;
-      const from = target.position;
-      const path=Array.from({length:3},(_,i)=>(from-i-1+len)%len);
-      extMovePlayer(state, target, path.at(-1), { forced: true, kind: 'skill' });
-      applyCornerProgress(state,target,path,{passedStart:path.includes(0)});
-      const hit = damage(target, 200, skill.name);
-      if (hit) addCash(state, p, 200);
-      result.push(`${target.name} 被擊退 3 格${hit ? '，並被搶奪 200 總資產' : '，但護盾擋下了搶奪'}`);
+      const seize = { ownerId: p.id, round: state.round, active: true, triggeredIds: [] };
+      state.ext.seize = seize;
+      const sameTile = others.filter(other => other.position === p.position);
+      for (const other of sameTile) {
+        seize.triggeredIds.push(other.id);
+        const hit = extApplySeizeHit(state, p, other, []);
+        if (hit) result.push(hit.blocked === 'shield' ? `${other.name} 的買保險擋下強制徵收` : `${other.name} 被擊退 3 格${hit.paid ? '並搶奪 200 總資產' : '，贖罪券擋下扣款'}`);
+      }
+      result.push(sameTile.length ? `本回合同格命中 ${sameTile.length} 名對手` : '本回合移動時將攔截路徑上的對手');
       break;
     }
     case 'green': {
@@ -2002,6 +2070,23 @@ export function extDiscard(state, player, kind, index) {
   }
 }
 
+function consumeMythic(player, itemId, slotIndex, { preserve = false } = {}) {
+  const mythics = player?.mythics || [];
+  const hasSlotIndex = slotIndex !== undefined && slotIndex !== null;
+  let index;
+  if (hasSlotIndex) {
+    index = Number(slotIndex);
+    if (!Number.isInteger(index) || index < 0 || index >= mythics.length || mythics[index]?.id !== itemId) {
+      throw Error('你沒有這個神話道具。');
+    }
+  } else {
+    index = mythics.findIndex(entry => entry?.id === itemId);
+    if (index < 0) throw Error('你沒有這個神話道具。');
+  }
+  if (!preserve) mythics.splice(index, 1);
+  return index;
+}
+
 export function extUseMythic(state, itemId, payload = {}) {
   if (state.status !== 'playing') throw Error('遊戲已結束。');
   if (state.phase !== 'roll' && !extAllowsPostRollItems(state)) throw Error('神話道具只能在擲骰前使用。');
@@ -2013,12 +2098,13 @@ export function extUseMythic(state, itemId, payload = {}) {
   // canUse() 會正規化玩家狀態，因此在檢查後重新取得目前的神話道具物件。
   const entry = extMythicEntry(p, itemId);
   if (!entry) throw Error('你沒有這個神話道具。');
+  const preserve = extAllowsPostRollItems(state);
   switch (itemId) {
     case 'vector': {
       const index = Number(payload.tileIndex);
       if (!Number.isInteger(index) || index < 0 || index >= boardOf(state).length) throw Error('請選擇一個有效格子。');
+      consumeMythic(p, itemId, payload.slotIndex, { preserve });
       state.ext.vector = { ownerId: p.id, destination: index, round: state.round, active: true };
-      p.mythics = p.mythics.filter(x => x.id !== itemId);
       log(state, `⬆️ ${p.name} 在地圖第 ${tileNo(index)} 格佈下矢量操作：本回合自己移動時，路徑上的其他玩家會被傳送到該格並觸發效果。`);
       break;
     }
@@ -2058,6 +2144,7 @@ export function extUseMythic(state, itemId, payload = {}) {
       break;
     }
     case 'iceMushroom': {
+      consumeMythic(p, itemId, payload.slotIndex, { preserve });
       const frozen = [], resisted = [];
       for (const other of extTargets(state, p.id)) {
         if (other.ext?.bankai) { resisted.push(other.name); continue; }
@@ -2066,7 +2153,6 @@ export function extUseMythic(state, itemId, payload = {}) {
         other.ext.iceLock = Math.max(other.ext.iceLock || 0, 3);
         frozen.push(other.name);
       }
-      p.mythics = p.mythics.filter(x => x.id !== itemId);
       state.ext.lastEvent = { type: 'iceMushroom', playerId: p.id, frozen: frozen.slice(), at: Date.now() };
       log(state, `❄️ ${p.name} 使用寒冰蘑菇：${frozen.length} 位玩家被凍結 1 回合，且 3 回合內禁用技能與道具${resisted.length ? `；${resisted.join('、')} 的卍解免疫` : ''}。`);
       break;
@@ -2098,6 +2184,14 @@ export function extAuctionCurrent(state) {
   const a = state.ext?.auction;
   if (!a || !a.currentId) return null;
   return state.players.find(p => p.id === a.currentId) || null;
+}
+
+// 黑市事件可能跨過大回合玩家繼續進行；拍賣中的決策者也可能是
+// 得標後需要處理 3/3 背包的玩家。UI 與房主 AI 都應以這個玩家為準，
+// 不要拿 state.turnIndex 當成黑市目前的操作者。
+export function extAuctionDecisionPlayer(state) {
+  const playerId = state?.ext?.auction?.currentId || state?.ext?.replaceOffer?.playerId;
+  return playerId ? state.players?.find(player => player.id === playerId) || null : null;
 }
 
 // 拍賣在各次出價後都會保留同一個識別碼，讓房主的完成事件、客機的
@@ -2284,10 +2378,14 @@ export function extInsiderPay(state) {
   const prev = state.ext.noInflation; state.ext.noInflation = true;
   addCash(state, p, -100, {source: 'insider'});
   state.ext.noInflation = prev;
-  const result = extPrepareWheel(state, p);
-  // 用完後變回普通格，並在隨機普通格生成新的交易格
+  // 輪盤結果與交易格重生都延後到動畫完成、正式確認時處理。
+  return extPrepareWheel(state, p, { tileIndex: offer.tileIndex });
+}
+
+function respawnInsiderTile(state, tileIndex) {
+  if (!Number.isInteger(tileIndex)) return;
   const board = boardOf(state);
-  const old = board.find(t => t.index === offer.tileIndex);
+  const old = board.find(t => t.index === tileIndex);
   if (old) {
     const types = NORMAL_TILE_TYPES;
     const type = types[Math.floor(nextRandom(state) * types.length)];
@@ -2295,32 +2393,27 @@ export function extInsiderPay(state) {
     const icons = { blue: '💰', red: '📉', yellow: '⚡', green: '❓' };
     Object.assign(old, { type, label: labels[type], icon: icons[type], special: false, value: type === 'blue' ? 300 : type === 'red' ? 150 : type === 'yellow' ? 1 : 0, stay: `${labels[type]}格` });
   }
+  if (state.advancedSettings?.insiderTradeStable === true) return;
   const len = board.length;
   const specialAt = i => board.some(t => t.special && t.index === ((i % len) + len) % len);
-  const candidates = board.filter(t => t.index !== 0 && t.index !== offer.tileIndex && !t.special
+  const candidates = board.filter(t => t.index !== 0 && t.index !== tileIndex && !t.special
     && !specialAt(t.index - 1) && !specialAt(t.index + 1));
-  const fallback = board.filter(t => t.index !== 0 && t.index !== offer.tileIndex && !t.special);
+  const fallback = board.filter(t => t.index !== 0 && t.index !== tileIndex && !t.special);
   const pool = candidates.length ? candidates : fallback;
-  if (state.advancedSettings?.insiderTradeStable === true) {
-    extCheckWin(state);
-    return result;
-  }
   if (pool.length) {
     const target = pool[Math.floor(nextRandom(state) * pool.length)];
     Object.assign(target, { type: 'insider', special: true, label: '內線交易', icon: '🌈', value: 0, stay: SPECIAL_TILE_META.insider.desc });
     log(state, `🌈 新的內線交易格在第 ${tileNo(target.index)} 格生成。`);
   }
-  extCheckWin(state);
-  return result;
 }
 
 // 只抽結果、不立即生效；UI 轉盤停止後必須等待玩家按下確認，才呼叫 extResolveWheel。
-export function extPrepareWheel(state, player) {
+export function extPrepareWheel(state, player, { tileIndex = null } = {}) {
   const ext = state.ext;
   const pool = WHEEL_EFFECTS.filter(e => !e.mode || e.mode === ext.mode);
   const effect = pool[Math.floor(nextRandom(state) * pool.length)];
   const index = Math.max(0, WHEEL_EFFECTS.findIndex(e => e.id === effect.id));
-  ext.wheelPending = { playerId: player.id, effect, index, at: Date.now() };
+  ext.wheelPending = { playerId: player.id, effect, index, at: Date.now(), tileIndex };
   ext.wheelResult = null;
   log(state, `🌈 ${player.name} 啟動命運輪盤，結果即將揭曉。`);
   return { pending: true, effect, index, playerId: player.id, at: ext.wheelPending.at };
@@ -2336,6 +2429,7 @@ export function extResolveWheel(state, payload = {}) {
   if (!player) return null;
   const effect = pending.effect;
   const text = extApplyWheel(state, player, effect);
+  respawnInsiderTile(state, pending.tileIndex);
   ext.wheelResult = { effect, text, playerId: player.id, at: Date.now() };
   log(state, `🌈 命運輪盤：${effect.icon} ${effect.name}｜${text}`);
   extCheckBankruptcy(state, player);

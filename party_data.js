@@ -130,7 +130,7 @@ export const PARTY_ROLES = [
   {
     id: 'property', name: '炒房地產集團', sector: '民生業', icon: '🏗️',
     skill: {
-      id: 'seize', name: '強制徵收', icon: '🚜', target: 'opponent',
+      id: 'seize', name: '強制徵收', icon: '🚜', target: 'none',
       desc: '與對手同格或經過時，強制將對方擊退 3 格並搶奪 200 元。'
     }
   },
@@ -170,11 +170,11 @@ export const MYTHIC_ITEMS = [
   },
   {
     id: 'indulgence', name: '贖罪券', icon: '🎫', kind: 'passive', charges: 5,
-    desc: '被動絕對防禦。自動銷毀並抵銷 5 次扣總資產效果（移形換位代價除外）。'
+    desc: '被動絕對防禦。自動銷毀並抵銷 5 次扣總資產效果。'
   },
   {
     id: 'vector', name: '矢量操作', icon: '⬆️', kind: 'active',
-    desc: '擲骰前在地圖上指定 1 個格子。本回合自己移動時，出發格、沿途與最後停留格上的其他玩家，會立刻被傳送到該格並強制觸發格子效果；使用一次即消耗。'
+    desc: '擲骰前在地圖上指定 1 個格子。本回合自己移動時，出發格、沿途與最後停留格上的其他玩家，會立刻被傳送到該格並強制觸發格子效果。'
   },
   {
     id: 'truthGate', name: '真理之門', icon: '🚪', kind: 'active', charges: 3,
