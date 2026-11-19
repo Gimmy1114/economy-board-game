@@ -115,10 +115,12 @@ export const PartyUI = (() => {
   let lastIceKey = '';
   let lastBankruptKey = '';
   let lastTotemKey = '';
+  let lastDetentionEventKey = '';
   let wheelTimers = [];
   let openingTimer = [];
   let finishTimer = null;
   let endingTimer = null;
+  let hostLeftNoticeTimer = null;
   let replaceDropConfirm = false;
   let settlementLockUntil = 0;
   let eventPromptKey = '';
@@ -548,6 +550,25 @@ export const PartyUI = (() => {
     wheelOpen = false;
     const overlay = $('#wheel-overlay');
     if (overlay) overlay.hidden = true;
+  }
+
+  // A turn change (including a timer-forced change) invalidates every local
+  // interaction that belonged to the previous player.  Keep this reset
+  // independent from the authoritative game state so a stale mobile modal or
+  // wheel animation cannot disable the next player's controls.
+  function resetTurnInteractions() {
+    clearTurnInteractions();
+    clearTimeout(decisionTimer);
+    decisionTimer = null;
+    decisionGateKey = '';
+    decisionGateUntil = 0;
+    eventPromptKey = '';
+    replaceDropConfirm = false;
+    vectorLockUntil = 0;
+    clearTimeout(vectorLockTimer);
+    vectorLockTimer = null;
+    document.body.classList.remove('vector-locking');
+    clearTurnLock();
   }
 
   function turnSeconds(playerId) {
@@ -1253,6 +1274,9 @@ export const PartyUI = (() => {
   }
   function onGameStart(game, { fromLobby = false } = {}) {
     clearOpening();
+    clearTimeout(hostLeftNoticeTimer);
+    hostLeftNoticeTimer = null;
+    $('#host-left-notice')?.remove();
     hideLobby();
     hideSettlement();
     document.body.classList.remove('settlement-active');
@@ -1305,6 +1329,7 @@ export const PartyUI = (() => {
     lastIceKey = '';
     lastBankruptKey = '';
     lastTotemKey = '';
+    lastDetentionEventKey = '';
     lastFinalRound = null;
     closeExtModal();
     document.body.classList.remove('witch-negative', 'doom-resolving');
@@ -1906,7 +1931,7 @@ export const PartyUI = (() => {
 
   function playEnding(p) {
     if (!p || p.ext?.debug) return false;
-    if (p.resultReason === 'survivor' || p.resultReason === 'bankrupt') return false;
+    if (p.resultReason === 'survivor' || p.resultReason === 'bankrupt' || p.resultReason === 'host-left' || p.resultReason === 'all-left') return false;
     const mode = p.ext?.mode;
     if (!['star', 'tycoon'].includes(mode)) return false;
     const el = $('#ending-overlay');
@@ -2426,13 +2451,15 @@ export const PartyUI = (() => {
     } else if (s.type === 'tax') {
       const offer = p.ext.taxChoice;
       const player = p.players.find(x => x.id === offer.playerId);
-      const amount = Math.floor(Math.max(0, player?.cash || 0) * 0.5);
+      const terms = window.__partyEngine?.extTaxTerms?.(p, player) || { wanted: 0, amount: Math.floor(Math.max(0, player?.cash || 0) * 0.5), energy: 0, detentionTurns: 2, canPay: Number(player?.cash) > 0 };
       const ticket = player?.mythics?.find(x => x.id === 'indulgence');
+      const wantedText = terms.wanted ? `通緝${'★'.repeat(terms.wanted)}` : '無通緝';
+      const payDisabled = terms.canPay ? '' : 'disabled';
       updateExtModal({
         kicker: 'TAX OFFICE · 查稅局', icon: '🏛️', title: '國稅局找上門', type: 'tax',
-        text: `${player?.name || ''} 被查出帳目異常。選擇繳交 50% 總資產，或接受 2 回合羈押。`,
-        body: `<div class="tax-box"><div><span>應繳稅額</span><strong>${money(amount)}</strong></div>${ticket ? `<p class="ticket-note">🎫 你持有贖罪券（${ticket.charges} 次），可全額抵銷本次稅金。</p>` : ''}</div>`,
-        actions: `<button class="secondary" data-tax="detain">接受羈押 2 回合</button><button class="primary" data-tax="pay">繳稅 ${money(amount)}</button>`
+        text: `${player?.name || ''} 被查出帳目異常（${wantedText}）。選擇繳交 ${terms.wanted === 3 ? '100%' : '50%'} 總資產${terms.energy ? `＋${terms.energy} 點能量` : ''}，或接受 ${terms.detentionTurns} 回合羈押。`,
+        body: `<div class="tax-box"><div><span>應繳${terms.wanted === 3 ? '全部' : '一半'}總資產</span><strong>${money(terms.amount)}</strong></div>${terms.energy ? `<p>⚡ 額外能量：${terms.energy} 點</p>` : ''}${ticket ? `<p class="ticket-note">🎫 你持有贖罪券（${ticket.charges} 次），可全額抵銷本次稅金。</p>` : ''}</div>`,
+        actions: `<button class="secondary" data-tax="detain">接受拘留 ${terms.detentionTurns} 回合</button><button class="primary" data-tax="pay" ${payDisabled}>${terms.canPay ? `繳稅 ${money(terms.amount)}` : '條件不足，強制拘留'}</button>`
       });
     } else if (s.type === 'insider') {
       const offer = p.ext.insiderOffer;
@@ -2763,6 +2790,25 @@ export const PartyUI = (() => {
   // 結算
   // -------------------------------------------------------------------------
   function hideSettlement() { const el = $('#settlement-overlay'); if (el) el.hidden = true; }
+  function showHostLeftNotice(reason = '房主已退出遊戲。') {
+    let el = $('#host-left-notice');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'host-left-notice';
+      el.className = 'host-left-notice';
+      el.setAttribute('role', 'alert');
+      el.setAttribute('aria-live', 'assertive');
+      document.body.appendChild(el);
+    }
+    clearTimeout(hostLeftNoticeTimer);
+    el.innerHTML = `<div class="host-left-notice-card"><span aria-hidden="true">⛔</span><strong>遊戲中斷，房主已退出遊戲</strong><small>${h(reason)}</small></div>`;
+    el.hidden = false;
+    hostLeftNoticeTimer = setTimeout(() => {
+      el.hidden = true;
+      el.remove();
+      hostLeftNoticeTimer = null;
+    }, 1800);
+  }
   function chart(series, { width = 660, height = 220, unit = '', rounds = [] } = {}) {
     const all = series.flatMap(s => s.values);
     const max = Math.max(1, ...all), min = Math.min(0, ...all);
@@ -2797,6 +2843,7 @@ export const PartyUI = (() => {
     data.cash.forEach((s, i) => s.color = colors[i % colors.length]);
     data.stars.forEach((s, i) => s.color = colors[i % colors.length]);
     const winners = data.winners.map(x => x.name).join('、') || '無人';
+    const interrupted = data.reason === 'host-left';
     const tabs = [['cash', '總資產']];
     if (data.mode?.id === 'star') tabs.push(['stars', '星數排行']);
     if (data.mode?.id === 'evil') tabs.push(['survival', '生還季數']);
@@ -2805,12 +2852,12 @@ export const PartyUI = (() => {
     el.hidden = false;
     el.innerHTML = `<div class="ext-modal-backdrop"></div>
       <div class="settlement-card">
-        <div class="settle-head"><div><p class="ext-kicker">FINAL SETTLEMENT · ${h(data.mode.name)}</p><h2>${h(data.title)}</h2>${data.subtitle ? `<p class="settle-subtitle">${h(data.subtitle)}</p>` : ''}<p>${data.subtitle ? `共 ${data.rounds.length} 個紀錄點` : `${h(winners)} 獲勝 · 共 ${data.rounds.length} 個紀錄點`}</p></div><span class="settle-trophy">🏆</span></div>
+        <div class="settle-head"><div><p class="ext-kicker">FINAL SETTLEMENT · ${h(data.mode.name)}</p><h2>${h(data.title)}</h2>${data.subtitle ? `<p class="settle-subtitle">${h(data.subtitle)}</p>` : ''}<p>${interrupted ? '本局無人獲勝' : data.subtitle ? `共 ${data.rounds.length} 個紀錄點` : `${h(winners)} 獲勝 · 共 ${data.rounds.length} 個紀錄點`}</p></div>${interrupted ? '' : '<span class="settle-trophy">🏆</span>'}</div>
         <div class="settle-tabs">${tabButtons}</div>
         <div class="settle-body"></div>
         <div class="settle-footer">
           ${p.net ? `<div id="confirm-ratio" class="confirm-ratio">等待全員確認…</div>` : ''}
-          <div class="settle-actions ${p.net ? '' : 'settlement-footer-center'}">${p.net ? `<button class="primary" id="confirm-result" type="button">確認結果</button>` : `<button class="primary" data-settle-close type="button">關閉</button>`}</div>
+          <div class="settle-actions ${p.net ? '' : 'settlement-footer-center'}${interrupted ? ' settlement-footer-center' : ''}">${interrupted ? `<button class="primary" id="host-left-home" type="button">返回首頁</button>` : p.net ? `<button class="primary" id="confirm-result" type="button">確認結果</button>` : `<button class="primary" data-settle-close type="button">關閉</button>`}</div>
         </div>
       </div>`;
     const body = el.querySelector('.settle-body');
@@ -2828,6 +2875,7 @@ export const PartyUI = (() => {
     renderTab(tabs[0][0]);
     el.querySelectorAll('[data-settle-tab]').forEach(b => b.onclick = () => { renderTab(b.dataset.settleTab); sound('click'); });
     el.querySelectorAll('[data-settle-close]').forEach(b => b.onclick = () => hideSettlement());
+    el.querySelector('#host-left-home')?.addEventListener('click', () => app()?.resetToHome?.());
     const confirm = el.querySelector('#confirm-result');
     if (confirm) confirm.onclick = () => {
       const res = window.PartyNet.confirmResult(window.PartyNet.myPlayerId);
@@ -2943,6 +2991,29 @@ export const PartyUI = (() => {
       lastTotemKey = String(totem.at);
       if (recentAt(totem.at)) flashTotem(totem);
     }
+    const detention = p.ext?.detentionEvent;
+    if (detention?.at) {
+      const key = `${detention.type}:${detention.playerId}:${detention.at}`;
+      if (key !== lastDetentionEventKey) {
+        lastDetentionEventKey = key;
+        const token = document.querySelector(`#board .token[data-player-id="${String(detention.playerId).replace(/"/g, '\\"')}"]`);
+        if (token && detention.type === 'escape') {
+          let lock = token.querySelector('.token-padlock');
+          if (!lock) {
+            lock = document.createElement('span');
+            lock.className = 'token-padlock';
+            lock.setAttribute('aria-label', '鎖頭拆除');
+            lock.textContent = '🔒';
+            token.appendChild(lock);
+          }
+          if (lock) { lock.classList.remove('padlock-locking'); lock.classList.add('padlock-detach'); setTimeout(() => lock.remove(), 720); }
+          sound('click');
+        } else if (token && detention.type === 'detain') {
+          token.querySelector('.token-padlock')?.classList.add('padlock-locking');
+          sound('cuff');
+        }
+      }
+    }
     const indulgence = p.ext?.indulgenceEvent;
     if (indulgence?.at && String(indulgence.at) !== lastIndulgenceKey) {
       lastIndulgenceKey = String(indulgence.at);
@@ -3002,7 +3073,7 @@ export const PartyUI = (() => {
         } else {
         // 毀滅日雷射至少完整播放，才允許開啟結算；星／首富結局動畫播放完再進結算。
         const doomDelay = Math.max(0, settlementLockUntil - Date.now());
-        const delay = Math.max(ending ? 3200 : 0, doomDelay, 900);
+        const delay = Math.max(p.resultReason === 'host-left' ? 1850 : 0, ending ? 3200 : 0, doomDelay, 900);
         setTimeout(() => { if (state()?.status !== 'playing') openSettlement(state()); }, delay);
         }
       }
@@ -3343,8 +3414,8 @@ export const PartyUI = (() => {
     init, renderSetupExtras, showLobby, hideLobby, showConnecting, hideConnecting, hideConnect, onGameStart, afterRender, isHostPlayer, setHomeInline,
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
-    openSettlement, hideSettlement, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
-    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock,
+    openSettlement, hideSettlement, showHostLeftNotice, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
+    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, resetTurnInteractions,
     playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,

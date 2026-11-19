@@ -88,6 +88,8 @@ function ensurePartyState(state){
   if(!state.turnGains||typeof state.turnGains!=='object')state.turnGains={};
   if(!Array.isArray(state.winnerIds))state.winnerIds=[];
   if(!state.status)state.status='playing';
+  state.isGameOver=Boolean(state.isGameOver||state.status==='finished');
+  if(state.isGameOver){state.status='finished';state.phase='finished'}
   if(!state.phase)state.phase=state.status==='finished'?'finished':'roll';
   if(state.status==='finished')state.phase='finished';
   if(!state.lastRoll)state.lastRoll=null;
@@ -104,6 +106,9 @@ function ensurePartyState(state){
     p.marks={red:marks.red===true,green:marks.green===true,blue:marks.blue===true,yellow:marks.yellow===true};
     p.position=Number.isInteger(p.position)?p.position:0;
     p.skipTurns=Number.isInteger(p.skipTurns)?p.skipTurns:0;
+    p.detainedTurns=Number.isInteger(p.detainedTurns)?Math.max(0,p.detainedTurns):0;
+    p.detainedTileIndex=Number.isInteger(p.detainedTileIndex)?p.detainedTileIndex:null;
+    p.wantedLevel=Number.isInteger(p.wantedLevel)?clamp(p.wantedLevel,0,3):0;
     p.rentTurns=Number.isInteger(p.rentTurns)?p.rentTurns:0;
     p.rentTo=p.rentTo||null;
     p.parentId=p.parentId||null;
@@ -132,10 +137,10 @@ export function createGame({players,seed=Date.now(),maxRounds=10,startingCash=ST
   if(!Number.isInteger(limit)||limit<2||limit>30)throw Error('季數上限須為 2–30。');
   if(!Number.isFinite(cash)||cash<0)throw Error('玩家初始總資產須為 0 以上。');
   const state={version:2,mode:'party',board:BOARD.map(t=>({...t})),net:null,round:1,maxRounds:limit,starGoal:STAR_GOAL,turnIndex:0,phase:'roll',rng:n|0||1,seed:n,
-    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
+    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
     ghostRng:ghostSeed(n),ghostPosition:0,ghostTrail:[],
     effects:{},turnGains:{},lastRoll:null,pendingDecision:null,pendingLanding:null,
-    log:[],status:'playing',resultReason:null,winnerIds:[],sync:null,ext:null,cornerSubsidyEvent:null};
+    log:[],status:'playing',isGameOver:false,resultReason:null,winnerIds:[],sync:null,ext:null,cornerSubsidyEvent:null};
   ensureGhostState(state);
   state.ghostPosition=1+Math.floor(nextGhostRandom(state)*(BOARD.length-1));
   state.log.unshift(`第 1 季｜派對開始！率先拿下 ${STAR_GOAL} 顆併購星就獲勝。`);
@@ -188,6 +193,7 @@ export function drawItem(state,player){
 export function finish(state,reason,winners){
   if(engineHooks.beforeFinish)engineHooks.beforeFinish(state,reason,winners);
   state.status='finished';
+  state.isGameOver=true;
   state.phase='finished';
   state.resultReason=reason;
   state.winnerIds=winners.map(p=>p.id);
@@ -214,13 +220,25 @@ export function moveGhost(state){
 export function startTurn(state){
   if(state.status!=='playing')return;
   const p=currentPlayer(state);
-  releaseTurnState(p);
+  // Every turn boundary is an authoritative local-lock reset.  A mobile tab
+  // can be interrupted while moving or showing an event, so clear stale
+  // flags for every player before enabling the new active turn.
+  for(const player of state.players||[])releaseTurnState(player);
   state.turnGains[p.id]=0;
   p.leverage=false;
   p.forcedSteps=null;
   state.lastRoll=null;
   state.pendingDecision=null;
   state.pendingLanding=null;
+  let detainedSkip=false;
+  if(p.detainedTurns>0){
+    p.detainedTurns=Math.max(0,p.detainedTurns-1);
+    detainedSkip=true;
+    if(p.detainedTurns===0){
+      p.detainedTileIndex=null;
+      engineHooks.detentionChanged?.(state,p,{type:'release',at:Date.now()});
+    }
+  }
   if(p.shields>0){
     log(state,`🛡️ ${p.name} 的 ${p.shields} 層護盾在回合開始時到期。`);
     p.shields=0;
@@ -241,6 +259,11 @@ export function startTurn(state){
     p.skipTurns--;
     state.phase='skipped';
     log(state,`⏸️ ${p.name} 的企業暫停行動，這回合直接跳過。`);
+    return;
+  }
+  if(detainedSkip){
+    state.phase='skipped';
+    log(state,`⏸️ ${p.name} 的查稅局拘留生效，本回合直接跳過。${p.detainedTurns>0?`（剩 ${p.detainedTurns} 回合）`:''}`);
     return;
   }
   state.phase='roll';
@@ -390,6 +413,7 @@ export function rollDie(state,forced,options={}){
   }
   const moveMeta=adjusted?.meta||null;
   player.position=path.at(-1)??from;
+  engineHooks.positionChanged?.(state,player,{from,to:player.position,forced:false,kind:'roll'});
   // 先把棋子移到終點；所有格子效果都延後到 resolveLanding()，
   // 確保 UI 播完移動動畫、棋子真正停下後才結算與彈窗。
   state.lastRoll={playerId:player.id,value,from,path,tileIndex:player.position,tileType:board[player.position]?.type,struck:false,roadblocked,passedStart:path.includes(0),effects:[],resolved:false,vector:moveMeta?.vector||null};
@@ -397,6 +421,8 @@ export function rollDie(state,forced,options={}){
     state.pendingLanding={playerId:player.id,from,value,path,leverage,noReward,forcedRed:Boolean(player.forcedRed)};
     state.pendingDecision=null;
     state.phase='moving';
+    player.isMoving=true;
+    player.isHandlingEvent=false;
     return state.lastRoll;
   }
   resolveLanding(state);
@@ -417,7 +443,10 @@ export function resolveLanding(state,options={}){
   const noReward=pending?Boolean(pending.noReward):Boolean(player.noReward);
   const forcedRed=pending?Boolean(pending.forcedRed):Boolean(player.forcedRed);
   const effects=Array.isArray(roll.effects)?roll.effects:[];
-  roll.effects=effects;
+  player.isMoving=false;
+  player.isHandlingEvent=true;
+  try{
+    roll.effects=effects;
   if(!ghostPlayer) applyCornerProgress(state,player,roll.path,{passedStart:Boolean(roll.passedStart),effects});
   // 新版規則：只有「踩在幽靈格」才觸發，路過不算。
   const struck=!ghostPlayer&&player.position===state.ghostPosition;
@@ -455,7 +484,13 @@ export function resolveLanding(state,options={}){
   }else if(state.status==='playing'&&state.phase==='moving'){
     state.phase=struck?'resolve':'resolve';
   }
-  return roll;
+    return roll;
+  }finally{
+    // Tile effects and extension hooks are allowed to throw, but serialized
+    // movement/event flags must never survive that exception.
+    player.isMoving=false;
+    player.isHandlingEvent=false;
+  }
 }
 
 export function chooseDecision(state,optionId){
@@ -491,6 +526,8 @@ export function useItem(state,itemId,targetId){
     if(!target||target.id===p.id||isGhostPlayer(target))throw Error('請選擇一位正常玩家交換位置。');
     const from=p.position,to=target.position;
     p.position=to;target.position=from;
+    engineHooks.positionChanged?.(state,p,{from,to,forced:true,kind:'swap'});
+    engineHooks.positionChanged?.(state,target,{from:to,to:from,forced:true,kind:'swap'});
     applyCornerProgress(state,p,[to]);
     applyCornerProgress(state,target,[from]);
     log(state,`🔄 ${p.name} 與 ${target.name} 交換位置。`);
@@ -711,7 +748,7 @@ export function endTurn(state){
   return null;
 }
 
-export function removePlayer(state,playerId){
+export function removePlayer(state,playerId,{deferFinish=false}={}){
   const index=state?.players?.findIndex(player=>player.id===playerId)??-1;
   if(index<0)throw Error('找不到要移除的玩家。');
   const activeId=state.players[state.turnIndex]?.id;
@@ -743,7 +780,7 @@ export function removePlayer(state,playerId){
   }else{
     state.turnIndex=0;
   }
-  if(state.status==='playing'&&state.players.length===1){
+  if(!deferFinish&&state.status==='playing'&&state.players.length===1){
     finish(state,'kicked',[state.players[0]]);
     log(state,`${removed.name} 已離開對局，剩餘玩家獲勝。`);
   }
@@ -836,10 +873,10 @@ export function exportGame(state){return JSON.stringify(state,null,2)}
 function migrateLegacy(s){
   const players=s.players.map((p,i)=>({
     id:p.id||`player-${i+1}`,name:p.name,roleId:p.roleId,position:Number.isInteger(p.position)?p.position:0,color:Number.isInteger(p.color)?p.color:i,
-    cash:Number.isFinite(s.companies?.[p.roleId]?.cash)?s.companies[p.roleId].cash:START_CASH,stars:0,energy:1,items:[],shields:0,skipTurns:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null
+    cash:Number.isFinite(s.companies?.[p.roleId]?.cash)?s.companies[p.roleId].cash:START_CASH,stars:0,energy:1,items:[],shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null
   }));
   const legacyFinished=s.status&&s.status!=='playing';
-  const state={version:2,mode:'party',round:legacyFinished?s.maxRounds||1:s.round||1,maxRounds:s.maxRounds||10,starGoal:STAR_GOAL,turnIndex:legacyFinished?0:clamp(Number(s.turnIndex)||0,0,players.length-1),phase:legacyFinished?'finished':'roll',rng:Number.isInteger(s.rng)&&s.rng!==0?s.rng:(Number(s.seed)|0)||1,seed:Number(s.seed)||Date.now(),players,ghostRng:s.ghostRng||ghostSeed(s.seed||Date.now()),ghostPosition:s.ghostPosition,ghostTrail:[],effects:{},turnGains:{},lastRoll:null,pendingDecision:null,log:Array.isArray(s.log)?s.log.slice(0,160):[],status:legacyFinished?'finished':'playing',resultReason:legacyFinished?'legacy':null,winnerIds:legacyFinished&&Array.isArray(s.winnerIds)?s.winnerIds:[],sync:s.sync||null};
+  const state={version:2,mode:'party',round:legacyFinished?s.maxRounds||1:s.round||1,maxRounds:s.maxRounds||10,starGoal:STAR_GOAL,turnIndex:legacyFinished?0:clamp(Number(s.turnIndex)||0,0,players.length-1),phase:legacyFinished?'finished':'roll',rng:Number.isInteger(s.rng)&&s.rng!==0?s.rng:(Number(s.seed)|0)||1,seed:Number(s.seed)||Date.now(),players,ghostRng:s.ghostRng||ghostSeed(s.seed||Date.now()),ghostPosition:s.ghostPosition,ghostTrail:[],effects:{},turnGains:{},lastRoll:null,pendingDecision:null,log:Array.isArray(s.log)?s.log.slice(0,160):[],status:legacyFinished?'finished':'playing',isGameOver:legacyFinished,resultReason:legacyFinished?'legacy':null,winnerIds:legacyFinished&&Array.isArray(s.winnerIds)?s.winnerIds:[],sync:s.sync||null};
   ensurePartyState(state);
   state.log.unshift('📥 已將第 1 版財務存檔轉換為派對棋盤，總資產與企業角色完整保留。');
   return state;

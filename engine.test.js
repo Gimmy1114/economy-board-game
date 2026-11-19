@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH} from './data.js';
-import {createGame,currentOf,movementPath,rollDie,chooseDecision,useItem,useSkill,buyStar,acquireTarget,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,getRandomItem} from './engine.js';
+import {createGame,currentOf,movementPath,rollDie,resolveLanding,chooseDecision,useItem,useSkill,buyStar,acquireTarget,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,getRandomItem,startTurn,engineHooks} from './engine.js';
 
 const game=(seed=42)=>createGame({players:[{name:'甲',roleId:'auto'},{name:'乙',roleId:'technology'}],seed});
 const fourPlayerGame=(seed=7)=>createGame({players:[
@@ -54,6 +54,7 @@ test('新對局初始化總資產、星數、能量、位置與幽靈',()=>{
   const s=game();
   assert.equal(s.version,2);assert.equal(s.mode,'party');assert.equal(s.round,1);assert.equal(s.maxRounds,10);
   assert.equal(s.starGoal,3);assert.equal(s.turnIndex,0);assert.equal(s.phase,'roll');assert.equal(s.status,'playing');
+  assert.equal(s.isGameOver,false);
   assert.deepEqual(s.players.map(p=>p.cash),[START_CASH,START_CASH]);
   assert.deepEqual(s.players.map(p=>p.stars),[0,0]);
   assert.deepEqual(s.players.map(p=>p.energy),[1,1]);
@@ -98,6 +99,7 @@ test('踢除只剩的對手後，由房主獲勝並結束對局',()=>{
   assert.equal(s.status,'finished');
   assert.equal(s.resultReason,'kicked');
   assert.deepEqual(s.winnerIds,['player-1']);
+  assert.equal(s.isGameOver,true);
 });
 
 test('玩家狀態初始化四角記號，移動經過角落會打卡',()=>{
@@ -154,6 +156,51 @@ test('骰子只有 1–6，固定種子可重現',()=>{
   chooseDecision(x,'squeeze');chooseDecision(y,'squeeze');
   x.phase='roll';y.phase='roll';
   assert.equal(rollDie(x).value,rollDie(y).value);
+});
+
+test('延後移動會在落地結算後釋放移動／事件鎖，技能格仍補充能量',()=>{
+  const s=game();avoidGhost(s);
+  const p=s.players[0];
+  p.position=2;p.energy=1;
+  const roll=rollDie(s,1,{defer:true});
+  assert.equal(s.phase,'moving');
+  assert.equal(p.position,3);
+  assert.equal(p.isMoving,true);
+  assert.equal(p.energy,1);
+  resolveLanding(s);
+  assert.equal(p.energy,2);
+  assert.equal(p.isMoving,false);
+  assert.equal(p.isHandlingEvent,false);
+  assert.equal(roll.resolved,true);
+  assert.ok(['decision','resolve'].includes(s.phase));
+});
+
+test('新回合會清掉所有玩家遺留的本地互動鎖',()=>{
+  const s=game();
+  s.players.forEach(p=>{p.isMoving=true;p.isHandlingEvent=true});
+  s.turnIndex=1;s.phase='resolve';
+  startTurn(s);
+  assert.ok(s.players.every(p=>p.isMoving===false&&p.isHandlingEvent===false));
+  assert.equal(s.players[s.turnIndex].isMoving,false);
+  assert.equal(s.phase,'roll');
+});
+
+test('落地格效果拋錯時仍會釋放移動與事件鎖',()=>{
+  const s=game();avoidGhost(s);
+  const p=s.players[0];
+  p.position=2;
+  s.board[3]={type:'custom',label:'測試格',icon:'🧪',stay:''};
+  const roll=rollDie(s,1,{defer:true});
+  const previous=engineHooks.resolveTile;
+  engineHooks.resolveTile=()=>{throw Error('測試格結算失敗')};
+  try{
+    assert.throws(()=>resolveLanding(s),/測試格結算失敗/);
+    assert.equal(roll.resolved,false);
+    assert.equal(p.isMoving,false);
+    assert.equal(p.isHandlingEvent,false);
+  }finally{
+    engineHooks.resolveTile=previous;
+  }
 });
 
 test('藍格發財 +300、紅格蕭條 −150、黃格能量 +1',()=>{
@@ -518,6 +565,7 @@ test('第 1 版財務存檔會遷移成派對存檔並保留總資產',()=>{
   assert.match(s.log[0],/第 1 版財務存檔/);
   const finished=importGame(JSON.stringify({...legacy,status:'finished',winnerIds:['player-2']}));
   assert.equal(finished.status,'finished');assert.equal(finished.phase,'finished');
+  assert.equal(finished.isGameOver,true);
   assert.equal(finished.resultReason,'legacy');
   assert.deepEqual(finished.winnerIds,['player-2']);
 });

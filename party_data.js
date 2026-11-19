@@ -226,7 +226,7 @@ export const TYCOON_COMEBACK_SEASONS = 3;
 export const SPECIAL_TILE_META = {
   market: { label: '黑市', icon: '🛒', color: 'purple', desc: '隱藏神話道具拍賣：起標 1,000，每次抬價 250。' },
   invest: { label: '投資', icon: '📈', color: 'orange', desc: '投入 50% 總資產換取股票憑證，季末結算暴漲或歸零。' },
-  tax: { label: '查稅局', icon: '🏛️', color: 'black', desc: '二選一：繳 50% 總資產，或強制羈押 2 回合。' },
+  tax: { label: '查稅局', icon: '🏛️', color: 'black', desc: '依通緝星級繳交 50%～100% 總資產，或接受 2～5 回合拘留。越獄會累積通緝星級。' },
   insider: { label: '內線交易', icon: '🌈', color: 'rainbow', desc: '花 100 啟動命運輪盤，用完後轉為普通格並在別處重生。' }
 };
 

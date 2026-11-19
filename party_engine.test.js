@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createGame, engineHooks, boardOf, rollDie, resolveLanding, chooseDecision, startTurn, endTurn, resumeRoundAfterDoom, addCash, useItem, cornerMarksForBoard} from './engine.js';
+import {createGame, finish, engineHooks, boardOf, rollDie, resolveLanding, chooseDecision, startTurn, endTurn, resumeRoundAfterDoom, addCash, useItem, cornerMarksForBoard} from './engine.js';
 import {
   extInitGame, extEnsureState, extAddMythic, extAddItem, extHasItemSpace, extItemCount,
   extUseMythic, extUseSkill, extCanBuyStar, extBuyStar, extSkipStarOffer, extApplyWheel,
@@ -8,8 +8,8 @@ import {
   extDomainTiles, extDebugEndTurn, extForceEndTurn, extDebugGive, extAuctionFinish, extAuctionId, extPrepareWheel, extResolveWheel,
   extResolveVectorPending, extInsiderPay, extAuctionAction, extAngryRetreatPath, extInvest, extIsDoomApproaching,
   extTargets, extIsGhost, extAllowsPostRollItems,
-  extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice,
-  extUsePortal, extResolvePortal, extAddSpecial
+  extEnsureStartSubsidy, extPlayerStatusMetric, extTycoonComeback, extPrepareFateDice, extUseFateDice, extStatusChips,
+  extUsePortal, extResolvePortal, extAddSpecial, extTaxTerms, extTaxPay, extTaxDetain, extMovePlayer
 } from './party_engine.js';
 import {DOOM_EVERY, DOOM_START, DOOM_STEP, TYCOON_TARGET, MYTHIC_BY_ID, QUICK_DECISION_FALLBACK, WHEEL_EFFECTS, SPECIAL_ITEMS, FATE_DICE_ID} from './party_data.js';
 
@@ -76,6 +76,66 @@ const make = (mode = 'star', seed = 42, extra = {}) => {
   return state;
 };
 const avoidGhost = state => { state.ghostPosition = 20; state.ghostTrail = []; };
+
+test('查稅局依通緝星級計算罰款、能量與動態拘留回合', () => {
+  const state = make('star');
+  const player = state.players[0];
+  for (const [wanted, amount, energy, turns] of [[0, 1000, 0, 2], [1, 1000, 1, 3], [2, 1000, 2, 4], [3, 2000, 0, 5]]) {
+    player.cash = 2000; player.energy = 3; player.wantedLevel = wanted;
+    const terms = extTaxTerms(state, player);
+    assert.deepEqual({ amount: terms.amount, energy: terms.energy, detentionTurns: terms.detentionTurns }, { amount, energy, detentionTurns: turns });
+  }
+});
+
+test('查稅局拘留固定所在格，強制位移會越獄並累積通緝星級', () => {
+  const state = make('star');
+  const player = state.players[0];
+  player.position = 4;
+  state.ext.taxChoice = { playerId: player.id, tileIndex: 4 };
+  extTaxDetain(state);
+  extMovePlayer(state, player, 7, { forced: true, kind: 'portal' });
+  assert.equal(player.detainedTurns, 0);
+  assert.equal(player.detainedTileIndex, null);
+  assert.equal(player.wantedLevel, 1);
+  assert.equal(state.ext.detentionEvent.type, 'escape');
+});
+
+test('查稅局拘留回合倒數歸零時解除鎖定但不增加通緝', () => {
+  const state = make('star');
+  const player = state.players[0];
+  player.position = 4; player.detainedTurns = 2; player.detainedTileIndex = 4;
+  state.turnIndex = 0;
+  startTurn(state);
+  assert.equal(state.phase, 'skipped');
+  assert.equal(player.detainedTurns, 1);
+  startTurn(state);
+  assert.equal(state.phase, 'skipped');
+  assert.equal(player.detainedTurns, 0);
+  assert.equal(player.detainedTileIndex, null);
+  assert.equal(player.wantedLevel, 0);
+  assert.equal(state.ext.detentionEvent.type, 'release');
+});
+
+test('通緝三星繳稅會清空總資產，能量不足時不能繳稅', () => {
+  const state = make('star');
+  const player = state.players[0];
+  player.wantedLevel = 3; player.cash = 1800;
+  state.ext.taxChoice = { playerId: player.id, tileIndex: 4 };
+  extTaxPay(state);
+  assert.equal(player.cash, 0);
+  player.wantedLevel = 2; player.cash = 1800; player.energy = 1;
+  state.ext.taxChoice = { playerId: player.id, tileIndex: 4 };
+  assert.throws(() => extTaxPay(state), /條件不足/);
+});
+
+test('通緝星級與拘留狀態會出現在玩家狀態徽章', () => {
+  const state = make('star');
+  const player = state.players[0];
+  player.wantedLevel = 2; player.detainedTurns = 4;
+  const labels = extStatusChips(state, player).map(chip => chip.label);
+  assert.ok(labels.includes('通緝★★'));
+  assert.ok(labels.some(label => label.includes('查稅局拘留') && label.includes('4')));
+});
 const resolveAllDoom = state => {
   while (state.ext.doomPending?.index < state.ext.doomPending?.entries.length) {
     const targetId = state.ext.doomPending.entries[state.ext.doomPending.index].playerId;
@@ -843,6 +903,22 @@ test('所有模式只剩一位存活者時立即宣布該玩家獲勝；全員�
   assert.deepEqual(empty.winnerIds, []);
 });
 
+test('中途退出結算標題清楚區分房主獲勝與房主退出的無人獲勝', () => {
+  const hostWon = make('star');
+  finish(hostWon, 'all-left', [hostWon.players[0]]);
+  assert.equal(hostWon.isGameOver, true);
+  assert.equal(hostWon.ext.finishTitle, '房主獲勝');
+  assert.deepEqual(extSettlementData(hostWon).winners.map(player => player.id), ['player-1']);
+
+  const hostLeft = make('star');
+  finish(hostLeft, 'host-left', []);
+  assert.equal(hostLeft.isGameOver, true);
+  assert.equal(hostLeft.ext.finishTitle, '無人獲勝（房主已退出遊戲）');
+  const data = extSettlementData(hostLeft);
+  assert.equal(data.reason, 'host-left');
+  assert.deepEqual(data.winners, []);
+});
+
 test('罷工幽靈可擲骰移動但不能使用技能，與存活玩家同格會強制觸發罷工', () => {
   const state = createGame({
     players: [{name: '甲', roleId: 'auto'}, {name: '乙', roleId: 'technology'}, {name: '丙', roleId: 'retail'}],
@@ -1377,7 +1453,10 @@ test('最終結算遮罩高於幽靈，移除右上角 X 並置中底部操作�
   const baseCss = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
   const settlementMarkup = ui.slice(ui.indexOf('function openSettlement'), ui.indexOf('function updateConfirm'));
   assert.doesNotMatch(settlementMarkup, /class="ext-modal-close"[^>]*data-settle-close/);
-  assert.match(settlementMarkup, /class="settle-actions \$\{p\.net \? '' : 'settlement-footer-center'\}"/);
+  assert.match(settlementMarkup, /class="settle-actions \$\{p\.net \? '' : 'settlement-footer-center'\}\$\{interrupted \? ' settlement-footer-center' : ''\}"/);
+  assert.match(settlementMarkup, /id="host-left-home"[^>]*>返回首頁/);
+  assert.match(ui, /遊戲中斷，房主已退出遊戲/);
+  assert.match(css, /\.host-left-notice\s*\{[^}]*z-index:\s*10000000/);
   assert.match(css, /\.settlement-overlay\s*\{\s*z-index:\s*90/);
   assert.match(baseCss, /\.settlement-footer-center\{[^}]*justify-content:center!important/);
   assert.match(baseCss, /\.settlement-footer-center button\{[^}]*margin-left:0!important[^}]*float:none!important/);
@@ -1391,7 +1470,8 @@ test('邪惡企業勝利過場無按鈕、播放通用音效並在三秒後自�
   const css = readFileSync(new URL('./party-ext.css', import.meta.url), 'utf8');
   const center = app.slice(app.indexOf('function centerMarkup()'), app.indexOf('function renderTurnContent'));
   const transition = ui.slice(ui.indexOf('async function playEvilSurvivorTransition'), ui.indexOf('function flashFinalSeason'));
-  assert.match(center, /class="result-scene"><span class="result-crown">🏆<\/span>/);
+  assert.match(center, /const interrupted=state\.resultReason==='host-left'/);
+  assert.match(center, /\$\{interrupted\?'':'<span class="result-crown">🏆<\/span>'\}/);
   assert.match(center, /\$\{h\(winners\[0\]\.name\)\} 生還/);
   assert.doesNotMatch(center, /evil-survivor-scene|成為【最後生還者】|💀/);
   assert.match(transition, /await new Promise\(resolve =>/);

@@ -86,6 +86,8 @@ export const PartyNet = (() => {
       this.onStatus = null;
       this.onError = null;
       this.onHostLost = null;
+      this.onHostLeft = null;
+      this.onPlayerGone = null;
       this.onAutoKick = null;
       this.onKicked = null;
       this.onJoinFailed = null;
@@ -229,8 +231,15 @@ export const PartyNet = (() => {
     }
 
     leave(notify = true) {
-      // 先告訴對方：客機離開大廳，或房主關閉房間（直接斷線時對方可能很久才發現）。
-      if (this.active) this.sendData({ t: this.host ? 'closed' : 'leave' }, this.host ? 'all' : this.hostId);
+      // 先告訴對方：客機離開大廳；進行中的房主離開則使用專用封包，
+      // 讓客機直接進入「無人獲勝」結算，而不是誤當成暫時斷線。
+      if (this.active) {
+        const game = this.getGameState?.();
+        const hostMessage = this.host && this.lobby?.status === 'playing' && game?.status === 'playing'
+          ? 'HOST_LEFT' : 'closed';
+        const messageType = this.host ? hostMessage : 'leave';
+        this.sendData({ t: messageType, type: messageType }, this.host ? 'all' : this.hostId);
+      }
       this.active = false;
       clearInterval(this._beat);
       this._beat = null;
@@ -715,6 +724,9 @@ export const PartyNet = (() => {
       }
       this.broadcastLobby();
       this.recheckConfirms();
+      if (this.lobby.status === 'playing') {
+        try { this.onPlayerGone?.(peerId, { reason: 'disconnected', player }); } catch (error) { console.error(error); }
+      }
     }
 
     dropPlayer(peerId, closeDelay = 0) {
@@ -736,12 +748,10 @@ export const PartyNet = (() => {
     // 客機：和房主的連線沒了。開始前回到加入畫面（帶著代碼）；對局中只提示。
     hostGone(reason = '') {
       if (this.lobby?.status === 'playing') {
-        this.error(reason || '和房主的連線中斷，正在嘗試重新連線…');
-        if (this._peer?.disconnected) {
-          try { this._peer.reconnect(); }
-          catch (error) { this.error(error?.message || 'PeerJS 訊號連線恢復失敗。'); }
-        }
-        this.scheduleHostReconnect();
+        // 對局進行中房主是唯一權威；房主離線後客機不能繼續使用舊狀態
+        // 或等待重連，立即交給 UI 顯示中斷結算。
+        try { this.onHostLeft?.(reason || '房主已退出遊戲。'); } catch (error) { console.error(error); }
+        this.leave(false);
         return;
       }
       const code = this.code, name = this.name;
@@ -986,6 +996,14 @@ export const PartyNet = (() => {
       return true;
     }
 
+    // 客機在本地動畫／事件 watchdog 解除鎖定後，要求房主重送目前的
+    // 權威快照。這只讀取房主狀態，不讓客機自行修改遊戲。
+    requestSync() {
+      if (!this.active || this.host || !this.hostId) return false;
+      this.sendData({ t: 'REQUEST_SYNC' }, this.hostId);
+      return true;
+    }
+
     broadcastState(game) {
       if (!this.active || !this.host || !game) return;
       this.broadcastData({ t: 'state', game });
@@ -1007,6 +1025,9 @@ export const PartyNet = (() => {
       this.dropPlayer(peerId, 500);
       this.playerIds.delete(peerId);
       this.broadcastLobby();
+      if (this.lobby?.status === 'playing') {
+        try { this.onPlayerGone?.(peerId, { reason: 'kicked', text, player }); } catch (error) { console.error(error); }
+      }
       return true;
     }
 
@@ -1107,8 +1128,13 @@ export const PartyNet = (() => {
         if (!this.host && fromPeer === this.hostId) {
           const owners = msg.game.net?.owners;
           if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).map(([id, peer]) => [peer, id]));
-          this.onState?.(msg.game, fromPeer);
+          this.onState?.(msg.game, fromPeer, msg.forceSync === true);
         }
+        return;
+      }
+      if (msg.t === 'REQUEST_SYNC' && this.host) {
+        const game = this.getGameState?.();
+        if (game) this.sendData({ t: 'state', game, forceSync: true }, fromPeer);
         return;
       }
       if (msg.t === 'action' && this.host) {
@@ -1155,10 +1181,17 @@ export const PartyNet = (() => {
         return;
       }
       if (msg.t === 'leave' && this.host) { this.playerGone(fromPeer); return; }
-      if (msg.t === 'closed' && !this.host && fromPeer === this.hostId) {
-        const playing = this.lobby?.status === 'playing';
-        this.leave();
-        this.error(playing ? '房主已關閉房間，對局結束。' : '房主已關閉房間。');
+      const roomCloseType = msg.t || msg.type;
+      if ((roomCloseType === 'HOST_LEFT' || roomCloseType === 'closed') && !this.host && fromPeer === this.hostId) {
+        const game = this.getGameState?.();
+        const playing = this.lobby?.status === 'playing' && game?.status === 'playing' && !game?.isGameOver;
+        if (roomCloseType === 'HOST_LEFT' || playing) {
+          try { this.onHostLeft?.('房主已退出遊戲。'); } catch (error) { console.error(error); }
+          this.leave(false);
+        } else {
+          this.leave();
+          this.error('房主已關閉房間。');
+        }
         return;
       }
       if (msg.t === 'refused' && !this.host && fromPeer === this.hostId) { this.leave(); this.error(msg.text || '無法加入房間。'); return; }

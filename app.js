@@ -1,15 +1,15 @@
 import {ITEMS,BOARD,SECTORS,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST} from './data.js';
 import {PARTY_ROLES,GAME_MODES,MODE_IDS,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,QUICK_DECISIONS,SPECIAL_TILE_META,SPECIAL_ITEM_BY_ID,RANDOM_ROLE_ID,WHEEL_EFFECTS,PLAYER_COLORS} from './party_data.js';
-import {createGame,rollDie,resolveLanding,chooseDecision,useItem,acquireTarget,acquisitionCost,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,boardOf,startTurn,cornerMarksForBoard,tileNo,resumeRoundAfterDoom} from './engine.js';
+import {createGame,finish,rollDie,resolveLanding,chooseDecision,useItem,acquireTarget,acquisitionCost,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,boardOf,startTurn,cornerMarksForBoard,tileNo,resumeRoundAfterDoom} from './engine.js';
 import {
   extInitGame,extResolveRoles,extUseSkill,extBuyStar,extCanBuyStar,extForcedStarInfo,extForcedBuyStar,extPlayerStatusMetric,
   extUseMythic,extDiscard,extAddMythic,extAddItem,extModeInfo,extRoleOf,extStatusChips,extStarPrice,
   extSettlementData,extDebugGive,extDebugTeleport,extDebugGhostTo,extDebugRollAgain,extDebugEndTurn,extCheckWin,
   extSkipStarOffer,extResolveReplace,
-  extInsiderPay,extAuctionAction,extAuctionCurrent,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,
+  extInsiderPay,extAuctionAction,extAuctionCurrent,extAuctionFinish,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extSpinWheel,extTriggerDoom,extResolveDoomPlayer,extFinishDoom,extRefreshInflation,extRecordRound,extEnsureState,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extUseFateDice,extForceEndTurn,extMovementTarget,extAuctionId,
-  extUsePortal,extResolvePortal
+  extUsePortal,extResolvePortal,extMovePlayer
 } from './party_engine.js';
 import {syncInfo,isNewerGame} from './sync.js';
 import {PartyNet} from './net.js';
@@ -19,10 +19,10 @@ import {SoundManager} from './audio_system.js';
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
 globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
 globalThis.__partyEngine={
-  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,
+  extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
   extPrepareWheel,extResolveWheel,extClearEventPrompt,extResolveVectorPending,extResolveDoomPlayer,extFinishDoom,resumeRoundAfterDoom,extForceEndTurn,
-  extUsePortal,extResolvePortal
+  extUsePortal,extResolvePortal,extMovePlayer
 };
 globalThis.PartyNet=PartyNet;
 globalThis.SoundManager=SoundManager;
@@ -66,7 +66,56 @@ let isAuctionActive=false,isWaitingForRemote=false;
 // 先暫存最後一份，避免整份 state 取代本地動畫而把棋子拉回起點。
 let deferredRoomState=null;
 let flushingDeferredRoomState=false;
+let suppressRoomPublish=false;
 const MOVE_MS=520;
+const TURN_WATCHDOG_MS=5000;
+let localTurnLocks={isRolling:false,isMoving:false,isHandlingEvent:false,hasRolled:false,isUsingItem:false,pendingAction:null};
+let turnWatchdogTimer=null;
+let turnWatchdogToken=0;
+
+function clearTurnWatchdog(){
+  clearTimeout(turnWatchdogTimer);
+  turnWatchdogTimer=null;
+  turnWatchdogToken++;
+}
+function armTurnWatchdog(onTimeout){
+  clearTurnWatchdog();
+  const token=turnWatchdogToken;
+  turnWatchdogTimer=setTimeout(()=>{
+    if(token!==turnWatchdogToken)return;
+    turnWatchdogTimer=null;
+    try{onTimeout?.()}catch(error){console.error('回合鎖定 watchdog 失敗',error)}
+    finally{
+      localTurnLocks.isRolling=false;
+      localTurnLocks.isMoving=false;
+      localTurnLocks.isHandlingEvent=false;
+      localTurnLocks.isUsingItem=false;
+      localTurnLocks.pendingAction=null;
+      try{PartyUI.resetTurnInteractions?.()}catch(error){console.warn('回合互動重置失敗',error)}
+      try{render()}catch(error){console.warn('watchdog 重繪失敗',error)}
+      if(PartyNet.isClient)PartyNet.requestSync?.();
+    }
+  },TURN_WATCHDOG_MS);
+  turnWatchdogTimer?.unref?.();
+}
+function resetLocalTurnLocks({renderNow=false}={}){
+  clearTurnWatchdog();
+  localTurnLocks={isRolling:false,isMoving:false,isHandlingEvent:false,hasRolled:false,isUsingItem:false,pendingAction:null};
+  if(animation)cancelAnimation({resumeTimer:false});
+  deferredRoomState=null;
+  const localId=PartyNet.myPlayerId;
+  for(const player of state?.players||[]){
+    if(!state?.net||PartyNet.isHost||player.id===localId){
+      player.isMoving=false;
+      player.isHandlingEvent=false;
+    }
+  }
+  try{PartyUI.resetTurnInteractions?.()}catch(error){console.warn('回合互動重置失敗',error)}
+  if(renderNow)try{render()}catch(error){console.warn('回合鎖定重繪失敗',error)}
+}
+function localActionLocked(){
+  return Boolean(localTurnLocks.isRolling||localTurnLocks.isMoving||localTurnLocks.isHandlingEvent||localTurnLocks.isUsingItem);
+}
 try{const view=JSON.parse(sessionStorage.getItem(viewKey));if(['board','rules'].includes(view?.tab))tab=view.tab}catch{}
 function rememberView(){try{sessionStorage.setItem(viewKey,JSON.stringify({tab}))}catch{}}
 
@@ -310,6 +359,7 @@ function expireTurn(key){
     const auctionBefore=state.ext?.auction;
     extForceEndTurn(state,'行動時間結束');
     turnClock.expiring=false;
+    resetLocalTurnLocks();
     syncTurnClock();
     save();
     render();
@@ -369,6 +419,31 @@ function syncTurnClock(){
   turnClock.interval=setInterval(()=>tickTurnClock(),1000);
   turnClock.interval?.unref?.();
 }
+function finishRoomByExit(reason,winners,title){
+  if(!state||state.status!=='playing'||state.isGameOver)return false;
+  cancelAnimation({resumeTimer:false});
+  clearTurnClock();
+  resetLocalTurnLocks();
+  mapPick=null;
+  document.body.classList.remove('map-pick-mode');
+  closeModal();
+  PartyUI.closeExtModal?.();
+  PartyUI.resetTurnInteractions?.();
+  finish(state,reason,winners);
+  if(title&&state.ext)state.ext.finishTitle=title;
+  save();
+  render();
+  return true;
+}
+function checkRoomPlayersAfterExit(){
+  if(!PartyNet.isHost||!state||state.status!=='playing'||state.isGameOver)return false;
+  const online=PartyNet.lobby?.players?.filter(player=>player.host||player.connected!==false)||[];
+  if(online.length!==1||!online[0]?.host)return false;
+  const hostId=Object.entries(state.net?.owners||{}).find(([,peerId])=>peerId===PartyNet.peerId)?.[0]||PartyNet.myPlayerId;
+  const host=state.players.find(player=>player.id===hostId);
+  if(!host)return false;
+  return finishRoomByExit('all-left',[host],'房主獲勝');
+}
 function kickPlayerFromGame(peerId,reason='房主已將你移出對局。'){
   if(!PartyNet.isHost||!state?.net)return false;
   if(!PartyNet.lobby?.players.some(entry=>entry.peerId===peerId&&!entry.host))return false;
@@ -380,10 +455,12 @@ function kickPlayerFromGame(peerId,reason='房主已將你移出對局。'){
     else notify('骰子或棋子動畫結束後才能踢除玩家。');
     return false;
   }
+  const turnBefore=state.turnIndex;
   if(playerId===activePlayer()?.id&&state.status==='playing')extForceEndTurn(state,'玩家已被房主移除');
+  if(state.turnIndex!==turnBefore)resetLocalTurnLocks();
   delete state.net.owners[playerId];
   if(state.net.peerNames)delete state.net.peerNames[peerId];
-  removePlayer(state,playerId);
+  removePlayer(state,playerId,{deferFinish:true});
   PartyNet.kickPlayer(peerId,reason);
   PartyNet.broadcastEvent({type:'PLAYER_KICKED',playerId,name:player.name});
   syncTurnClock();
@@ -449,6 +526,12 @@ function cancelAnimation({resumeTimer=true}={}){
   cleanupMovingToken();
   animation=null;
   if(!flushingDeferredRoomState)deferredRoomState=null;
+  localTurnLocks.isRolling=false;
+  localTurnLocks.isMoving=false;
+  localTurnLocks.isHandlingEvent=false;
+  localTurnLocks.isUsingItem=false;
+  localTurnLocks.pendingAction=null;
+  clearTurnWatchdog();
   if(resumeTimer)resumeTurnClock();
 }
 
@@ -580,6 +663,7 @@ function flushDeferredRoomState(){
   const deferred=deferredRoomState;
   deferredRoomState=null;
   if(!deferred||animation)return;
+  if(state&&deferred.game&&!isNewerGame(deferred.game,state))return;
   // 丟掉同一個移動快照的重送；動畫已經完整走完，等待 resolve/decision 快照即可。
   if(deferred.game?.phase==='moving'&&sameMovement(deferred.game.lastRoll,state?.lastRoll))return;
   flushingDeferredRoomState=true;
@@ -594,12 +678,18 @@ function save(){
   state.sync.updatedAt=Math.max(Date.now(),state.sync.updatedAt+1);
   state.sync.writerId=tabId;
   if(PartyNet.active&&state.net){
-    $('#save-status').textContent='房間狀態同步中';
+    if(!suppressRoomPublish)$('#save-status').textContent='房間狀態同步中';
   }else{
     try{localStorage.setItem(storageKey,exportGame(state));$('#save-status').textContent='多頁籤已同步'}catch{$('#save-status').textContent=channel?'即時同步中；請匯出備份':'本機儲存不可用，請匯出備份'}
     try{channel?.postMessage({type:'state',writerId:tabId,game:state})}catch{}
   }
-  try{PartyNet.publish(state)}catch(e){console.warn('room publish failed',e)}
+  // During the short animation-to-landing handoff the host keeps the local
+  // revision monotonic, but must not publish that intermediate snapshot.  A
+  // queued WebRTC packet for it could otherwise arrive after the resolved
+  // snapshot and pull a guest's token back to the old position.
+  if(!suppressRoomPublish){
+    try{PartyNet.publish(state)}catch(e){console.warn('room publish failed',e)}
+  }
 }
 // UI rendering is optional; the landed position and turn state are authoritative.
 // If a mobile browser cannot mount a special-cell modal, clear only that pending
@@ -702,8 +792,13 @@ async function run(fn,options={}){
   try{await withGameLock(()=>{
     if(!ensureFresh())return;
     before=cashSnapshot();
+    const turnBefore=state?.turnIndex;
     const auctionBefore=state?.ext?.auction;
     fn();
+    // endTurn and timer-forced actions can advance the authoritative turn
+    // without passing through the animation finalizer.  Clear every local
+    // interaction latch before the new snapshot is rendered or published.
+    if(state?.turnIndex!==turnBefore)resetLocalTurnLocks();
     observeSpecialUnlock(state);
     if(options.clearTurnInteractions)PartyUI.clearTurnInteractions?.();
     save();
@@ -781,7 +876,7 @@ function getRulesHTML(){return `<div class="rules-grid">
   <article class="rule-block wide special-rules-block"><span class="rule-icon">🎲</span><h3>特殊道具</h3><div class="rules-items" data-rules-items="special"></div></article>
   <article class="rule-block wide"><span class="rule-icon">⭐</span><h3>勝利條件</h3><ul><li><b>企業之星</b>：起步後每次經過或停留在起點格，都能購買星星；每賣出 1 顆星星，起點星價就上漲。任意玩家獲得 3 顆星會在當季結算，星數最高者獲勝。</li><li><b>首富競爭</b>：總資產率先達到 8,000 獲勝；季數過半通膨 ×2，倒數兩季 ×4。</li><li><b>邪惡企業</b>：每 5 季毀滅日收保護費，付不出來化為藍色罷工幽靈，最後存活者獲勝；保護費每次收取後都會漲價。</li><li>企業之星／首富競爭第一名平手時觸發驟死賽：憤怒幽靈移動 ×1.5、扣錢 ×2。</li></ul></article>
   <article class="rule-block wide"><span class="rule-icon">🎮</span><h3>模式與連線大廳</h3><ul><li>建立對局可選企業之星、首富競爭、邪惡企業或隨機模式；隨機模式開局從三種模式中抽一種，並套用固定預設數值。</li><li>多人房間以 5 碼房間代碼建立（也可以掃大廳的 QR Code 加入）；大廳可選 10 家企業或「未定新創集團 🎲」，後者開局隨機分配企業。</li><li>支援 2–8 人；WebRTC DataChannel 為主，同瀏覽器與 HTTP 伺服器另有備援通道。</li><li>結算後每位玩家按「確認結果」，畫面顯示等待確認比例（例如 2/8）；全員確認後統一回到同一個大廳。</li></ul></article>
-  <article class="rule-block wide"><span class="rule-icon">🗺️</span><h3>動態地圖與特殊格</h3><ul><li>每局隨機生成 24 格；黑市 ×3、投資 ×2、查稅局 ×1、內線交易 ×1，所有特殊格絕對不相鄰。</li><li><b>黑市</b>：神話道具起標 1,000，每次抬價 250，輪流詢問到最後一人得標。</li><li><b>投資</b>：投入 50% 總資產換股票憑證；季末大牛市 3 倍（10%）、平穩期 1.5 倍（40%）、龐氏騙局歸零（50%）。</li><li><b>查稅局</b>：繳 50% 總資產，或接受 2 回合羈押；贖罪券可全額抵銷稅金。</li><li><b>內線交易</b>：花 100 轉命運輪盤，用完變回普通格並在別的普通格重生。</li></ul></article>
+  <article class="rule-block wide"><span class="rule-icon">🗺️</span><h3>動態地圖與特殊格</h3><ul><li>每局隨機生成 24 格；黑市 ×3、投資 ×2、查稅局 ×1、內線交易 ×1，所有特殊格絕對不相鄰。</li><li><b>黑市</b>：神話道具起標 1,000，每次抬價 250，輪流詢問到最後一人得標。</li><li><b>投資</b>：投入 50% 總資產換股票憑證；季末大牛市 3 倍（10%）、平穩期 1.5 倍（40%）、龐氏騙局歸零（50%）。</li><li><b>查稅局</b>：依通緝星級繳 50%～100% 總資產，或接受 2～5 回合拘留；拘留期間遭強制位移會越獄並累積通緝星級。</li><li><b>內線交易</b>：花 100 轉命運輪盤，用完變回普通格並在別的普通格重生。</li></ul></article>
   <article class="rule-block wide"><span class="rule-icon">🗿</span><h3>八款神話道具</h3><p>黑市限定，部分道具受模式限制；被動道具會自動觸發。</p><div class="rules-items" data-rules-items="mythics"></div></article>
   <article class="rule-block wide"><span class="rule-icon">🤔</span><h3>六種隨機快速決策</h3><p>每次停在普通格後抽一則二選一情境，立刻生效；總資產不足的選項會自動鎖定。</p><div class="rules-items" data-rules-items="decisions"></div></article>
   <article class="rule-block wide"><span class="rule-icon">⚡</span><h3>十大企業專屬技能</h3><p>技能限自己回合、擲骰前發動，每次消耗 1 點能量。被護盾擋下時效果歸零。</p><div class="rules-skills" data-rules-items="skills"></div></article>
@@ -864,13 +959,16 @@ function centerMarkup(){
       stars:`率先拿下 ${state.starGoal||STAR_GOAL} 顆星`,
       rounds:'季數上限，依模式規則排名',
       target:`率先達到 ${money(state.ext?.targetAssets??state.ext?.target??0)} 總資產`,
-      survivor:'成為最後一位存活者'
+      survivor:'成為最後一位存活者',
+      'host-left':'房主已退出遊戲，沒有玩家獲勝',
+      'all-left':'所有對手皆已離開，房主獲得勝利'
     };
     const cause=causes[state.resultReason]||'對局結束';
     const title=state.ext?.mode==='evil'?GAME_MODES.evil.name:(state.ext?.finishTitle||'派對結束');
     const evilSurvivor=state.ext?.mode==='evil'&&state.resultReason==='survivor'&&winners.length===1;
-    const winnerHeading=evilSurvivor?`${h(winners[0].name)} 生還`:`${h(winners.map(p=>p.name).join('、')||'無人')} 獲勝`;
-    return `<div class="result-scene"><span class="result-crown">🏆</span><p class="card-hint">${h(title)} · 第 ${state.round} 季</p><h3>${winnerHeading}</h3><p>${h(cause)}</p><div class="result-stars">${winners.map(p=>`<span style="--winner-color:${colors[p.color]}">${role(p.roleId).icon} ${h(p.name)} · ${p.stars}★ · ${money(p.cash)}</span>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button></div>`;
+    const interrupted=state.resultReason==='host-left';
+    const winnerHeading=interrupted?'無人獲勝（房主已退出遊戲）':evilSurvivor?`${h(winners[0].name)} 生還`:`${h(winners.map(p=>p.name).join('、')||'無人')} 獲勝`;
+    return `<div class="result-scene">${interrupted?'':'<span class="result-crown">🏆</span>'}<p class="card-hint">${h(title)} · 第 ${state.round} 季</p><h3>${winnerHeading}</h3><p>${h(cause)}</p><div class="result-stars">${winners.map(p=>`<span style="--winner-color:${colors[p.color]}">${role(p.roleId).icon} ${h(p.name)} · ${p.stars}★ · ${money(p.cash)}</span>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button></div>`;
   }
   const p=activePlayer();
   if(animation?.stage==='rolling')return `<div class="dice-center center-foreground"><p class="card-hint">骰子翻滾中 · 第 ${state.round} 季</p>${diceMarkup(animation.value,{rolling:true})}<h3>${h(p.name)}</h3><p>骰子停定後，棋子會逐格前進。</p><small>點數 1–6 · 只有踩在幽靈格才會觸發罷工</small></div>`;
@@ -931,12 +1029,14 @@ function renderBoard(){
   const portalPending=Boolean(state.ext?.portalPending);
   const movingId=animation?.playerId||((state.phase==='moving'&&!portalPending&&state.lastRoll?.playerId)?state.lastRoll.playerId:null);
   const movingFrom=state.phase==='moving'&&!portalPending&&Number.isInteger(state.lastRoll?.from)?state.lastRoll.from:null;
+  const detentionEvent=state.ext?.detentionEvent;
+  const detentionEventLive=detentionEvent?.at&&Date.now()-Number(detentionEvent.at)<1200;
   const pos=state.players.map(p=>({p,index:animation?.playerId===p.id?animation.position:(p.id===movingId&&movingFrom!==null?movingFrom:p.position)}));
   const tiles=boardData.map((tile,i)=>{
     const [row,col]=boardCoords(i,boardData.length);
     const occupants=pos.filter(x=>x.index===i);
     const inDomain=domainTiles.has(i);
-    const tokens=occupants.map(x=>`<span class="token ${animation?.playerId===x.p.id&&animation.stage==='moving'?'moving':''} ${animation?.playerId===x.p.id&&animation.direction==='backward'?'moving-backward-border':''} ${x.p.ext?.eliminated?'ghost-player':''}" data-player-id="${h(x.p.id)}" title="${h(x.p.name)}${x.p.ext?.eliminated?'（罷工團幽靈）':''}" style="background:${x.p.ext?.eliminated?'#5f8ec4':colorMeta(x.p.color).hex};color:${x.p.ext?.eliminated?'#ffffff':colorMeta(x.p.color).ink}">${x.p.ext?.eliminated?'👻':h(x.p.name.slice(0,1))}</span>`).join('');
+    const tokens=occupants.map(x=>{const eventForPlayer=detentionEventLive&&detentionEvent.playerId===x.p.id;const unlocked=eventForPlayer&&['escape','release'].includes(detentionEvent.type)&&x.p.detainedTurns<=0;const locking=eventForPlayer&&detentionEvent.type==='detain';const lock=x.p.detainedTurns>0?`<span class="token-padlock ${locking?'padlock-locking':''}" aria-label="查稅局拘留中">🔒</span>`:unlocked?'<span class="token-padlock padlock-detach" aria-label="鎖頭拆除">🔒</span>':'';return `<span class="token ${animation?.playerId===x.p.id&&animation.stage==='moving'?'moving':''} ${animation?.playerId===x.p.id&&animation.direction==='backward'?'moving-backward-border':''} ${x.p.ext?.eliminated?'ghost-player':''}" data-player-id="${h(x.p.id)}" title="${h(x.p.name)}${x.p.ext?.eliminated?'（罷工團幽靈）':''}" style="background:${x.p.ext?.eliminated?'#5f8ec4':colorMeta(x.p.color).hex};color:${x.p.ext?.eliminated?'#ffffff':colorMeta(x.p.color).ink}">${x.p.ext?.eliminated?'👻':h(x.p.name.slice(0,1))}${lock}</span>`}).join('');
     const ghostHere=state.ghostPosition===i;
     const cornerColor=cornerMarks[i];
     const cornerBadge=cornerColor?`<span class="corner-tile-mark ${cornerColor}" title="${CORNER_MARK_LABELS[cornerColor]}角落記號" aria-label="${CORNER_MARK_LABELS[cornerColor]}角落記號"><i></i><b>${cornerColor==='red'?'紅':cornerColor==='green'?'綠':cornerColor==='blue'?'藍':'黃'}</b></span>`:'';
@@ -1015,19 +1115,22 @@ function renderTurn(){
   if(state.status!=='playing'){
     const winnerPlayers=state.players.filter(x=>state.winnerIds.includes(x.id));
     const winners=winnerPlayers.map(x=>x.name).join('、');
-    const reason={stars:`率先拿下 ${state.starGoal||3} 顆星`,rounds:'到達季數上限',target:'率先達到總資產目標',survivor:'成為唯一倖存者'}[state.resultReason]||'對局結束';
+    const reason={stars:`率先拿下 ${state.starGoal||3} 顆星`,rounds:'到達季數上限',target:'率先達到總資產目標',survivor:'成為唯一倖存者','host-left':'房主已退出遊戲，沒有玩家獲勝','all-left':'所有對手皆已離開，房主獲得勝利'}[state.resultReason]||'對局結束';
     const finishHeading=state.ext?.mode==='evil'&&state.resultReason==='survivor'&&winnerPlayers.length===1?winnerPlayers[0].name:(state.ext?.finishTitle||'派對結束');
-    $('#turn-content').innerHTML=`<h2 class="turn-name">${h(finishHeading)}</h2><p class="turn-role">${h(reason)}</p><p class="turn-meta">勝出：<strong>${h(winners||'無')}</strong></p><div class="final-rank">${[...state.players].sort((a,b)=>b.stars-a.stars||b.cash-a.cash).map((x,i)=>`<div><span>${i+1}</span><strong>${h(x.name)}${PartyUI.isHostPlayer?.(x.id,state)?'<span class="host-crown" aria-label="房主">👑</span>':''}</strong><em>${x.stars}★ · ${money(x.cash)}</em></div>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button>`;
+    const hostCrown=state.resultReason==='host-left'?'':PartyUI.isHostPlayer;
+    $('#turn-content').innerHTML=`<h2 class="turn-name">${h(finishHeading)}</h2><p class="turn-role">${h(reason)}</p><p class="turn-meta">勝出：<strong>${h(winners||'無')}</strong></p><div class="final-rank">${[...state.players].sort((a,b)=>b.stars-a.stars||b.cash-a.cash).map((x,i)=>`<div><span>${i+1}</span><strong>${h(x.name)}${hostCrown?hostCrown(x.id,state)?'<span class="host-crown" aria-label="房主">👑</span>':'':''}</strong><em>${x.stars}★ · ${money(x.cash)}</em></div>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button>`;
     return;
   }
-  const canRoll=Boolean(state.ext?.debug)||state.phase==='roll',canEnd=['resolve','skipped'].includes(state.phase);
+  const localTurn=PartyNet.canAct(state);
+  const localLocked=localActionLocked();
+  const canRoll=(Boolean(state.ext?.debug)||state.phase==='roll')&&localTurn&&!localLocked,
+    canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
   const skill=r.skill,blocked=chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
   const acquireTargets=state.players.filter(x=>canAcquire(state,p,x));
   const canAct=['roll','resolve'].includes(state.phase);
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
   const status=state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
-  const localTurn=PartyNet.canAct(state);
   const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
   $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
@@ -1130,11 +1233,19 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
   const backward=roll.backward===true;
   const target=Number.isInteger(path[path.length-1])?path[path.length-1]:roll.tileIndex;
   animation={stage:backward?'moving':'rolling',direction:backward?'backward':'forward',playerId,position:Number.isInteger(from)?from:roll.from,value:roll.value,path,visited:new Set(),roll,target};
+  localTurnLocks.isRolling=!backward;
+  localTurnLocks.isMoving=true;
+  localTurnLocks.hasRolled=true;
+  localTurnLocks.pendingAction='move';
   pauseTurnClock();
   try{render()}catch(error){
     console.error('無法建立棋子移動畫面',error);
     animation=null;
     cleanupMovingToken();
+    clearTurnWatchdog();
+    localTurnLocks.isRolling=false;
+    localTurnLocks.isMoving=false;
+    localTurnLocks.pendingAction=null;
     return false;
   }
   let finalized=false;
@@ -1159,14 +1270,21 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
     // onDone 會先寫入終點並廣播，再由這裡刷新畫面；UI 例外不會阻止落點同步。
     try{render()}catch(error){console.error(`棋子移動${reason}後重繪失敗`,error)}
     finally{
+      clearTurnWatchdog();
+      localTurnLocks.isRolling=false;
+      localTurnLocks.isMoving=false;
+      localTurnLocks.isHandlingEvent=false;
+      localTurnLocks.pendingAction=null;
       if(!state?.ext?.vectorPending)resumeTurnClock();
       // 落地與事件鏈完成後，才處理動畫期間暫存的房主快照。
       flushDeferredRoomState();
+      if(reason==='watchdog'&&!PartyNet.isHost)PartyNet.requestSync?.();
     }
   };
   // 手機瀏覽器可能不送出 transitionend，或在重繪時遺失動畫節點。
   // 逾時後直接走同一個 finalize，確保落地效果與同步一定會發生。
   fallbackTimer=setTimeout(()=>finalize('timeout'),1300+path.length*(MOVE_MS+500)+1000);
+  armTurnWatchdog(()=>finalize('watchdog'));
   void (async()=>{
     try{
       if(!backward){
@@ -1199,17 +1317,36 @@ function beginRollAnimation(roll,from,playerId,interactive=true,onDone=null){
 }
 function finishLanding(before,interactive=true){
   if(!state)return null;
-  // rollDie() normally writes the destination before the animation starts.  Re-assert
-  // and publish it before any landing UI is rendered so a mobile DOM failure cannot
-  // make a later state update restore the old square.
-  const pending=state.pendingLanding;
-  const landingPlayerId=pending?.playerId||state.lastRoll?.playerId;
-  const landingPlayer=landingPlayerId&&state.players.find(player=>player.id===landingPlayerId);
+  localTurnLocks.isRolling=false;
+  localTurnLocks.isMoving=false;
+  localTurnLocks.isHandlingEvent=true;
+  localTurnLocks.pendingAction='landing';
+  let landingPlayer=null;
+  armTurnWatchdog(()=>{
+    if(state?.phase==='moving'){
+      state.phase='resolve';
+      state.pendingLanding=null;
+      if(state.lastRoll)state.lastRoll.resolved=true;
+      if(PartyNet.isHost)try{save()}catch(error){console.error('落地 watchdog 同步失敗',error)}
+    }
+  });
+  try{
+    // rollDie() already wrote the destination before the animation started.
+    // Publish only the resolved snapshot below, so an old moving snapshot
+    // cannot arrive after the skill/event result and pull the token backwards.
+    const pending=state.pendingLanding;
+    const landingPlayerId=pending?.playerId||state.lastRoll?.playerId;
+    landingPlayer=landingPlayerId&&state.players.find(player=>player.id===landingPlayerId);
   const landingPath=Array.isArray(pending?.path)&&pending.path.length?pending.path:(Array.isArray(state.lastRoll?.path)?state.lastRoll.path:[]);
   const landingTarget=landingPath.length?landingPath[landingPath.length-1]:state.lastRoll?.tileIndex;
   if(landingPlayer&&Number.isInteger(landingTarget)){
     landingPlayer.position=landingTarget;
-    try{save()}catch(error){console.error('落地位置同步失敗',error)}
+    // Keep the local revision monotonic, but do not broadcast this intermediate
+    // moving snapshot.  The resolved landing snapshot below is the first one
+    // other devices should apply after the animation.
+    suppressRoomPublish=true;
+    try{save()}catch(error){console.error('落地位置同步失敗',error);suppressRoomPublish=false}
+    suppressRoomPublish=false;
   }
   let roll=null;
   // 互動流程先只標記矢量鎖定，等 UI 預警 0.5 秒後再真正傳送與結算格子效果。
@@ -1233,6 +1370,13 @@ function finishLanding(before,interactive=true){
   if(state.ext?.angryRetreatPending?.playerId===roll.playerId){beginAngryRetreat();return roll;}
   if(interactive&&state.pendingDecision&&!state.ext?.vectorPending)notify('棋子已停穩，請做出二選一決策。');
   return roll;
+  }finally{
+    clearTurnWatchdog();
+    localTurnLocks.isMoving=false;
+    localTurnLocks.isHandlingEvent=false;
+    localTurnLocks.pendingAction=null;
+    if(landingPlayer){landingPlayer.isMoving=false;landingPlayer.isHandlingEvent=false}
+  }
 }
 function beginAngryRetreat(){
   const pending=state?.ext?.angryRetreatPending;
@@ -1246,7 +1390,7 @@ function beginAngryRetreat(){
   state.phase='moving';
   state.pendingDecision=null;
   state.pendingLanding={playerId:player.id,from,value:0,path:[target],leverage:false,noReward:false,forcedRed:false};
-  player.position=target;
+   extMovePlayer(state,player,target,{forced:true,kind:'angry-retreat'});
   state.lastRoll={playerId:player.id,value:0,from,path:[target],animationPath:path,backward:true,tileIndex:target,tileType:boardOf(state)[target]?.type,struck:false,passedStart:false,effects:[],resolved:false};
   save();render();
   const settle=()=>{
@@ -1261,6 +1405,11 @@ function beginAngryRetreat(){
 }
 async function rollWithAnimation(authoritative=false){
   if(PartyNet.isClient){
+    if(localActionLocked()||animation)return;
+    localTurnLocks.isRolling=true;
+    localTurnLocks.hasRolled=true;
+    localTurnLocks.pendingAction='roll';
+    armTurnWatchdog(()=>PartyNet.requestSync?.());
     PartyNet.sendAction({type:'ROLL_DICE',playerId:PartyNet.myPlayerId});
     return;
   }
@@ -1268,7 +1417,7 @@ async function rollWithAnimation(authoritative=false){
     const owner=state.net.owners?.[activePlayer()?.id];
     if(owner!==PartyNet.peerId){notify('現在不是房主的回合，已等待玩家擲骰。');return}
   }
-  if(animation)return;
+  if(animation||localActionLocked())return;
   if(state?.ext?.vectorPending){notify('矢量操作鎖定中，請稍候。');return}
   if(state?.net&&!PartyNet.canAct(state)&&!authoritative){notify('現在不是你的回合。');return}
   pauseTurnClock();
@@ -1288,8 +1437,16 @@ async function rollWithAnimation(authoritative=false){
 }
 // 命運骰子：消耗特殊道具後，以玩家自選的 1–6 點強制移動。
 async function fateDiceRoll(value,authoritative=false){
-  if(PartyNet.isClient){PartyNet.sendAction({type:'FATE_DICE',value,playerId:PartyNet.myPlayerId});return}
-  if(animation)return;
+  if(PartyNet.isClient){
+    if(localActionLocked()||animation)return;
+    localTurnLocks.isRolling=true;
+    localTurnLocks.hasRolled=true;
+    localTurnLocks.pendingAction='fate-dice';
+    armTurnWatchdog(()=>PartyNet.requestSync?.());
+    PartyNet.sendAction({type:'FATE_DICE',value,playerId:PartyNet.myPlayerId});
+    return;
+  }
+  if(animation||localActionLocked())return;
   const step=Number(value);
   if(!Number.isInteger(step)||step<1||step>6){notify('請選擇 1–6 的點數。');return}
   if(state?.ext?.vectorPending){notify('矢量操作鎖定中，請稍候。');return}
@@ -1393,6 +1550,7 @@ $('#setup-players').addEventListener('input',e=>{if(e.target.dataset.setupName!=
 $('#setup-players').addEventListener('change',e=>{if(e.target.dataset.setupRole!==undefined)setupPlayers[Number(e.target.dataset.setupRole)].roleId=e.target.value});
 $('#setup-players').addEventListener('click',e=>{const i=e.target.dataset.removePlayer;if(i!==undefined&&setupPlayers.length>2){setupPlayers.splice(Number(i),1);renderSetup()}});
 async function startGameFromConfig(config){
+  resetLocalTurnLocks();
   const seed=Number(config.seed)||Date.now();
   const resolved=extResolveRoles(config.players,seed);
   const advancedSettings={...(config.advancedSettings||PartyUI.getAdvancedSettings?.()||{})};
@@ -1721,11 +1879,27 @@ PartyNet.onStart = config => {
   if(PartyNet.isHost){config.advancedSettings=PartyUI.getAdvancedSettings?.()||{};startGameFromConfig(config).catch(e=>{console.error(e);PartyNet.cancelStart(e?.message||'建立棋盤失敗。')})}
   else $('#save-status').textContent='房主正在初始化棋盤…';
 };
-PartyNet.onState = (game,fromPeer) => {
+function movementSnapshotKey(game){
+  const roll=game?.lastRoll;
+  if(!game||!roll?.playerId)return '';
+  return `${game.sync?.gameId||''}:${game.round}:${game.turnIndex}:${roll.playerId}:${roll.from}:${roll.value}`;
+}
+function isObsoleteMovementSnapshot(incoming,current){
+  if(!incoming||!current||syncInfo(incoming).gameId!==syncInfo(current).gameId)return false;
+  const key=movementSnapshotKey(incoming);
+  return Boolean(key&&key===movementSnapshotKey(current)
+    &&incoming.phase==='moving'
+    &&['resolve','decision','skipped'].includes(current.phase));
+}
+PartyNet.onState = (game,fromPeer,forceSync=false) => {
   try{
     const incoming=extEnsureState(importGame(game));
     const sameRoom=state?.net?.roomCode===PartyNet.code&&state?.net?.hostId===PartyNet.hostId;
-    if(incoming.net?.roomCode===PartyNet.code&&incoming.net?.hostId===PartyNet.hostId&&(!sameRoom||isNewerGame(incoming,state))){
+    const sameVersion=sameRoom&&state&&syncInfo(incoming).gameId===syncInfo(state).gameId
+      &&syncInfo(incoming).revision===syncInfo(state).revision
+      &&syncInfo(incoming).updatedAt===syncInfo(state).updatedAt;
+    if(incoming.net?.roomCode===PartyNet.code&&incoming.net?.hostId===PartyNet.hostId&&(!sameRoom||isNewerGame(incoming,state)||(forceSync&&sameVersion))){
+      if(isObsoleteMovementSnapshot(incoming,state))return;
       const localId=localActivePlayerId();
       const incomingActiveId=incoming.players?.[incoming.turnIndex]?.id;
       const currentActiveId=state?.players?.[state.turnIndex]?.id;
@@ -1733,13 +1907,14 @@ PartyNet.onState = (game,fromPeer) => {
       const localOwnsTurn=Boolean(localId&&incomingActiveId===localId);
       const incomingAuctionResolved=Boolean(state?.ext?.auction&&!incoming.ext?.auction);
       const incomingPortalResolved=Boolean(state?.ext?.portalPending&&!incoming.ext?.portalPending&&incoming.ext?.portalEvent?.resolvedAt);
+      if(turnChanged)resetLocalTurnLocks();
       // 只有確實存在本機動畫時才延後快照；若背景頁籤沒有動畫，必須讓
       // resolve 快照進來解除 moving，否則會永久卡在移動階段。
       const protectingMove=localOwnsTurn&&!flushingDeferredRoomState&&animation?.playerId===localId&&isMoving(localId);
       const protectingEvent=localOwnsTurn&&isHandlingEvent(localId)&&!incomingAuctionResolved&&!incomingPortalResolved;
       if(protectingMove){
         // 移動中的主動玩家是本機唯一真實來源；記住最新快照，等落地後再套用。
-        deferredRoomState={game,fromPeer};
+        if(!deferredRoomState||isNewerGame(incoming,deferredRoomState.game))deferredRoomState={game,fromPeer};
         return;
       }
       if(protectingEvent&&state?.players){
@@ -1885,6 +2060,7 @@ PartyNet.onEvent = event => {
 };
 PartyNet.onReturnLobby = lobby => { PartyUI.hideSettlement?.();returnToLobby(lobby); };
 PartyNet.onStatus = text => { const el=$('#save-status');if(el)el.textContent=text; };
+PartyNet.onPlayerGone = () => { checkRoomPlayersAfterExit(); };
 PartyNet.onError = text => notify(text);
 PartyNet.onAutoKick = peerId => {
   const reason='連線逾時 3 分鐘，已由房主自動移出對局。';
@@ -1894,6 +2070,11 @@ PartyNet.onAutoKick = peerId => {
 PartyNet.onKicked = text => {
   cancelAnimation();closeModal();PartyUI.closeExtModal?.();PartyUI.hideLobby?.();
   state=null;page='home';tab='board';rememberView();render();notify(text);
+};
+PartyNet.onHostLeft = reason => {
+  if(!state||state.status!=='playing'||state.isGameOver)return;
+  finishRoomByExit('host-left',[], '無人獲勝（房主已退出遊戲）');
+  PartyUI.showHostLeftNotice?.(reason || '房主已退出遊戲。');
 };
 // 開始前和房主斷線：回到加入畫面，代碼和名字已填好，按一下就能重新加入。
 PartyNet.onHostLost = (code,name) => { PartyUI.hideLobby?.(); PartyUI.openJoin?.(code,name); };
@@ -1906,8 +2087,10 @@ PartyNet.onJoinFailed = (code, name) => {
   PartyUI.openJoin?.(code, name);
 };
 PartyNet.getGameState = () => state?.net?.roomCode === PartyNet.code ? state : null;
-// 關閉或離開頁面時先通知房主，讓房主馬上把你移出大廳。
-window.addEventListener('pagehide',()=>{if(PartyNet.active)PartyNet.leave(false)});
+// 關閉或離開頁面時先通知房主／客機；對局中的房主會先廣播 HOST_LEFT。
+const leaveRoomOnPageExit = () => { if (PartyNet.active) PartyNet.leave(false); };
+window.addEventListener('beforeunload', leaveRoomOnPageExit);
+window.addEventListener('pagehide', leaveRoomOnPageExit);
 
 window.PartyApp={
   get state(){return state},
@@ -1921,7 +2104,7 @@ window.PartyApp={
   isAnimating:()=>Boolean(animation),
   isMapPicking:()=>Boolean(mapPick),
   cancelMapPick,
-  run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, dismissInvestmentSettlement, visibleInvestmentSettlement,
+  run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
   cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,

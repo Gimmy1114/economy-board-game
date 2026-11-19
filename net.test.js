@@ -223,11 +223,14 @@ test('房主踢除客機並封鎖其 Peer ID 的重新連線', () => {
   withHost(({join}) => {
     const guest = join('guest-a', '小明');
     PartyNet.startGame();
+    const gone = [];
+    PartyNet.onPlayerGone = (peerId, detail) => gone.push({peerId, reason: detail.reason});
 
     assert.equal(PartyNet.kickPlayer('guest-a'), true);
     assert.equal(guest.sent.at(-1).t, 'kicked');
     assert.equal(PartyNet.blacklist.has('guest-a'), true);
     assert.deepEqual(names(), ['房主']);
+    assert.deepEqual(gone, [{peerId: 'guest-a', reason: 'kicked'}]);
 
     const retry = new FakeConnection('guest-a');
     FakePeer.last.emit('connection', retry);
@@ -235,6 +238,16 @@ test('房主踢除客機並封鎖其 Peer ID 的重新連線', () => {
     assert.equal(retry.sent.at(-1).t, 'kicked');
     retry.emit('data', {t: 'hello', name: '小明', clientVersion: ROOM_PREFIX});
     assert.deepEqual(names(), ['房主']);
+  });
+});
+
+test('進行中的房主離開會先廣播 HOST_LEFT', () => {
+  withHost(({join}) => {
+    const guest = join('guest-a', '小明');
+    PartyNet.startGame();
+    PartyNet.getGameState = () => ({status: 'playing', isGameOver: false});
+    PartyNet.leave(false);
+    assert.equal(guest.sent.at(-1).t, 'HOST_LEFT');
   });
 });
 
@@ -577,6 +590,8 @@ function withHost(run) {
     PartyNet.onStart = null;
     PartyNet.onAutoKick = null;
     PartyNet.onKicked = null;
+    PartyNet.onPlayerGone = null;
+    PartyNet.onHostLeft = null;
     PartyNet.onJoinFailed = null;
     PartyNet.getGameState = null;
     if (previousPeer === undefined) delete globalThis.Peer;
@@ -597,6 +612,20 @@ test('開始前客機離開或斷線，房主馬上把他移出大廳', () => {
     // 同一個人用新的頁面（新的 Peer ID）回來，只會有一筆
     join('guest-a2', '小明');
     assert.deepEqual(names(), ['房主', '小明']);
+  });
+});
+
+test('客機 watchdog 可要求房主重送權威遊戲快照', () => {
+  withHost(({join}) => {
+    const guest = join('guest-a', '小明');
+    const game = { status: 'playing', phase: 'resolve', turnIndex: 1, sync: { revision: 9 } };
+    PartyNet.getGameState = () => game;
+    assert.equal(PartyNet.isHost, true);
+    guest.sent.length = 0;
+    guest.emit('data', { t: 'REQUEST_SYNC', fromPeer: 'guest-a', mid: 'sync-1' });
+    const snapshot = guest.sent.find(message => message.t === 'state');
+    assert.equal(snapshot?.game, game);
+    assert.equal(snapshot?.forceSync, true);
   });
 });
 
@@ -769,6 +798,7 @@ function withGuest(run, {acknowledge = true} = {}) {
     PartyNet.leave(false);
     PartyNet.onError = null;
     PartyNet.onHostLost = null;
+    PartyNet.onHostLeft = null;
     PartyNet.onKicked = null;
     PartyNet.onJoinFailed = null;
     PartyNet.getGameState = null;
@@ -798,6 +828,32 @@ test('客機離開時先通知房主，並定時送 ping', () => {
       assert.equal(connection.open, false);
       PartyNet.onKicked = null;
     });
+  });
+});
+
+test('進行中的客機收到 HOST_LEFT 後呼叫回呼並停止房間', () => {
+  withGuest(({connection}) => {
+    PartyNet.lobby.status = 'playing';
+    PartyNet.getGameState = () => ({status: 'playing', isGameOver: false});
+    let reason = '';
+    PartyNet.onHostLeft = text => { reason = text; };
+    connection.emit('data', {t: 'HOST_LEFT', fromPeer: 'host-peer-id'});
+    assert.match(reason, /房主已退出/);
+    assert.equal(PartyNet.active, false);
+    assert.equal(connection.open, false);
+  });
+});
+
+test('正常結束後收到房主關閉封包不會改判房主退出', () => {
+  withGuest(({connection, errors}) => {
+    PartyNet.lobby.status = 'playing';
+    PartyNet.getGameState = () => ({status: 'finished', isGameOver: true});
+    let interrupted = false;
+    PartyNet.onHostLeft = () => { interrupted = true; };
+    connection.emit('data', {t: 'closed', fromPeer: 'host-peer-id'});
+    assert.equal(interrupted, false);
+    assert.equal(PartyNet.active, false);
+    assert.deepEqual(errors, ['房主已關閉房間。']);
   });
 });
 

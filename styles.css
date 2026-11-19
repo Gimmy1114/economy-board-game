@@ -34,6 +34,12 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 .token.ghost-player{width:100%!important;height:100%!important;object-fit:contain;}
 .token.ghost-player.moving,#board>.token.ghost-player.moving{width:30px!important;height:30px!important;min-width:30px!important;min-height:30px!important;max-width:30px!important;max-height:30px!important;object-fit:contain;}
 .token.moving-backward-border{position:relative;border:3px solid #ff334f;box-shadow:0 0 0 2px #fff,0 0 12px 5px #ff203fc7,0 0 23px 8px #ff203f80;animation:backward-token-glow .55s ease-in-out infinite alternate}
+.token{position:relative}
+.token-padlock{position:absolute;z-index:5;top:50%;left:50%;display:flex;align-items:center;justify-content:center;font-size:1.15rem;line-height:1;pointer-events:none;filter:drop-shadow(0 2px 3px rgba(0,0,0,.55));transform:translate(-50%,-50%);transform-origin:50% 50%}
+.token-padlock.padlock-locking{animation:padlockLockSnap .72s cubic-bezier(.2,.85,.3,1) both}
+.token-padlock.padlock-detach{animation:padlockDetach .68s cubic-bezier(.2,.7,.3,1) both}
+@keyframes padlockLockSnap{0%{opacity:0;transform:translate(-50%,-50%) translateY(-18px) scale(.55) rotate(-12deg)}55%{opacity:1;transform:translate(-50%,-50%) translateY(2px) scale(1.22) rotate(8deg)}72%{transform:translate(-50%,-50%) translateY(-1px) scale(.94) rotate(-5deg)}86%{transform:translate(-50%,-50%) translateY(1px) scale(1.04) rotate(3deg)}100%{opacity:1;transform:translate(-50%,-50%) translateY(0) scale(1) rotate(0)}}
+@keyframes padlockDetach{0%{opacity:1;transform:translate(-50%,-50%) translateY(0) rotate(0) scale(1)}35%{opacity:1;transform:translate(-50%,-50%) translateY(-3px) rotate(-24deg) scale(1.08)}100%{opacity:0;transform:translate(-50%,-50%) translate(11px,-23px) rotate(40deg) scale(.72)}}
 @keyframes backward-token-glow{to{box-shadow:0 0 0 2px #fff,0 0 17px 7px #ff203fff,0 0 29px 11px #ff203f9c}}
 .retreat-indicator{display:grid;place-items:center;width:56px;height:56px;margin:8px auto;border:2px solid #ff334f;border-radius:50%;color:#e52c47;font-size:43.5px;font-weight:900;box-shadow:0 0 18px #ff334f66}
 .die.rolling{color:var(--teal);animation:dice-tumble .55s ease-in-out infinite;box-shadow:0 12px 28px #12917b38}
@@ -398,10 +404,11 @@ h1,h2,h3,p{margin-top:0}h1,h2,h3{letter-spacing:-.025em}h1{font-size:clamp(43.5p
 /* 手機版限制只在小螢幕橫向對局啟用，不覆蓋桌面版的捲動與棋盤尺寸。 */
 @media screen and (max-width:932px) and (orientation:landscape){
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-html,body{width:100%;height:100%;overflow:hidden;touch-action:manipulation;overscroll-behavior:none;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+ html:has(#game:not([hidden])),
+ body:has(#game:not([hidden])){width:100%;height:100%;overflow:hidden;touch-action:manipulation;overscroll-behavior:none;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 input,textarea,select,[contenteditable="true"]{-webkit-user-select:text;user-select:text}
 body{padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
-.app-shell{height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:contain}
+ body:has(#game:not([hidden])) .app-shell{height:100vh;height:100dvh;overflow-y:auto;overscroll-behavior:contain}
 .board-panel-tools{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .board-fullscreen{font-size:12.5px;font-weight:800;line-height:1;border:1px solid #d7e3df;background:#f4f8f6;color:#2f625c;padding:8px 10px;border-radius:7px;white-space:nowrap}
 .board-fullscreen:hover{background:#e7f1ed;color:var(--ink)}
@@ -503,7 +510,8 @@ body.settlement-active .center-backdrop .evil-tower{display:none!important}
 
 /* 手機對局：左右等寬，地圖沿用桌面版內部尺寸並由外層統一縮放。 */
 @media screen and (max-width:932px) and (orientation:landscape){
-html,body{overflow:hidden;touch-action:manipulation;overscroll-behavior:none;width:100%;height:100%;min-height:100dvh;margin:0;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+ html:has(#game:not([hidden])),
+ body:has(#game:not([hidden])){overflow:hidden;touch-action:manipulation;overscroll-behavior:none;width:100%;height:100%;min-height:100dvh;margin:0;overscroll-behavior-y:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
   body:has(#game:not([hidden])) .app-shell{width:100vw;height:100dvh;max-width:none;min-height:0;margin:0;padding:0;overflow:hidden;display:flex;flex-direction:column}
   body:has(#game:not([hidden])) .topbar{display:none}
   body:has(#game:not([hidden])) main{width:100%;height:100%;min-height:0;flex:1 1 auto;overflow:hidden}
@@ -2032,4 +2040,44 @@ body.home-online #pwa-install-btn{
     width:100%!important;
     margin-right:0!important;
   }
+}
+
+/* 首頁連線模式使用整頁捲動；連線卡片不建立第二個捲動容器。 */
+html:has(#game[hidden]),
+body:has(#game[hidden]){
+  width:100%!important;
+  height:auto!important;
+  min-height:100dvh!important;
+  max-height:none!important;
+  overflow-x:hidden!important;
+  overflow-y:auto!important;
+}
+body:has(#game[hidden]) .app-shell,
+body:has(#game[hidden]) main,
+body:has(#game[hidden]) #home,
+body:has(#game[hidden]) #setup{
+  width:100%!important;
+  height:auto!important;
+  min-height:100dvh!important;
+  max-height:none!important;
+  overflow:visible!important;
+}
+.home-online-panel,
+#party-ext-root.home-inline,
+#party-ext-root.home-inline>.ext-overlay{
+  height:auto!important;
+  max-height:none!important;
+  overflow:visible!important;
+  overflow-y:visible!important;
+}
+#party-connect,
+#party-lobby,
+#party-connecting,
+#party-connect .connect-card,
+#party-lobby .lobby-card,
+#party-connecting .connecting-card{
+  height:auto!important;
+  max-height:none!important;
+  overflow:visible!important;
+  overflow-y:visible!important;
 }

@@ -149,6 +149,9 @@ function extPlayerExt(p) {
   if (!Array.isArray(p.items)) p.items = [];
   if (!Array.isArray(p.specials)) p.specials = [];
   p.ext.grantPortalNextTurn = Boolean(p.ext.grantPortalNextTurn);
+  p.detainedTurns = Number.isInteger(p.detainedTurns) ? Math.max(0, p.detainedTurns) : 0;
+  p.detainedTileIndex = Number.isInteger(p.detainedTileIndex) ? p.detainedTileIndex : null;
+  p.wantedLevel = Number.isInteger(p.wantedLevel) ? Math.max(0, Math.min(3, p.wantedLevel)) : 0;
   // Keep the first copy and never merge charges from duplicate or replayed acquisition packets.
   const seenMythics = new Set();
   p.mythics = p.mythics.filter(entry => {
@@ -179,6 +182,30 @@ function extPlayerExt(p) {
     p.ext.bankai = Boolean(blade);
   }
   return p.ext;
+}
+
+// 所有非自主位移都經過這個入口，讓查稅局拘留中的玩家在離開原格時
+// 立即越獄並累積通緝星級。擲骰移動由 engine.js 以 forced:false 通知，
+// 因此不會把正常回合誤判成越獄。
+export function extMovePlayer(state, player, to, { forced = true, kind = 'forced' } = {}) {
+  if (!player) return false;
+  const from = player.position;
+  player.position = to;
+  engineHooks.positionChanged?.(state, player, { from, to, forced, kind });
+  return from !== to;
+}
+
+function extHandlePositionChange(state, player, { from, to, forced = false, kind = 'forced' } = {}) {
+  if (!player || !forced || from === to || player.detainedTurns <= 0) return;
+  if (player.detainedTileIndex == null || to === player.detainedTileIndex) return;
+  player.detainedTurns = 0;
+  player.detainedTileIndex = null;
+  player.wantedLevel = Math.min(3, (player.wantedLevel || 0) + 1);
+  if (state?.ext) state.ext.detentionEvent = {
+    type: 'escape', playerId: player.id, from, to, kind,
+    wantedLevel: player.wantedLevel, at: Date.now()
+  };
+  log(state, `🚨 ${player.name} 越獄脫逃！通緝等級提升為 ${'★'.repeat(player.wantedLevel)}。`);
 }
 
 export function extResolveRoles(players, seed = Date.now()) {
@@ -406,6 +433,7 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     tycoonComeback: null,
     portalPending: null,
     portalEvent: null,
+    detentionEvent: null,
     specialUnlockEvent: null,
     specialUnlockEvents: []
   };
@@ -425,6 +453,9 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     p.noReward = false;
     p.forcedRed = false;
     p.skipTurns = 0;
+    p.detainedTurns = 0;
+    p.detainedTileIndex = null;
+    p.wantedLevel = 0;
     p.rentTo = null;
     p.rentTurns = 0;
     p.parentId = null;
@@ -476,6 +507,7 @@ export function extEnsureState(state) {
     if (!('fateDice' in state.ext)) state.ext.fateDice = null;
     if (!('portalPending' in state.ext)) state.ext.portalPending = null;
     if (!('portalEvent' in state.ext)) state.ext.portalEvent = null;
+    if (!('detentionEvent' in state.ext)) state.ext.detentionEvent = null;
     if (!('specialUnlockEvent' in state.ext)) state.ext.specialUnlockEvent = null;
     if (!Array.isArray(state.ext.specialUnlockEvents)) state.ext.specialUnlockEvents = state.ext.specialUnlockEvent ? [state.ext.specialUnlockEvent] : [];
     if (!state.ext.tycoonStreaks || typeof state.ext.tycoonStreaks !== 'object') state.ext.tycoonStreaks = {};
@@ -515,6 +547,7 @@ export function extEnsureState(state) {
     starOffer: null, replaceOffer: null, eventPrompt: null, wheelPending: null,
     indulgenceEvent: null, totemEvent: null, vectorEvent: null, vectorPending: null,
     fateDice: null, tycoonStreaks: {}, tycoonComeback: null, portalPending: null, portalEvent: null,
+    detentionEvent: null,
     specialUnlockEvent: null, specialUnlockEvents: []
   };
   if (!state.ghostPosition || state.ghostPosition <= 0) state.ghostPosition = 1;
@@ -634,8 +667,25 @@ export function extStatusChips(state, player) {
   if (player.mythics?.length) chips.push({ icon: '🗿', label: `神話道具 ×${player.mythics.length}`, tone: 'star' });
   if (state.ext?.domain && state.ext.domain.ownerId === player.id) chips.push({ icon: '🌐', label: '弱者領域展開中', tone: 'good' });
   if (state.ext?.suddenDeath) chips.push({ icon: '⚡', label: '驟死賽', tone: 'bad' });
+  if (player.wantedLevel > 0) chips.push({ icon: '🚨', label: `通緝${'★'.repeat(player.wantedLevel)}`, tone: 'bad' });
+  if (player.detainedTurns > 0) chips.push({ icon: '🔒', label: `查稅局拘留 · 剩 ${player.detainedTurns} 回合`, tone: 'bad' });
   return chips;
 }
+
+export function extTaxTerms(state, player) {
+  const wanted = Math.max(0, Math.min(3, Number(player?.wantedLevel) || 0));
+  const assets = Math.max(0, Math.floor(Number(player?.cash) || 0));
+  const energy = wanted === 3 ? 0 : wanted;
+  const detentionTurns = 2 + wanted;
+  const amount = wanted === 3 ? assets : Math.floor(assets * 0.5);
+  return { wanted, assets, amount, energy, detentionTurns, canPay: assets > 0 && (player?.energy || 0) >= energy };
+}
+
+engineHooks.positionChanged = extHandlePositionChange;
+engineHooks.detentionChanged = (state, player, event) => {
+  if (!state?.ext || !player) return;
+  state.ext.detentionEvent = { ...event, playerId: player.id, at: event.at || Date.now() };
+};
 
 // 弱者領域會即時跟隨擁有者位置，永遠覆蓋目前格與左右各一格。
 export function extDomainTiles(state) {
@@ -744,7 +794,8 @@ function extCaptureRollSnapshot(state, player) {
     cornerSubsidyEvent: state.cornerSubsidyEvent,
     players: state.players.map(p => ({
       id: p.id, cash: p.cash, stars: p.stars, energy: p.energy, shields: p.shields, items: p.items,
-      mythics: p.mythics, marks: p.marks, position: p.position, skipTurns: p.skipTurns, parentId: p.parentId, rentTo: p.rentTo,
+      mythics: p.mythics, marks: p.marks, position: p.position, skipTurns: p.skipTurns, detainedTurns: p.detainedTurns,
+      detainedTileIndex: p.detainedTileIndex, wantedLevel: p.wantedLevel, parentId: p.parentId, rentTo: p.rentTo,
       rentTurns: p.rentTurns, leverage: p.leverage, bankLock: p.bankLock, noReward: p.noReward,
       forcedRed: p.forcedRed, forcedSteps: p.forcedSteps, isGhost: p.isGhost, ext: p.ext
     }))
@@ -947,8 +998,9 @@ engineHooks.resolveTile = (state, player, opts, effects) => {
     return;
   }
   if (tile.type === 'tax') {
-    ext.taxChoice = { playerId: player.id, tileIndex: tile.index };
-    effects.push({ icon: '🏛️', text: '查稅局：繳交 50% 總資產，或接受 2 回合羈押。', tone: 'bad' });
+    const terms = extTaxTerms(state, player);
+    ext.taxChoice = { playerId: player.id, tileIndex: tile.index, wantedLevel: terms.wanted };
+    effects.push({ icon: '🏛️', text: `查稅局：繳交 ${terms.wanted === 3 ? '100%' : '50%'} 總資產${terms.energy ? `並扣 ${terms.energy} 點能量` : ''}，或接受 ${terms.detentionTurns} 回合羈押。`, tone: 'bad' });
     return;
   }
   if (tile.type === 'insider') {
@@ -977,7 +1029,7 @@ function extApplyVectorResolution(state, vector, ownerId, roll = null) {
     if (!target || target.ext?.eliminated) continue;
     const from = target.position;
     if (extShieldBlock(state, target, state.players.find(x => x.id === ownerId), '矢量操作強制傳送')) continue;
-    target.position = vector.destination;
+    extMovePlayer(state, target, vector.destination, { forced: true, kind: 'vector' });
     applyCornerProgress(state,target,[vector.destination]);
     const effects = resolveTileFor(state, target, {});
     const detail = effects.map(e => e.text).filter(Boolean).join('；');
@@ -1153,13 +1205,16 @@ engineHooks.ghostStrike = (state, player, effects) => {
     for (const saved of snap.players) {
       const target = state.players.find(p => p.id === saved.id);
       if (!target) continue;
+      const beforePosition = target.position;
       Object.assign(target, {
         cash: saved.cash, stars: saved.stars, energy: saved.energy, shields: saved.shields,
         items: clone(saved.items), mythics: clone(saved.mythics), marks: clone(saved.marks), position: saved.position,
-        skipTurns: saved.skipTurns, parentId: saved.parentId, rentTo: saved.rentTo, rentTurns: saved.rentTurns,
+        skipTurns: saved.skipTurns, detainedTurns: saved.detainedTurns, detainedTileIndex: saved.detainedTileIndex,
+        wantedLevel: saved.wantedLevel, parentId: saved.parentId, rentTo: saved.rentTo, rentTurns: saved.rentTurns,
         leverage: saved.leverage, bankLock: saved.bankLock, noReward: saved.noReward,
         forcedRed: saved.forcedRed, forcedSteps: saved.forcedSteps, isGhost: saved.isGhost, ext: clone(saved.ext)
       });
+      if (beforePosition !== target.position) engineHooks.positionChanged?.(state, target, { from: beforePosition, to: target.position, forced: true, kind: 'rewind' });
     }
     state.ghostPosition = snap.ghostPosition;
     state.ghostTrail = snap.ghostTrail;
@@ -1333,6 +1388,8 @@ engineHooks.beforeFinal = (state, winners, ranked) => {
 engineHooks.beforeFinish = (state, reason, winners) => {
   const ext = state.ext;
   if (!ext) return;
+  if (reason === 'host-left') { ext.finishTitle = '無人獲勝（房主已退出遊戲）'; return; }
+  if (reason === 'all-left') { ext.finishTitle = '房主獲勝'; return; }
   const alive = extSurvivors(state);
   if (reason === 'survivor' || alive.length === 1) ext.finishTitle = ext.mode === 'evil' ? '最後生還者' : '唯一的倖存者';
   else if (reason === 'bankrupt' || alive.length === 0) ext.finishTitle = '無人生還';
@@ -1647,7 +1704,7 @@ export function extUseSkill(state, targetId, sectorOrTile) {
       const len = boardOf(state).length;
       const from = target.position;
       const path=Array.from({length:3},(_,i)=>(from-i-1+len)%len);
-      target.position = path.at(-1);
+      extMovePlayer(state, target, path.at(-1), { forced: true, kind: 'skill' });
       applyCornerProgress(state,target,path,{passedStart:path.includes(0)});
       const hit = damage(target, 200, skill.name);
       if (hit) addCash(state, p, 200);
@@ -1797,7 +1854,7 @@ export function extResolvePortal(state, at = null) {
   const origin = Number.isInteger(pending.origin) ? pending.origin : player.position;
   const target = pending.target;
   state.ext.portalPending = null;
-  player.position = target;
+  extMovePlayer(state, player, target, { forced: true, kind: 'portal' });
   player.isMoving = false;
   state.lastRoll = {
     playerId: player.id, value: 0, from: origin, path: [target], animationPath: [target],
@@ -2188,11 +2245,13 @@ export function extTaxPay(state) {
   const offer = state.ext?.taxChoice;
   if (!offer) throw Error('目前沒有查稅。');
   const p = state.players.find(x => x.id === offer.playerId);
-  state.ext.taxChoice = null;
   if (!p) return 0;
-  const amount = Math.floor(Math.max(0, p.cash) * 0.5);
-  const paid = extDamage(state, p, amount, { ignoreShield: true, label: '查稅局 50% 總資產' });
-  log(state, `🏛️ ${p.name} 選擇繳稅 ${extMoney(paid || amount)}${paid === 0 && amount > 0 ? '（由贖罪券全額抵銷）' : ''}。`);
+  const terms = extTaxTerms(state, p);
+  if (!terms.canPay) throw Error('條件不足，必須接受拘留。');
+  state.ext.taxChoice = null;
+  if (terms.energy) p.energy = Math.max(0, p.energy - terms.energy);
+  const paid = extDamage(state, p, terms.amount, { ignoreShield: true, ignoreRedemption: terms.wanted === 3, label: `查稅局 ${terms.wanted === 3 ? '100%' : '50%'} 總資產` });
+  log(state, `🏛️ ${p.name} 選擇繳稅 ${extMoney(paid || terms.amount)}${paid === 0 && terms.amount > 0 ? '（由贖罪券全額抵銷）' : ''}${terms.energy ? `，額外扣除 ${terms.energy} 點能量` : ''}。`);
   return paid;
 }
 
@@ -2202,8 +2261,11 @@ export function extTaxDetain(state) {
   const p = state.players.find(x => x.id === offer.playerId);
   state.ext.taxChoice = null;
   if (!p) return;
-  p.skipTurns = (p.skipTurns || 0) + 2;
-  log(state, `🏛️ ${p.name} 拒絕繳稅，被強制羈押 2 回合。`);
+  const terms = extTaxTerms(state, p);
+  p.detainedTurns = terms.detentionTurns;
+  p.detainedTileIndex = Number.isInteger(offer.tileIndex) ? offer.tileIndex : p.position;
+  if (state.ext) state.ext.detentionEvent = { type: 'detain', playerId: p.id, tileIndex: p.detainedTileIndex, turns: terms.detentionTurns, at: Date.now() };
+  log(state, `🏛️ ${p.name} 拒絕繳稅，被強制羈押 ${terms.detentionTurns} 回合。`);
 }
 
 export function extInsiderPay(state) {
@@ -2499,7 +2561,7 @@ export function extDebugTeleport(state, playerId, tileIndex) {
   const p = state.players.find(x => x.id === playerId);
   const len = boardOf(state).length;
   if (!p || !Number.isInteger(tileIndex) || tileIndex < 0 || tileIndex >= len) throw Error('傳送目標無效。');
-  p.position = tileIndex;
+  extMovePlayer(state, p, tileIndex, { forced: true, kind: 'debug' });
   if (!extIsGhost(p)) applyCornerProgress(state,p,[tileIndex]);
   log(state, `🧪 測試模式：${p.name} 被傳送到第 ${tileNo(tileIndex)} 格。`);
   const effects = [];

@@ -60,6 +60,21 @@ body.modal-open #board .ghost-piece {
   animation: ext-pop .26s cubic-bezier(.2, .8, .25, 1) both;
   scrollbar-width: thin;
 }
+
+/* 連線入口與派對大廳跟著首頁內容自然展開，捲動交給整頁。 */
+.connect-overlay,
+.lobby-overlay {
+  overflow: visible;
+  overflow-y: visible;
+}
+.connect-overlay .connect-card,
+.lobby-overlay .lobby-card {
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  overflow-y: visible;
+  scrollbar-width: auto;
+}
 .ext-modal-close {
   position: absolute;
   right: 14px;
@@ -1696,6 +1711,33 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
    結算
    -------------------------------------------------------------------------- */
 .settlement-overlay { z-index: 90; }
+.host-left-notice {
+  position: fixed;
+  inset: 0;
+  z-index: 10000000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(7, 18, 24, .62);
+  pointer-events: none;
+}
+.host-left-notice[hidden] { display: none !important; }
+.host-left-notice-card {
+  width: min(440px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  padding: 25px 24px 22px;
+  border: 1px solid #ff9a8d;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #fff8f5, #ffe5df);
+  color: #66251f;
+  box-shadow: 0 18px 55px rgba(15, 16, 21, .45);
+  text-align: center;
+}
+.host-left-notice-card > span { font-size: 34px; line-height: 1; }
+.host-left-notice-card strong { font-size: clamp(18px, 4vw, 25px); line-height: 1.3; }
+.host-left-notice-card small { color: #8b544c; font-size: 12px; }
 .settlement-card { width: min(860px, 100%); text-align: left; padding: 24px 26px 18px; }
 .settle-head {
   display: flex;
@@ -1850,10 +1892,19 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
 @media (max-width: 760px) {
   .ext-overlay { padding: 12px; align-items: start; }
   .ext-modal-card,
-  .connect-card,
-  .lobby-card,
   .settlement-card,
   .wheel-card { width: 100%; max-height: calc(100vh - 24px); border-radius: 14px; padding: 20px 16px; margin: auto; }
+  .connect-overlay .connect-card,
+  .lobby-overlay .lobby-card {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    border-radius: 14px;
+    padding: 20px 16px;
+    margin: auto;
+    overflow: visible;
+    overflow-y: visible;
+  }
   .ext-actions { flex-direction: column-reverse; }
   .ext-actions button { width: 100%; }
   .mode-picker { grid-template-columns: repeat(2, 1fr); }
@@ -2319,6 +2370,165 @@ body.witch-negative .app-shell::after {
    ========================================================================== */
 .auction-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .auction-cash.negative { color: #ff9a8e; }
+
+/* 黑市拍賣手機版：把完整操作區壓在同一個可視視窗內。 */
+@media (max-width: 768px) {
+  #ext-modal[data-type="auction"] {
+    padding: 4vh 3vw;
+    padding: 4dvh 3vw;
+    align-items: center;
+    overflow: hidden;
+  }
+
+  #ext-modal[data-type="auction"] .ext-modal-card {
+    box-sizing: border-box;
+    width: 94vw;
+    max-width: 94vw;
+    max-height: 92vh;
+    max-height: 92dvh;
+    padding: 12px 14px;
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  #ext-modal[data-type="auction"] .ext-kicker {
+    margin-bottom: 2px;
+    font-size: 10px;
+    line-height: 1.2;
+  }
+
+  #ext-modal[data-type="auction"] .ext-icon {
+    display: none;
+  }
+
+  #ext-modal[data-type="auction"] .ext-title {
+    margin-bottom: 6px;
+    font-size: 1.1rem;
+    line-height: 1.2;
+  }
+
+  #ext-modal[data-type="auction"] .ext-text {
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    line-height: 1.3;
+  }
+
+  #ext-modal[data-type="auction"] .auction-box {
+    gap: 8px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-item {
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 0;
+    min-height: 0;
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  #ext-modal[data-type="auction"] .auction-item span {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.3;
+    letter-spacing: normal;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin-bottom: 0;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats > div {
+    min-width: 0;
+    padding: 6px 10px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats small {
+    font-size: 0.8rem;
+    line-height: 1.2;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats strong {
+    margin-top: 2px;
+    overflow: hidden;
+    font-size: 1.25rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #ext-modal[data-type="auction"] .auction-turn {
+    font-size: 0.8rem;
+    line-height: 1.25;
+  }
+
+  #ext-modal[data-type="auction"] .ext-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  #ext-modal[data-type="auction"] .ext-actions button {
+    width: auto;
+    min-width: 0;
+    height: 42px;
+    padding: 0 10px;
+    font-size: 0.95rem;
+    line-height: 1.1;
+  }
+}
+
+@media (max-width: 768px) and (max-height: 680px) {
+  #ext-modal[data-type="auction"] {
+    padding: 2vh 3vw;
+    padding: 2dvh 3vw;
+  }
+
+  #ext-modal[data-type="auction"] .ext-modal-card {
+    padding: 8px 10px;
+  }
+
+  #ext-modal[data-type="auction"] .ext-kicker {
+    margin-bottom: 1px;
+  }
+
+  #ext-modal[data-type="auction"] .ext-title {
+    margin-bottom: 4px;
+  }
+
+  #ext-modal[data-type="auction"] .ext-text {
+    margin-bottom: 4px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-box,
+  #ext-modal[data-type="auction"] .ext-actions {
+    gap: 4px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-item {
+    padding: 6px 8px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats > div {
+    padding: 4px 6px;
+  }
+
+  #ext-modal[data-type="auction"] .auction-stats strong {
+    font-size: 1.1rem;
+  }
+
+  #ext-modal[data-type="auction"] .ext-actions {
+    margin-top: 4px;
+  }
+}
 
 /* 罷工幽靈提示：提示掛在幽靈圖示上，避免污染格子說明。 */
 .party-tile.ghost-tile { z-index: 3; }
