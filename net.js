@@ -1,6 +1,7 @@
 // 多人房間 / PeerJS P2P 連線層
 
 import { PLAYER_COLORS } from './party_data.js';
+import { AI_DIFFICULTIES, DEFAULT_AI_DIFFICULTY, normalizeAIDifficulty } from './data.js';
 
 // ---- 5 碼房間代碼 ----------------------------------------------------------
 // 房主用「前綴 + 5 碼」向 PeerJS 配對伺服器登記，畫面上只顯示 5 碼（去掉容易看錯的 0/O/1/I）。
@@ -43,7 +44,20 @@ export const PartyNet = (() => {
     debug: 1
   });
   const cleanName = (name, fallback) => String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 16) || fallback;
-  const isOnline = p => p.host || p.connected !== false;
+  // 電腦玩家沒有 PeerJS 連線，但在房間裡永遠視為在線。
+  const isOnline = p => Boolean(p?.isAI) || p.host || p.connected !== false;
+  const normalizeLobby = lobby => {
+    if (!lobby || !Array.isArray(lobby.players)) return lobby;
+    return {
+      ...lobby,
+      players: lobby.players.map(player => ({
+        ...player,
+        isAI: Boolean(player?.isAI),
+        aiDifficulty: normalizeAIDifficulty(player?.aiDifficulty),
+        connected: player?.connected !== false
+      }))
+    };
+  };
   // 預設棋子顏色：優先挑還沒有人使用的索引，顏色在同一局內不重複。
   const freeColor = players => {
     const used = new Set((players || []).map(p => Number(p.color)).filter(Number.isInteger));
@@ -140,7 +154,7 @@ export const PartyNet = (() => {
         this.code = code;
         this.lobby.code = code;
         this.lobby.hostId = peerId;
-        this.lobby.players = [{ peerId, name: this.name, roleId, color: 0, host: true, connected: true }];
+        this.lobby.players = [{ peerId, name: this.name, roleId, color: 0, host: true, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true }];
         this.emitLobby();
         this.broadcastLobby();
         this.startBeat();
@@ -180,7 +194,7 @@ export const PartyNet = (() => {
       this.lobby = {
         code: this.code, hostId: this.hostId, status: 'waiting', mode: 'star', rounds: 10, target: 0,
         starGoal: 3, doomEvery: 5, doomPrice: 1000, doomStep: 500, debug: false,
-        confirms: [], players: [{ peerId: this.peerId, name: this.name, roleId: 'random', color: 0, connected: true }]
+        confirms: [], players: [{ peerId: this.peerId, name: this.name, roleId: 'random', color: 0, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true }]
       };
       this._connectTimeout = setTimeout(() => {
         this._connectTimeout = null;
@@ -640,7 +654,7 @@ export const PartyNet = (() => {
       this.verifiedPeers.add(peerId);
       this.connectedPeers.add(peerId);
       this.lastSeen.set(peerId, Date.now());
-      this.lobby = message.lobby;
+      this.lobby = normalizeLobby(message.lobby);
       this.code = message.lobby.code || this.code;
       this._lastHostSeen = Date.now();
       if (!alreadyVerified) {
@@ -684,7 +698,7 @@ export const PartyNet = (() => {
       if (!player) {
         if (this.lobby.status !== 'waiting') { this.refuse(peerId, '對局已開始，暫時無法加入。'); return; }
         if (this.lobby.players.length >= MAX_PLAYERS) { this.refuse(peerId, `房間已滿（最多 ${MAX_PLAYERS} 人）。`); return; }
-        player = { peerId, name: this.uniqueName(cleanName(name, '玩家'), peerId), roleId: 'random', color: freeColor(this.lobby.players), host: false, connected: true };
+        player = { peerId, name: this.uniqueName(cleanName(name, '玩家'), peerId), roleId: 'random', color: freeColor(this.lobby.players), host: false, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true };
         this.lobby.players.push(player);
       } else if (name) player.name = this.uniqueName(cleanName(name, player.name), peerId);
       this.emitLobby();
@@ -715,7 +729,7 @@ export const PartyNet = (() => {
     // 房主：玩家離開或斷線。開始前直接移出大廳；對局中只標成已離線（座位還在）。
     playerGone(peerId) {
       const player = this.lobby?.players.find(p => p.peerId === peerId);
-      if (!player || player.host) return;
+      if (!player || player.host || player.isAI) return;
       if (this.lobby.status === 'waiting') this.dropPlayer(peerId);
       else {
         player.connected = false;
@@ -834,6 +848,7 @@ export const PartyNet = (() => {
       if (paused) return;
       let changed = false;
       for (const p of this.lobby?.players || []) {
+        if (p.isAI) continue;
         if (!isOnline(p)) continue;
         if (now - (this.lastSeen.get(p.peerId) ?? now) > OFFLINE_MS) {
           p.connected = false;
@@ -874,6 +889,59 @@ export const PartyNet = (() => {
       } else if (this.hostId) {
         this.sendData({ t: 'role', roleId }, this.hostId);
       }
+    }
+
+    // 房主新增電腦玩家。AI 沒有 PeerJS 連線，也不會出現在離線倒數名單。
+    addAI({ name = '', roleId = 'random', color = null, aiDifficulty = DEFAULT_AI_DIFFICULTY } = {}) {
+      if (!this.host || !this.lobby) throw Error('只有房主可以新增電腦玩家。');
+      if (this.lobby.status !== 'waiting') throw Error('對局已開始，不能新增電腦玩家。');
+      if (this.lobby.players.length >= MAX_PLAYERS) throw Error(`最多 ${MAX_PLAYERS} 位玩家。`);
+      if (typeof roleId !== 'string' || !roleId || roleId.length > 40) throw Error('企業角色無效。');
+      if (roleId !== 'random' && this.lobby.players.some(player => player.roleId === roleId)) throw Error('這家企業已經被其他玩家選走了，請選別家。');
+      const selectedColor = color === null || color === undefined ? freeColor(this.lobby.players) : Number(color);
+      if (!Number.isInteger(selectedColor) || selectedColor < 0 || selectedColor >= PLAYER_COLORS.length) throw Error('顏色選項無效。');
+      if (this.lobby.players.some(player => player.color === selectedColor)) throw Error('這個顏色已經被其他玩家選走了，請選別的顏色。');
+      const peerId = `ai-${rid()}`;
+      const player = {
+        peerId,
+        name: this.uniqueName(cleanName(name, `電腦 ${this.lobby.players.filter(p => p.isAI).length + 1}`), peerId),
+        roleId,
+        color: selectedColor,
+        host: false,
+        isAI: true,
+        aiDifficulty: normalizeAIDifficulty(aiDifficulty),
+        connected: true
+      };
+      this.lobby.players.push(player);
+      this.broadcastLobby();
+      return peerId;
+    }
+
+    removeAI(peerId) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player) return false;
+      this.lobby.players = this.lobby.players.filter(p => p !== player);
+      this.broadcastLobby();
+      return true;
+    }
+
+    renamePlayer(peerId, name) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player) return false;
+      player.name = this.uniqueName(cleanName(name, player.name), peerId);
+      this.broadcastLobby();
+      return true;
+    }
+
+    setAIDifficulty(peerId, difficulty) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player || !AI_DIFFICULTIES.some(item => item.id === String(difficulty))) return false;
+      player.aiDifficulty = normalizeAIDifficulty(difficulty);
+      this.broadcastLobby();
+      return true;
     }
 
     // 房主分配企業：同一家只能一個人選（未定新創集團可以多人）。回傳錯誤訊息，成功時回傳 null。
@@ -953,7 +1021,7 @@ export const PartyNet = (() => {
       this.lobby.confirms = [];
       const config = {
         seed: Date.now(),
-        players: this.lobby.players.map(p => ({ name: p.name, roleId: p.roleId, color: p.color })),
+        players: this.lobby.players.map(p => ({ name: p.name, roleId: p.roleId, color: p.color, isAI: Boolean(p.isAI), aiDifficulty: normalizeAIDifficulty(p.aiDifficulty) })),
         mode: this.lobby.mode,
         rounds: this.lobby.rounds,
         target: this.lobby.target,
@@ -965,12 +1033,13 @@ export const PartyNet = (() => {
         debug: this.lobby.debug,
         net: {
           roomCode: this.code, hostId: this.hostId,
-          owners: Object.fromEntries(this.lobby.players.map((p, i) => [`player-${i + 1}`, p.peerId])),
-          peerNames: Object.fromEntries(this.lobby.players.map((p, i) => [p.peerId, p.name]))
+          // AI 沒有 clientId；null 代表由房主這個權威端處理其回合。
+          owners: Object.fromEntries(this.lobby.players.map((p, i) => [`player-${i + 1}`, p.isAI ? null : p.peerId])),
+          peerNames: Object.fromEntries(this.lobby.players.filter(p => !p.isAI).map(p => [p.peerId, p.name]))
         }
       };
       this.broadcastData({ t: 'start', config });
-      this.playerIds = new Map(Object.entries(config.net.owners).map(([playerId, peerId]) => [peerId, playerId]));
+      this.playerIds = new Map(Object.entries(config.net.owners).filter(([, peerId]) => peerId).map(([playerId, peerId]) => [peerId, playerId]));
       this.broadcastLobby();
       this.onStart?.(config);
     }
@@ -1018,7 +1087,7 @@ export const PartyNet = (() => {
     kickPlayer(peerId, text = '房主已將你移出對局。') {
       if (!this.host || !this.active || !peerId) return false;
       const player = this.lobby?.players.find(entry => entry.peerId === peerId);
-      if (!player || player.host) return false;
+      if (!player || player.host || player.isAI) return false;
       this.blacklist.add(peerId);
       this.sendData({ t: 'kicked', text }, peerId);
       this.autoKickPending.delete(peerId);
@@ -1094,7 +1163,7 @@ export const PartyNet = (() => {
         return;
       }
       if (msg.t === 'lobby' && msg.lobby) {
-        this.lobby = msg.lobby;
+        this.lobby = normalizeLobby(msg.lobby);
         if (msg.lobby.hostId) this.hostId = msg.lobby.hostId;
         if (msg.lobby.code) this.code = msg.lobby.code;
         this.emitLobby();
@@ -1127,7 +1196,7 @@ export const PartyNet = (() => {
       if (msg.t === 'state' && msg.game) {
         if (!this.host && fromPeer === this.hostId) {
           const owners = msg.game.net?.owners;
-          if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).map(([id, peer]) => [peer, id]));
+          if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).filter(([, peer]) => peer).map(([id, peer]) => [peer, id]));
           this.onState?.(msg.game, fromPeer, msg.forceSync === true);
         }
         return;
@@ -1148,7 +1217,7 @@ export const PartyNet = (() => {
       if (msg.t === 'start' && msg.config) {
         if (this.lobby) this.lobby.status = 'playing';
         const owners = msg.config.net?.owners;
-        if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).map(([id, peer]) => [peer, id]));
+        if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).filter(([, peer]) => peer).map(([id, peer]) => [peer, id]));
         this.onStart?.(msg.config);
         return;
       }
@@ -1173,7 +1242,7 @@ export const PartyNet = (() => {
         return;
       }
       if (msg.t === 'confirm-update' && msg.lobby) {
-        this.lobby = msg.lobby; this.emitLobby(); return;
+        this.lobby = normalizeLobby(msg.lobby); this.emitLobby(); return;
       }
       if (msg.t === 'return-lobby') {
         if (this.lobby) this.lobby.status = 'waiting';
@@ -1252,6 +1321,7 @@ export const PartyNet = (() => {
       if (!owners) return true;
       const active = state.players?.[state.turnIndex];
       if (!active) return true;
+      if (active.isAI) return this.host;
       const owner = owners[active.id];
       return !owner || owner === this.peerId;
     }
@@ -1259,7 +1329,7 @@ export const PartyNet = (() => {
     ownerName(state) {
       const active = state?.players?.[state?.turnIndex];
       const owner = state?.net?.owners?.[active?.id];
-      return state?.net?.peerNames?.[owner] || '';
+      return active?.isAI ? active.name : state?.net?.peerNames?.[owner] || '';
     }
   }
 

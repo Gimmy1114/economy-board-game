@@ -667,7 +667,7 @@ html,body{margin:0}
 .lobby-role-wrap .role-skill-info{position:absolute;right:8px;top:8px;z-index:2}
 .role-skill-info:hover,.setup-role-info:hover{background:#24615c;color:#fff}
 .setup-role-info{margin-left:5px;flex:none}
-.setup-player{grid-template-columns:32px minmax(80px,1fr) 36px minmax(120px,1.25fr) 24px 24px}
+.setup-player{grid-template-columns:32px minmax(72px,1fr) minmax(72px,.8fr) minmax(72px,.8fr) 36px minmax(120px,1.25fr) 24px 24px}
 .role-skill-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:18px;background:rgba(3,15,22,.72);backdrop-filter:blur(5px)}
 .role-skill-overlay[hidden]{display:none}
 .role-skill-dialog{position:relative;width:min(420px,100%);padding:28px;border:1px solid #31545a;border-radius:16px;background:linear-gradient(145deg,#142b35,#0d1d27);color:#e6f4f0;box-shadow:0 22px 70px #0009}
@@ -683,7 +683,7 @@ html,body{margin:0}
 .shield-fragment-left{--piece-x:-46px;--piece-r:-24deg}.shield-fragment-right{--piece-x:46px;--piece-r:24deg}
 @keyframes shield-text{0%,38%{opacity:0;transform:scale(.7)}52%{opacity:1;transform:scale(1.05)}72%,100%{opacity:0;transform:scale(1.1)}}
 @keyframes shield-fx-out{0%,65%{opacity:1}100%{opacity:0}}
-@media(max-width:600px){.shield-block-fx strong{margin-top:112px}.setup-player{grid-template-columns:30px minmax(50px,1fr) 30px minmax(80px,1fr) 25px 24px}}
+@media(max-width:600px){.shield-block-fx strong{margin-top:112px}.setup-player{grid-template-columns:24px minmax(0,1fr) minmax(0,.8fr) minmax(0,.8fr) 30px minmax(0,1fr) 25px 24px}.setup-player select,.setup-player input{min-width:0;font-size:11px}}
 .evil-survivor-scene{min-height:100%;padding:18px 14px}
 .market-phase{flex:none;margin:0 0 2px;padding:4px 11px;border:1px solid #f0d4b8;border-radius:999px;background:rgba(255,247,237,.94);color:#a6532b;font-size:clamp(11px,1.3vw,14px);font-weight:900;line-height:1.2;box-shadow:0 2px 8px rgba(116,67,35,.08)}
 .market-phase.stage-2,.market-phase.stage-3{border-color:#edc6ae;color:#a8462e}

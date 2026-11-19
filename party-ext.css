@@ -1855,6 +1855,16 @@ body.debug-mode .ghost-piece:hover { filter: drop-shadow(0 0 11px rgba(160, 230,
 }
 #spectator-note strong { color: #fff; }
 #spectator-note[hidden] { display: none !important; }
+.ai-thinking #turn-panel { position: relative; }
+.ai-thinking #turn-panel::after {
+  content: '🤖 電腦思考中...';
+  position: absolute;
+  right: 14px;
+  top: 10px;
+  color: #ffe7a3;
+  font-size: 12px;
+  pointer-events: none;
+}
 .spectator-mode #turn-panel { position: relative; }
 
 .audio-controls {
@@ -2913,3 +2923,21 @@ body.map-pick-mode .board-panel { box-shadow: 0 0 0 2px rgba(20, 184, 166, .35),
   .bankrupt-scene { gap: 12px; }
   .bankrupt-scene > span { font-size: 62px; }
 }
+.ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 5px;
+  padding: 2px 6px;
+  border: 1px solid #c9d9f3;
+  border-radius: 999px;
+  background: #eef5ff;
+  color: #3b629a;
+  font-size: 10.5px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.lobby-section-actions { display: inline-flex; align-items: center; gap: 8px; }
+.lobby-add-ai { padding: 5px 8px; font-size: 11px; }
+.lobby-player.ai-player { border-color: #c9d9f3; background: #f7faff; }
+.lobby-ai-difficulty { min-width: 92px; max-width: 120px; padding: 5px 6px; border: 1px solid #d7e1ed; border-radius: 7px; background: #fff; color: #47627c; font-size: 11px; }

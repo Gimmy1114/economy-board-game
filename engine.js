@@ -1,4 +1,4 @@
-import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,SECTORS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH} from './data.js';
+import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,SECTORS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH,normalizeAIDifficulty} from './data.js';
 
 // 擴充掛鉤：party_engine.js 會註冊這些回呼，原始規則完全保留。
 export const engineHooks={};
@@ -97,6 +97,8 @@ function ensurePartyState(state){
   if(!state.pendingLanding||typeof state.pendingLanding!=='object')state.pendingLanding=null;
   if(!state.cornerSubsidyEvent||typeof state.cornerSubsidyEvent!=='object')state.cornerSubsidyEvent=null;
   for(const p of state.players){
+    p.isAI=Boolean(p.isAI);
+    p.aiDifficulty=normalizeAIDifficulty(p.aiDifficulty);
     p.cash=Number.isFinite(p.cash)?round2(p.cash):START_CASH;
     p.stars=Number.isInteger(p.stars)?p.stars:0;
     p.energy=Number.isInteger(p.energy)?clamp(p.energy,0,9):1;
@@ -137,7 +139,7 @@ export function createGame({players,seed=Date.now(),maxRounds=10,startingCash=ST
   if(!Number.isInteger(limit)||limit<2||limit>30)throw Error('季數上限須為 2–30。');
   if(!Number.isFinite(cash)||cash<0)throw Error('玩家初始總資產須為 0 以上。');
   const state={version:2,mode:'party',board:BOARD.map(t=>({...t})),net:null,round:1,maxRounds:limit,starGoal:STAR_GOAL,turnIndex:0,phase:'roll',rng:n|0||1,seed:n,
-    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
+    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,isAI:Boolean(p.isAI),aiDifficulty:normalizeAIDifficulty(p.aiDifficulty),position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
     ghostRng:ghostSeed(n),ghostPosition:0,ghostTrail:[],
     effects:{},turnGains:{},lastRoll:null,pendingDecision:null,pendingLanding:null,
     log:[],status:'playing',isGameOver:false,resultReason:null,winnerIds:[],sync:null,ext:null,cornerSubsidyEvent:null};

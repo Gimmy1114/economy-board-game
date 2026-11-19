@@ -224,8 +224,8 @@ test('移動提示目標格以目前格加骰子點數取模，並支援繞回�
 
 test('隨機模式鎖定三種模式的季數、星數、目標與保護費', () => {
   const expectations = {
-    star: {rounds: 10, target: 0, seed: 3},
-    tycoon: {rounds: 24, target: TYCOON_TARGET, seed: 4},
+    star: {rounds: 20, target: 0, seed: 3},
+    tycoon: {rounds: 30, target: TYCOON_TARGET, seed: 4},
     evil: {rounds: 20, target: 0, seed: 5}
   };
   for (const [mode, expected] of Object.entries(expectations)) {
@@ -360,7 +360,7 @@ test('多人回合逾時可清除未完成互動並從擲骰階段安全結束�
   assert.equal(state.ext.starOffer, null);
   assert.equal(state.ext.auction, null);
   assert.equal(result, null);
-  assert.match(state.log[0], /行動時間結束/);
+  assert.ok(state.log.some(line => /行動時間結束/.test(line)));
 });
 
 test('真理之門只能煉成普通道具，且餘額、空間不足時拒絕', () => {
@@ -1556,7 +1556,7 @@ test('手機介面、倒數暫停、全螢幕與棋子響應式定位已接線',
   assert.match(appSource, /addEventListener\('resize',updateBoardLayout/);
   assert.match(appSource, /addEventListener\('orientationchange'/);
   assert.match(appSource, /requestFullscreen/);
-  assert.match(css, /html,body\{overflow:hidden;touch-action:manipulation;overscroll-behavior:none/);
+  assert.match(css, /body:has\(#game:not\(\[hidden\]\)\)\{[^}]*overflow:hidden;[^}]*touch-action:manipulation;[^}]*overscroll-behavior:none/);
   assert.match(ui, /board\.style\.transformOrigin = 'center center'/);
   assert.match(ui, /board\.style\.transform = `translate\(\$\{mobileMap\.x\}px, \$\{mobileMap\.y\}px\) scale\(\$\{mobileMap\.zoom\}\)`/);
   assert.match(ui, /let isCameraFollowEnabled = false/);

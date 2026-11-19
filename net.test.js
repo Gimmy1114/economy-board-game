@@ -572,15 +572,15 @@ function withHost(run) {
     PartyNet.getGameState = () => ({status: PartyNet.lobby?.status === 'playing' ? 'playing' : 'waiting'});
     const hostPeer = FakePeer.last;
     hostPeer.emit('open', 'host-peer-id');
-    const join = (peerId, name) => {
+    const join = (peerId, name, {expectAck = true} = {}) => {
       const connection = new FakeConnection(peerId);
       hostPeer.emit('connection', connection);
       assert.equal(typeof connection.handlers.get('data'), 'function');
       assert.equal(typeof connection.handlers.get('open'), 'function');
       connection.emit('open');
       connection.emit('data', {type: 'HANDSHAKE_REQ', clientVersion: ROOM_PREFIX});
-      assert.equal(connection.sent[0].type, 'HANDSHAKE_ACK');
-      connection.emit('data', {t: 'hello', name, clientVersion: ROOM_PREFIX});
+      assert.equal(connection.sent[0].type, expectAck ? 'HANDSHAKE_ACK' : 'HANDSHAKE_REJECT');
+      if (expectAck) connection.emit('data', {t: 'hello', name, clientVersion: ROOM_PREFIX});
       return connection;
     };
     run({join, errors});
@@ -700,10 +700,10 @@ test('只剩 1 位在線玩家時不能開始；第 9 位加入會被拒絕', ()
     PartyNet.lobby.players[1].connected = true;
     for (let i = 2; i <= 7; i++) join(`guest-${i}`, `玩家${i}`);
     assert.equal(PartyNet.lobby.players.length, 8);
-    const ninth = join('guest-9', '第九位');
+    const ninth = join('guest-9', '第九位', {expectAck: false});
     assert.equal(PartyNet.lobby.players.length, 8);
-    assert.equal(ninth.sent.at(-1).t, 'refused');
-    assert.match(ninth.sent.at(-1).text, /房間已滿/);
+    assert.equal(ninth.sent.at(-1).type, 'HANDSHAKE_REJECT');
+    assert.match(ninth.sent.at(-1).reason, /房間不存在、已滿/);
     assert.equal(a.open, true);
   });
 });
@@ -972,5 +972,85 @@ test('對局開始後不能換企業', () => {
     a.emit('data', {t: 'role', roleId: 'bank'});
     assert.equal(PartyNet.lobby.players[1].roleId, 'random');
     assert.match(a.sent.findLast(m => m.t === 'error').text, /對局已開始/);
+  });
+});
+
+test('房主可在大廳新增、設定與移除電腦玩家', () => {
+  withHost(({join}) => {
+    const guest = join('guest-a', '人類客機');
+    assert.throws(() => PartyNet.addAI({name: '重複顏色', color: 0}), /顏色已經被其他玩家選走/);
+    assert.equal(PartyNet.lobby.players.length, 2);
+    const aiPeerId = PartyNet.addAI({name: '困難電腦', roleId: 'bank', aiDifficulty: 'hard'});
+    const ai = PartyNet.lobby.players.find(player => player.peerId === aiPeerId);
+    assert.equal(ai?.isAI, true);
+    assert.equal(ai?.aiDifficulty, 'hard');
+    assert.equal(ai?.connected, true);
+    assert.equal(PartyNet.renamePlayer(aiPeerId, '專家電腦'), true);
+    assert.equal(PartyNet.setAIDifficulty(aiPeerId, 'expert'), true);
+    assert.equal(PartyNet.assignColor(aiPeerId, 3), null);
+    assert.equal(PartyNet.lobby.players.find(player => player.peerId === aiPeerId)?.name, '專家電腦');
+    assert.equal(PartyNet.lobby.players.find(player => player.peerId === aiPeerId)?.aiDifficulty, 'expert');
+    assert.equal(PartyNet.removeAI(aiPeerId), true);
+    assert.equal(PartyNet.lobby.players.some(player => player.peerId === aiPeerId), false);
+    assert.equal(guest.open, true);
+  });
+});
+
+test('一位人類加電腦玩家可以開局，AI 不佔用瀏覽器座位且房主可處理 AI 回合', () => {
+  withHost(() => {
+    const aiPeerId = PartyNet.addAI({name: '普通電腦', roleId: 'technology', aiDifficulty: 'normal'});
+    let config = null;
+    PartyNet.onStart = value => { config = value; };
+    PartyNet.startGame();
+    assert.equal(config.players.length, 2);
+    assert.deepEqual(config.players.map(player => player.isAI), [false, true]);
+    assert.equal(config.players[1].aiDifficulty, 'normal');
+    assert.equal(config.net.owners['player-2'], null);
+    assert.equal(PartyNet.playerIds.has(aiPeerId), false);
+    const game = {
+      players: config.players.map((player, index) => ({id: `player-${index + 1}`, isAI: player.isAI, name: player.name})),
+      turnIndex: 1,
+      net: config.net
+    };
+    assert.equal(PartyNet.canAct(game), true);
+  });
+});
+
+test('訪客離開後仍有電腦玩家時房間不會把 AI 當成離線玩家', () => {
+  withHost(({join}) => {
+    const guest = join('guest-a', '人類客機');
+    const aiPeerId = PartyNet.addAI({name: '簡單電腦', roleId: 'bank', aiDifficulty: 'easy'});
+    guest.emit('data', {t: 'leave'});
+    const ai = PartyNet.lobby.players.find(player => player.peerId === aiPeerId);
+    assert.equal(PartyNet.lobby.status, 'waiting');
+    assert.equal(ai?.connected, true);
+    PartyNet.beat(Date.now() + 240000);
+    assert.equal(PartyNet.lobby.players.find(player => player.peerId === aiPeerId)?.connected, true);
+    let config = null;
+    PartyNet.onStart = value => { config = value; };
+    PartyNet.startGame();
+    assert.equal(config.players.some(player => player.isAI), true);
+  });
+});
+
+test('一位人類最多可搭配七位電腦，企業與棋子顏色仍不重複', () => {
+  withHost(() => {
+    const roles = ['auto', 'electronics', 'retail', 'bank', 'investment', 'energy', 'logistics'];
+    const aiIds = roles.map((roleId, index) => PartyNet.addAI({
+      name: `電腦 ${index + 1}`,
+      roleId,
+      aiDifficulty: ['easy', 'normal', 'hard', 'expert'][index % 4]
+    }));
+    assert.equal(aiIds.length, 7);
+    assert.equal(PartyNet.lobby.players.length, 8);
+    assert.equal(new Set(PartyNet.lobby.players.map(player => player.color)).size, 8);
+    assert.equal(new Set(PartyNet.lobby.players.filter(player => player.roleId !== 'random').map(player => player.roleId)).size, 7);
+    let config = null;
+    PartyNet.onStart = value => { config = value; };
+    PartyNet.startGame();
+    assert.equal(config.players.length, 8);
+    assert.equal(config.players.filter(player => player.isAI).length, 7);
+    assert.equal(Object.values(config.net.owners).filter(Boolean).length, 1);
+    assert.equal(Object.values(config.net.owners).filter(owner => owner === null).length, 7);
   });
 });

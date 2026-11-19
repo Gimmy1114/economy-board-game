@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH} from './data.js';
+import {ROLES,ITEMS,BOARD,PARTY_EVENTS,DECISION_OPTIONS,ITEM_CHANCE,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,START_CASH,AI_DIFFICULTIES} from './data.js';
 import {createGame,currentOf,movementPath,rollDie,resolveLanding,chooseDecision,useItem,useSkill,buyStar,acquireTarget,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,getRandomItem,startTurn,engineHooks} from './engine.js';
 
 const game=(seed=42)=>createGame({players:[{name:'甲',roleId:'auto'},{name:'乙',roleId:'technology'}],seed});
@@ -25,7 +25,24 @@ test('棋盤資料符合派對規格',()=>{
   assert.equal(DECISION_OPTIONS.length,2);
   assert.equal(STAR_GOAL,3);assert.equal(STAR_COST,1000);
   assert.equal(ACQUIRE_COST,2000);assert.equal(ACQUIRE_DISCOUNT_COST,1000);assert.equal(REBEL_COST,1000);
-  assert.equal(START_CASH,1200);
+  assert.equal(START_CASH,2000);
+});
+
+test('電腦玩家保存 isAI 與四種難度，缺省值維持相容',()=>{
+  const state=createGame({players:[
+    {name:'人類',roleId:'auto'},
+    {name:'專家電腦',roleId:'technology',isAI:true,aiDifficulty:'expert'}
+  ],seed:42});
+  assert.deepEqual(AI_DIFFICULTIES.map(item=>item.id),['easy','normal','hard','expert']);
+  assert.equal(state.players[0].isAI,false);
+  assert.equal(state.players[0].aiDifficulty,'normal');
+  assert.equal(state.players[1].isAI,true);
+  assert.equal(state.players[1].aiDifficulty,'expert');
+  const fallback=createGame({players:[
+    {name:'甲',roleId:'auto'},
+    {name:'舊資料電腦',roleId:'technology',isAI:true,aiDifficulty:'unknown'}
+  ],seed:43});
+  assert.equal(fallback.players[1].aiDifficulty,'normal');
 });
 
 test('一般隨機道具池會排除特殊道具',()=>{
@@ -206,11 +223,11 @@ test('落地格效果拋錯時仍會釋放移動與事件鎖',()=>{
 test('藍格發財 +300、紅格蕭條 −150、黃格能量 +1',()=>{
   const blue=game();avoidGhost(blue);blue.players[0].position=0;
   rollDie(blue,1);
-  assert.equal(blue.players[0].position,1);assert.equal(blue.players[0].cash,1500);
+  assert.equal(blue.players[0].position,1);assert.equal(blue.players[0].cash,2300);
   assert.equal(blue.turnGains['player-1'],300);assert.equal(blue.phase,'decision');
   const red=game();avoidGhost(red);red.players[0].position=1;
   rollDie(red,1);
-  assert.equal(red.players[0].position,2);assert.equal(red.players[0].cash,1050);
+  assert.equal(red.players[0].position,2);assert.equal(red.players[0].cash,1850);
   assert.match(red.lastRoll.effects[0].text,/150/);
   const yellow=game();avoidGhost(yellow);yellow.players[0].position=2;yellow.players[0].energy=1;
   rollDie(yellow,1);
@@ -245,20 +262,20 @@ test('只有停在幽靈格才觸發扣 150，路過不算，槓桿加倍',()=>{
   assert.equal(roll.struck,true);assert.equal(roll.value,4);
   assert.deepEqual(roll.path,[1,2,3,4]);
   assert.equal(s.players[0].position,4);
-  assert.equal(s.players[0].cash,1050);
+  assert.equal(s.players[0].cash,1850);
   assert.equal(s.phase,'resolve');
   assert.match(s.log[0],/幽靈/);
   const leveraged=game();leveraged.players[0].position=0;leveraged.ghostPosition=4;leveraged.players[0].items=['leverage'];
   useItem(leveraged,'leverage');
   rollDie(leveraged,4);
-  assert.equal(leveraged.players[0].cash,900);
+  assert.equal(leveraged.players[0].cash,1700);
 });
 
 test('決策二選一：投資研發與壓榨勞工',()=>{
   const s=game();avoidGhost(s);
   rollDie(s,1);
   assert.equal(chooseDecision(s,'invest').id,'invest');
-  assert.equal(s.players[0].cash,1200);assert.equal(s.players[0].energy,3);assert.equal(s.phase,'resolve');
+  assert.equal(s.players[0].cash,2000);assert.equal(s.players[0].energy,3);assert.equal(s.phase,'resolve');
   const poor=game();avoidGhost(poor);rollDie(poor,1);
   poor.players[0].cash=200;
   assert.throws(()=>chooseDecision(poor,'invest'),/總資產不足 300/);
@@ -294,10 +311,10 @@ test('123／456 骰子限制本回合點數範圍，槓桿讓藍格與紅格加�
   }
   const blue=game();avoidGhost(blue);blue.players[0].items=['leverage'];useItem(blue,'leverage');
   rollDie(blue,1);
-  assert.equal(blue.players[0].cash,1800);
+  assert.equal(blue.players[0].cash,2600);
   const red=game();avoidGhost(red);red.players[0].position=1;red.players[0].items=['leverage'];useItem(red,'leverage');
   rollDie(red,1);
-  assert.equal(red.players[0].cash,900);
+  assert.equal(red.players[0].cash,1700);
 });
 
 test('護盾可抵擋一次負面技能，並在下次自己回合開始時到期',()=>{
@@ -333,8 +350,8 @@ test('電子製造商專利訴訟：暫停一回合並轉移 200',()=>{
   s.turnIndex=1;s.phase='roll';
   useSkill(s,'player-1');
   assert.equal(s.players[0].skipTurns,1);
-  assert.equal(s.players[0].cash,1000);
-  assert.equal(s.players[1].cash,1400);
+  assert.equal(s.players[0].cash,1800);
+  assert.equal(s.players[1].cash,2200);
   s.phase='resolve';endTurn(s);
   assert.equal(s.phase,'skipped');assert.equal(s.turnIndex,0);
   assert.equal(s.players[0].skipTurns,0);
@@ -346,7 +363,7 @@ test('技能需要 1 點能量，且目標型技能必須指定對手',()=>{
   assert.throws(()=>useSkill(s),/能量不足/);
   const electronics=createGame({players:[{name:'甲',roleId:'auto'},{name:'乙',roleId:'electronics'}],seed:5});
   electronics.turnIndex=1;
-  assert.throws(()=>useSkill(electronics),/選擇一位對手/);
+  assert.throws(()=>useSkill(electronics),/選擇一位正常玩家/);
   const sector=createGame({players:[{name:'甲',roleId:'energy'},{name:'乙',roleId:'auto'}],seed:5});
   assert.throws(()=>useSkill(sector),/選擇一個產業/);
   useSkill(sector,null,'能源與運輸');
@@ -360,13 +377,13 @@ test('十種企業技能都能改變對應狀態',()=>{
   const invest=createGame({players:[{name:'甲',roleId:'investment'},{name:'乙',roleId:'auto'}],seed:5});
   invest.turnIndex=0;invest.players[1].cash=2000;
   useSkill(invest,'player-2');
-  assert.equal(invest.players[0].cash,1700);assert.equal(invest.players[1].cash,1500);
+  assert.equal(invest.players[0].cash,2500);assert.equal(invest.players[1].cash,1500);
 
   const retail=createGame({players:[{name:'甲',roleId:'retail'},{name:'乙',roleId:'auto'}],seed:5});
   retail.turnIndex=0;useSkill(retail);
   retail.turnIndex=1;retail.phase='roll';avoidGhost(retail);retail.players[1].position=0;
   rollDie(retail,1);
-  assert.equal(retail.players[0].cash,1500);assert.equal(retail.players[1].cash,1200);
+  assert.equal(retail.players[0].cash,2300);assert.equal(retail.players[1].cash,2000);
 
   const logistics=createGame({players:[{name:'甲',roleId:'logistics'},{name:'乙',roleId:'auto'}],seed:5});
   logistics.turnIndex=0;logistics.players[1].position=5;logistics.ghostPosition=20;
@@ -379,12 +396,12 @@ test('十種企業技能都能改變對應狀態',()=>{
   property.turnIndex=0;useSkill(property,'player-2');
   assert.equal(property.players[1].rentTo,'player-1');assert.equal(property.players[1].rentTurns,2);
   property.phase='resolve';endTurn(property);
-  assert.equal(property.players[1].cash,1100);assert.equal(property.players[0].cash,1300);
+  assert.equal(property.players[1].cash,1900);assert.equal(property.players[0].cash,2100);
   assert.equal(property.players[1].rentTurns,1);
 
   const agri=createGame({players:[{name:'甲',roleId:'agriculture'},{name:'乙',roleId:'auto'}],seed:5});
   useSkill(agri);
-  assert.equal(agri.players[0].cash,1275);assert.equal(agri.players[1].cash,1050);
+  assert.equal(agri.players[0].cash,2075);assert.equal(agri.players[1].cash,1850);
 
   const tech=createGame({players:[{name:'甲',roleId:'technology'},{name:'乙',roleId:'auto'}],seed:5});
   tech.players[1].energy=3;tech.players[1].cash=2000;
@@ -398,7 +415,7 @@ test('關稅壁壘讓其他玩家紅格扣款加倍兩回合',()=>{
   useSkill(s);
   s.turnIndex=1;s.phase='roll';avoidGhost(s);s.players[1].position=1;
   rollDie(s,1);
-  assert.equal(s.players[1].cash,900);
+  assert.equal(s.players[1].cash,1700);
   assert.match(s.lastRoll.effects[0].text,/關稅壁壘加倍/);
   s.phase='resolve';endTurn(s);
   assert.equal(s.effects.tariff.rounds,1);
@@ -422,7 +439,7 @@ test('買星：1000 總資產換 1 顆星，3 顆星立刻獲勝',()=>{
 
 test('併購：2000 總資產、負總資產折扣 1000、雙方負值 0 元代價',()=>{
   const s=game();avoidGhost(s);
-  assert.equal(canAcquire(s,s.players[0],s.players[1]),false);
+  assert.equal(canAcquire(s,s.players[0],s.players[1]),true);
   s.players[0].cash=2100;s.players[1].cash=800;
   assert.equal(canAcquire(s,s.players[0],s.players[1]),true);
   const deal=acquireTarget(s,'player-2');
@@ -463,7 +480,7 @@ test('子公司每回合上繳 40% 收益，支付 1000 可獨立反撲',()=>{
   s.players[1].parentId='player-1';s.turnGains['player-2']=1000;
   assert.equal(canRebel(s.players[1]),true);
   endTurn(s);
-  assert.equal(s.players[1].cash,800);assert.equal(s.players[0].cash,1600);
+  assert.equal(s.players[1].cash,1600);assert.equal(s.players[0].cash,2400);
   assert.match(s.log.find(line=>/上繳 40%/.test(line))||'',/400/);
 
   const r=game();r.turnIndex=1;r.phase='resolve';r.players[1].parentId='player-1';r.players[1].cash=1000;

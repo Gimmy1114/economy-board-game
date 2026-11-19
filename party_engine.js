@@ -14,7 +14,7 @@ import {
   resolveTileFor, resolveLanding, drawItem, currentOf, statusChips, nextRandom, pick, clamp, round2, roleById, itemById, applyCornerProgress,
   tileNo, tileNoText
 } from './engine.js';
-import { BOARD, ROLES, ITEMS, DECISION_OPTIONS, STAR_COST, STAR_GOAL, START_CASH } from './data.js';
+import { BOARD, ROLES, ITEMS, DECISION_OPTIONS, STAR_COST, STAR_GOAL, START_CASH, normalizeAIDifficulty } from './data.js';
 
 const EXT_VERSION = 4;
 const VOLUNTARY_PAYMENT_SOURCES = new Set(['invest', 'auction', 'buy-star', 'forced-buy-star', 'insider', 'truth-gate', 'acquire', 'rebel']);
@@ -438,6 +438,8 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
     specialUnlockEvents: []
   };
   for (const p of state.players) {
+    p.isAI = Boolean(p.isAI);
+    p.aiDifficulty = normalizeAIDifficulty(p.aiDifficulty);
     extPlayerExt(p);
     p.ext.eliminated = false;
     p.ext.ghostRole = false;
@@ -490,7 +492,11 @@ export function extInitGame(state, { mode = 'star', debug = false, target, round
 
 export function extEnsureState(state) {
   if (!state || typeof state !== 'object') return state;
-  for (const p of state.players || []) extPlayerExt(p);
+  for (const p of state.players || []) {
+    p.isAI = Boolean(p.isAI);
+    p.aiDifficulty = normalizeAIDifficulty(p.aiDifficulty);
+    extPlayerExt(p);
+  }
   if (state.ext && state.ext.version) {
     // 「經典派對」已移除；舊存檔自動升級成企業之星，避免留下幽靈模式。
     if (state.ext.mode === 'classic' || !GAME_MODES[state.ext.mode]) state.ext.mode = extNormalizeMode(state.ext.mode);

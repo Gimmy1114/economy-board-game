@@ -56,3 +56,16 @@ export const ACQUIRE_COST=2000;
 export const ACQUIRE_DISCOUNT_COST=1000;
 export const REBEL_COST=1000;
 export const START_CASH=2000;
+
+// 電腦玩家設定。這些欄位會直接保存到玩家狀態，讓單機、多人與匯入存檔共用同一格式。
+export const AI_DIFFICULTIES=[
+  {id:'easy',name:'簡單',badge:'🤖 簡單'},
+  {id:'normal',name:'普通',badge:'🤖 普通'},
+  {id:'hard',name:'困難',badge:'🤖 困難'},
+  {id:'expert',name:'專家',badge:'🤖 專家'}
+];
+export const DEFAULT_AI_DIFFICULTY='normal';
+export function normalizeAIDifficulty(value){
+  const id=String(value||'').toLowerCase();
+  return AI_DIFFICULTIES.some(x=>x.id===id)?id:DEFAULT_AI_DIFFICULTY;
+}

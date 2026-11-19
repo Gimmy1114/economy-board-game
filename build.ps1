@@ -7,6 +7,7 @@ $files = @(
   'party_data.js',
   'engine.js',
   'party_engine.js',
+  'ai_engine.js',
   'sync.js',
   'net.js',
   'audio_system.js',
@@ -25,4 +26,17 @@ $header = "// Generated from $($files -join ', '). Run node build.mjs (or build.
 $output = $header + ($parts -join "`r`n`r`n")
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText((Join-Path $root 'game.js'), $output, $utf8)
+[byte[]]$gameBytes = $utf8.GetBytes($output)
+$styleBytes = [System.IO.File]::ReadAllBytes((Join-Path $root 'styles.css'))
+$extStyleBytes = [System.IO.File]::ReadAllBytes((Join-Path $root 'party-ext.css'))
+$stream = New-Object System.IO.MemoryStream
+$stream.Write($gameBytes, 0, $gameBytes.Length)
+$stream.Write($styleBytes, 0, $styleBytes.Length)
+$stream.Write($extStyleBytes, 0, $extStyleBytes.Length)
+$hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($stream.ToArray())
+$version = ([System.BitConverter]::ToString($hash)).Replace('-', '').Substring(0, 8).ToLowerInvariant()
+$indexPath = Join-Path $root 'index.html'
+$index = [System.IO.File]::ReadAllText($indexPath)
+$index = [regex]::Replace($index, '(\b(?:game\.js|styles\.css|party-ext\.css)\?v=)[a-f\d]{8}', { param($match) $match.Groups[1].Value + $version }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+[System.IO.File]::WriteAllText($indexPath, $index, $utf8)
 Write-Host "Built game.js from $($files.Count) source files."

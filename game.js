@@ -1,4 +1,4 @@
-// Generated from data.js, party_data.js, engine.js, party_engine.js, sync.js, net.js, audio_system.js, ui_party.js, app.js. Run node build.mjs (or build.ps1) after source edits.
+// Generated from data.js, party_data.js, engine.js, party_engine.js, ai_engine.js, sync.js, net.js, audio_system.js, ui_party.js, app.js. Run node build.mjs (or build.ps1) after source edits.
 'use strict';
 // 派對棋盤資料：企業技能、道具、格子與即時事件。
 const SECTORS=['製造業','消費業','金融業','能源與運輸','民生業','科技業'];
@@ -58,6 +58,19 @@ const ACQUIRE_COST=2000;
 const ACQUIRE_DISCOUNT_COST=1000;
 const REBEL_COST=1000;
 const START_CASH=2000;
+
+// 電腦玩家設定。這些欄位會直接保存到玩家狀態，讓單機、多人與匯入存檔共用同一格式。
+const AI_DIFFICULTIES=[
+  {id:'easy',name:'簡單',badge:'🤖 簡單'},
+  {id:'normal',name:'普通',badge:'🤖 普通'},
+  {id:'hard',name:'困難',badge:'🤖 困難'},
+  {id:'expert',name:'專家',badge:'🤖 專家'}
+];
+const DEFAULT_AI_DIFFICULTY='normal';
+function normalizeAIDifficulty(value){
+  const id=String(value||'').toLowerCase();
+  return AI_DIFFICULTIES.some(x=>x.id===id)?id:DEFAULT_AI_DIFFICULTY;
+}
 
 
 // ============================================================================
@@ -477,6 +490,8 @@ function ensurePartyState(state){
   if(!state.pendingLanding||typeof state.pendingLanding!=='object')state.pendingLanding=null;
   if(!state.cornerSubsidyEvent||typeof state.cornerSubsidyEvent!=='object')state.cornerSubsidyEvent=null;
   for(const p of state.players){
+    p.isAI=Boolean(p.isAI);
+    p.aiDifficulty=normalizeAIDifficulty(p.aiDifficulty);
     p.cash=Number.isFinite(p.cash)?round2(p.cash):START_CASH;
     p.stars=Number.isInteger(p.stars)?p.stars:0;
     p.energy=Number.isInteger(p.energy)?clamp(p.energy,0,9):1;
@@ -517,7 +532,7 @@ function createGame({players,seed=Date.now(),maxRounds=10,startingCash=START_CAS
   if(!Number.isInteger(limit)||limit<2||limit>30)throw Error('季數上限須為 2–30。');
   if(!Number.isFinite(cash)||cash<0)throw Error('玩家初始總資產須為 0 以上。');
   const state={version:2,mode:'party',board:BOARD.map(t=>({...t})),net:null,round:1,maxRounds:limit,starGoal:STAR_GOAL,turnIndex:0,phase:'roll',rng:n|0||1,seed:n,
-    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
+    players:players.map((p,i)=>({id:`player-${i+1}`,name:names[i],roleId:p.roleId,isAI:Boolean(p.isAI),aiDifficulty:normalizeAIDifficulty(p.aiDifficulty),position:0,color:i,cash:round2(cash),stars:0,energy:1,items:[],marks:EMPTY_CORNER_MARKS(),shields:0,skipTurns:0,detainedTurns:0,detainedTileIndex:null,wantedLevel:0,rentTo:null,rentTurns:0,parentId:null,leverage:false,bankLock:false,noReward:false,forcedRed:false,forcedSteps:null,isMoving:false,isHandlingEvent:false})),
     ghostRng:ghostSeed(n),ghostPosition:0,ghostTrail:[],
     effects:{},turnGains:{},lastRoll:null,pendingDecision:null,pendingLanding:null,
     log:[],status:'playing',isGameOver:false,resultReason:null,winnerIds:[],sync:null,ext:null,cornerSubsidyEvent:null};
@@ -1702,6 +1717,8 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
     specialUnlockEvents: []
   };
   for (const p of state.players) {
+    p.isAI = Boolean(p.isAI);
+    p.aiDifficulty = normalizeAIDifficulty(p.aiDifficulty);
     extPlayerExt(p);
     p.ext.eliminated = false;
     p.ext.ghostRole = false;
@@ -1754,7 +1771,11 @@ function extInitGame(state, { mode = 'star', debug = false, target, rounds, star
 
 function extEnsureState(state) {
   if (!state || typeof state !== 'object') return state;
-  for (const p of state.players || []) extPlayerExt(p);
+  for (const p of state.players || []) {
+    p.isAI = Boolean(p.isAI);
+    p.aiDifficulty = normalizeAIDifficulty(p.aiDifficulty);
+    extPlayerExt(p);
+  }
   if (state.ext && state.ext.version) {
     // 「經典派對」已移除；舊存檔自動升級成企業之星，避免留下幽靈模式。
     if (state.ext.mode === 'classic' || !GAME_MODES[state.ext.mode]) state.ext.mode = extNormalizeMode(state.ext.mode);
@@ -3971,6 +3992,418 @@ function extReturnToLobbyState(state) {
 engineHooks.extraStatusChips = extStatusChips;
 
 
+
+// AI 決策只讀取 state，回傳可供回合流程執行的資料命令。不要在這個檔案
+// 修改棋盤、玩家或 DOM，讓單機與房主權威端都能重複計算同一個決策。
+
+const aiItemIds = new Set(ITEMS.map(item => item.id));
+const aiMythicIds = new Set(MYTHIC_ITEMS.map(item => item.id));
+const aiSpecialIds = new Set(SPECIAL_ITEMS.map(item => item.id));
+const aiDifficultyOrder = Object.freeze({ easy: 0, normal: 1, hard: 2, expert: 3 });
+const aiHazardTiles = Object.freeze(new Set(['tax', 'market', 'invest', 'insider']));
+const aiDiceItems = Object.freeze(new Set(['dice123', 'dice456']));
+const aiSafeMythics = Object.freeze(new Set(['totem', 'indulgence', 'truthGate', 'witchFactor', 'starBlade', 'bankai']));
+
+const aiNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+const aiInteger = (value, fallback = 0) => Number.isFinite(Number(value)) ? Math.round(Number(value)) : fallback;
+const aiClamp = (value, min, max) => Math.max(min, Math.min(max, value));
+const aiRandom = random => typeof random === 'function' ? Number(random()) || 0 : Math.random();
+const aiAlive = player => Boolean(player) && !player.ext?.eliminated && !player.isGhost;
+const aiCash = player => Math.max(0, aiNumber(player?.cash));
+const aiStars = player => Math.max(0, aiInteger(player?.stars));
+
+function aiCountBoardTiles(state, type) {
+  return Array.isArray(state?.board) ? state.board.filter(tile => tile?.type === type).length : 0;
+}
+
+function aiBoardTileAt(state, index) {
+  const board = Array.isArray(state?.board) ? state.board : [];
+  if (!board.length) return null;
+  return board[((index % board.length) + board.length) % board.length] || null;
+}
+
+function aiRouteTiles(state, player, distance = 6) {
+  const board = Array.isArray(state?.board) ? state.board : [];
+  if (!board.length || !player) return [];
+  const start = aiInteger(player.position) || 0;
+  const length = board.length;
+  return Array.from({ length: Math.max(0, distance) }, (_, offset) => {
+    const steps = offset + 1;
+    const index = (start + steps) % length;
+    return { steps, index, tile: board[index] || null };
+  });
+}
+
+/** 讀取這一局當下真正啟用的進階設定與棋盤功能。 */
+function aiReadSettings(state) {
+  const source = state?.advancedSettings && typeof state.advancedSettings === 'object'
+    ? state.advancedSettings : {};
+  const board = Array.isArray(state?.board) ? state.board : [];
+  const marketTiles = board.filter(tile => tile?.type === 'market');
+  const investTiles = board.filter(tile => tile?.type === 'invest');
+  const taxTiles = board.filter(tile => tile?.type === 'tax');
+  const insiderTiles = board.filter(tile => tile?.type === 'insider');
+  const startingAssets = Math.max(1, aiNumber(source.startingAssets, 2000));
+  const marketStartingPrice = Math.max(0, aiInteger(source.blackMarketStartingPrice, 1000));
+  const marketBidIncrement = Math.max(0, aiInteger(source.blackMarketBidIncrement, 250));
+  const ghostAssetFee = Math.max(0, aiInteger(source.ghostExorcismAssets, 1000));
+  const ghostEnergyFee = Math.max(0, aiInteger(source.ghostExorcismEnergy, 1));
+  const ghostPresent = state?.ghostPosition !== undefined && state?.ghostPosition !== null;
+  const ghostEnabled = source.ghostEnabled !== false && ghostPresent;
+  const mergerPrice = Math.max(0, aiInteger(source.mergerPrice, 2000));
+  const insiderEnabled = insiderTiles.length > 0;
+  const marketEnabled = marketTiles.length > 0 && marketStartingPrice > 0 && marketBidIncrement > 0;
+  const ghostActive = ghostEnabled && (ghostAssetFee > 0 || ghostEnergyFee > 0);
+  return {
+    startingAssets,
+    autoEnergy: source.autoEnergy === true,
+    mergerPrice,
+    blackMarket: {
+      enabled: marketEnabled,
+      tileCount: marketTiles.length,
+      startingPrice: marketStartingPrice,
+      bidIncrement: marketBidIncrement,
+      transparent: source.blackMarketTransparent === true,
+      junkEnabled: source.blackMarketJunk === true
+    },
+    ghost: {
+      enabled: ghostActive,
+      tile: aiInteger(state?.ghostPosition, -1),
+      assetFee: ghostAssetFee,
+      energyFee: ghostEnergyFee,
+      angry: source.angryGhost === true
+    },
+    investment: { enabled: investTiles.length > 0, tileCount: investTiles.length },
+    tax: { enabled: taxTiles.length > 0, tileCount: taxTiles.length },
+    insider: { enabled: insiderEnabled, tileCount: insiderTiles.length, cost: insiderEnabled ? 100 : 0 },
+    map: {
+      length: board.length,
+      marketTiles: marketTiles.map(tile => tile.index),
+      investTiles: investTiles.map(tile => tile.index),
+      taxTiles: taxTiles.map(tile => tile.index),
+      insiderTiles: insiderTiles.map(tile => tile.index),
+      blankTiles: board.filter(tile => tile?.type === 'blank' || tile?.type === 'white').map(tile => tile.index)
+    }
+  };
+}
+
+/** 直接掃描 state.board，適用隨機地圖、自訂地圖與純白空白格。 */
+function aiAnalyzeBoard(state, player, { lookahead = 6 } = {}) {
+  const settings = aiReadSettings(state);
+  const route = aiRouteTiles(state, player, lookahead);
+  const ghostIndex = settings.ghost.tile;
+  const ghostTrail = Array.isArray(state?.ghostTrail) ? state.ghostTrail : [];
+  const ghostIndexes = new Set([ghostIndex, ...ghostTrail].filter(Number.isInteger));
+  let redRun = 0;
+  const risks = route.map(entry => {
+    const type = entry.tile?.type || 'blank';
+    redRun = type === 'red' ? redRun + 1 : 0;
+    const ghost = settings.ghost.enabled && ghostIndexes.has(entry.index);
+    const tax = type === 'tax';
+    const market = type === 'market';
+    const invest = type === 'invest';
+    const insider = type === 'insider';
+    return {
+      ...entry,
+      type,
+      ghost,
+      tax,
+      market,
+      invest,
+      insider,
+      redRun,
+      highRisk: ghost || tax || redRun >= 2,
+      safe: !ghost && !tax && type !== 'red'
+    };
+  });
+  return {
+    ...settings,
+    route: risks,
+    riskSteps: risks.filter(tile => tile.highRisk).map(tile => tile.steps),
+    rewardSteps: risks.filter(tile => tile.type === 'blue' || tile.type === 'yellow').map(tile => tile.steps),
+    whiteSteps: risks.filter(tile => tile.type === 'blank' || tile.type === 'white').map(tile => tile.steps),
+    hasGhostRisk: risks.some(tile => tile.ghost),
+    hasTaxRisk: risks.some(tile => tile.tax),
+    hasSpecialRisk: risks.some(tile => aiHazardTiles.has(tile.type))
+  };
+}
+
+function aiInventory(player) {
+  const normal = Array.isArray(player?.items) ? player.items : [];
+  const mythic = Array.isArray(player?.mythics) ? player.mythics.map(entry => typeof entry === 'string' ? { id: entry } : entry).filter(Boolean) : [];
+  const special = Array.isArray(player?.specials) ? player.specials.map(id => ({ id })) : [];
+  return [
+    ...normal.map((id, index) => ({ kind: 'normal', id, index })),
+    ...mythic.map((entry, index) => ({ kind: 'mythic', id: entry.id, index })),
+    ...special.map((entry, index) => ({ kind: 'special', id: entry.id, index }))
+  ];
+}
+
+function aiThreatLevel(state, player) {
+  const rivals = (state?.players || []).filter(other => other?.id !== player?.id && aiAlive(other));
+  return rivals.reduce((score, rival) => score + (
+    (rival.mythics || []).some(entry => (entry?.id || entry) === 'iceMushroom') ? 2 : 0
+  ) + ((rival.mythics || []).some(entry => (entry?.id || entry) === 'vector') ? 1 : 0)
+    + (aiInteger(rival.energy) >= 3 ? 1 : 0), 0);
+}
+
+/** 背包滿格時選擇要丟掉的欄位。 */
+function aiChooseDiscard(state, player, { random = Math.random } = {}) {
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const inventory = aiInventory(player);
+  if (inventory.length < 3) return null;
+  let chosen;
+  if (difficulty === 'easy') {
+    chosen = inventory[0];
+  } else {
+    const duplicateDice = inventory.filter(item => aiDiceItems.has(item.id));
+      const duplicateIds = new Set(duplicateDice.map(item => item.id));
+    const duplicate = duplicateDice.find(item => duplicateDice.some(other => other !== item && other.id === item.id));
+    const disposable = inventory.filter(item => !aiSafeMythics.has(item.id));
+    chosen = duplicate || disposable.sort((a, b) => {
+      const value = item => item.kind === 'normal' ? (item.id === 'shield' ? 4 : item.id === 'swap' ? 2 : item.id === 'leverage' ? 1 : 0) : 5;
+      return value(a) - value(b);
+    })[0] || inventory[0];
+    if (difficulty === 'hard' || difficulty === 'expert') {
+      const weak = inventory.filter(item => item.kind === 'normal' && ['dice123', 'dice456'].includes(item.id));
+      chosen = weak.find(item => duplicateIds.has(item.id)) || chosen;
+    }
+  }
+  // Keep the random argument meaningful for callers that want a tie break while
+  // keeping the simple difficulty's leftmost discard rule deterministic.
+  if (difficulty !== 'easy' && inventory.filter(item => item.id === chosen?.id).length > 1 && aiRandom(random) < 0.5) {
+    chosen = inventory.find(item => item.id === chosen.id) || chosen;
+  }
+  return chosen ? { type: 'DISCARD_ITEM', kind: chosen.kind, id: chosen.id, index: chosen.index } : null;
+}
+
+function aiTargetLeader(state, player) {
+  return (state?.players || []).filter(other => other?.id !== player?.id && aiAlive(other))
+    .sort((a, b) => (aiStars(b) - aiStars(a)) || (aiCash(b) - aiCash(a)))[0] || null;
+}
+
+function aiHasItem(player, id) {
+  return (player?.items || []).includes(id) || (player?.mythics || []).some(entry => (entry?.id || entry) === id) || (player?.specials || []).includes(id);
+}
+
+/** 擲骰前使用道具、技能或保留能量的決策。 */
+function aiChoosePreRollAction(state, player, { random = Math.random } = {}) {
+  if (!player || !aiAlive(player)) return null;
+  const difficulty = normalizeAIDifficulty(player.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const settings = aiReadSettings(state);
+  const analysis = aiAnalyzeBoard(state, player, { lookahead: difficulty === 'easy' ? 4 : 6 });
+  const inventory = aiInventory(player);
+  const has = id => inventory.some(item => item.id === id);
+  if (difficulty === 'easy') {
+    const quick = inventory.find(item => ['shield', 'dice123', 'dice456', 'leverage'].includes(item.id));
+    if (quick) return { type: 'USE_ITEM', id: quick.id, reason: 'easy-random-use' };
+    const swap = inventory.find(item => item.id === 'swap');
+    const target = (state?.players || []).find(other => other.id !== player.id && aiAlive(other));
+    if (swap && target && !(analysis.route[0]?.ghost)) return { type: 'USE_ITEM', id: 'swap', targetId: target.id, reason: 'safe-random-swap' };
+    if (aiInteger(player.energy) >= 1 && aiRandom(random) < 0.5) return { type: 'USE_SKILL', targetId: aiTargetLeader(state, player)?.id || null, reason: 'easy-half-chance' };
+    return null;
+  }
+  const threat = aiThreatLevel(state, player);
+  const fullEnergy = aiInteger(player.energy) >= 3;
+  if (has('iceMushroom') || has('vector') || fullEnergy || threat > 0) {
+    if (has('shield') && (threat > 0 || fullEnergy)) return { type: 'USE_ITEM', id: 'shield', reason: 'defense' };
+    if (analysis.riskSteps.length && has('dice123')) return { type: 'USE_ITEM', id: 'dice123', reason: 'avoid-risk' };
+    if (analysis.riskSteps.length && has('swap') && !analysis.route[0]?.ghost) {
+      const leader = aiTargetLeader(state, player);
+      if (leader) return { type: 'USE_ITEM', id: 'swap', targetId: leader.id, reason: 'avoid-risk' };
+    }
+  }
+  if ((difficulty === 'hard' || difficulty === 'expert') && aiInteger(player.energy) > 0) {
+    const detained = (state?.players || []).find(other => other.id !== player.id && aiAlive(other) && aiInteger(other.detainedTurns) > 0);
+    if (detained && has('swap')) return { type: 'USE_ITEM', id: 'swap', targetId: detained.id, reason: 'escape-trap' };
+    const leader = aiTargetLeader(state, player);
+    if (leader && player.shields && has('iceMushroom')) return { type: 'USE_MYTHIC', id: 'iceMushroom', targetId: leader.id, reason: 'lock-leader' };
+    if (leader && leader.shields > 0 && aiInteger(player.energy) > 0) return { type: 'USE_SKILL', targetId: leader.id, reason: 'break-shield' };
+    if (leader && aiInteger(player.energy) > 0 && aiRandom(random) < (difficulty === 'expert' ? 0.85 : 0.65)) return { type: 'USE_SKILL', targetId: leader.id, reason: 'lock-leader' };
+  }
+  if (settings.autoEnergy && aiInteger(player.energy) > 0) {
+    const leader = aiTargetLeader(state, player);
+    if (leader && aiRandom(random) < (difficulty === 'expert' ? 1 : 0.8)) return { type: 'USE_SKILL', targetId: leader.id, reason: 'auto-energy-regenerates' };
+  }
+  if (difficulty === 'expert' && settings.autoEnergy === false && aiInteger(player.energy) < 4 && analysis.rewardSteps.some(step => step <= 4)) return { type: 'HOLD_ENERGY', reason: 'yellow-route' };
+  if (has('leverage') && !analysis.hasGhostRisk && (analysis.rewardSteps.length > 0 || difficulty === 'easy')) return { type: 'USE_ITEM', id: 'leverage', reason: 'amplify-reward' };
+  return null;
+}
+
+/** 70% 預知骰點；其餘回傳 1–6 的期望值評估。 */
+function aiPredictRoll(state, player, { random = Math.random, predictedRoll, roll } = {}) {
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const analysis = aiAnalyzeBoard(state, player, { lookahead: 6 });
+  const rng = aiRandom(random);
+  if (difficulty !== 'expert') {
+    const value = Number.isInteger(Number(roll)) ? aiClamp(Number(roll), 1, 6) : null;
+    return { mode: value ? 'observed' : 'unknown', value, probability: value ? 1 : 0, analysis };
+  }
+  if (rng < 0.7) {
+    const value = Number.isInteger(Number(predictedRoll)) ? aiClamp(Number(predictedRoll), 1, 6) : (1 + Math.floor((rng / 0.7) * 6));
+    const target = analysis.route.find(entry => entry.steps === value);
+    return { mode: 'known', value, probability: 0.7, hazard: target?.highRisk || false, reward: target?.type === 'blue' || target?.type === 'yellow', analysis };
+  }
+  const outcomes = Array.from({ length: 6 }, (_, index) => {
+    const steps = index + 1;
+    const target = analysis.route.find(entry => entry.steps === steps);
+    const utility = target?.ghost ? -analysis.ghost.assetFee - analysis.ghost.energyFee * 200
+      : target?.tax ? -analysis.startingAssets * 0.25
+        : target?.type === 'blue' ? 300 : target?.type === 'yellow' ? 200 : target?.type === 'red' ? -150 : 0;
+    return { steps, utility, hazard: Boolean(target?.highRisk), type: target?.type || 'blank' };
+  });
+  const expected = outcomes.reduce((sum, outcome) => sum + outcome.utility, 0) / outcomes.length;
+  return { mode: 'expected', value: null, probability: 0.3, expected, outcomes, analysis };
+}
+
+/** 黑市出價：回傳 bid/pass 與本次可接受的最高總價。 */
+function aiChooseAuctionAction(state, player, { random = Math.random } = {}) {
+  const settings = aiReadSettings(state);
+  const auction = state?.ext?.auction || state?.auction;
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const cash = aiCash(player);
+  if (!auction || !settings.blackMarket.enabled) return { action: 'pass', maxBid: cash, reason: 'black-market-disabled' };
+  const current = Math.max(0, aiNumber(auction.currentPrice, settings.blackMarket.startingPrice));
+  const increment = Math.max(0, aiNumber(auction.bidIncrement, settings.blackMarket.bidIncrement));
+  if (difficulty === 'expert' && settings.blackMarket.junkEnabled && !settings.blackMarket.transparent && auction.junk === true) {
+    return { action: 'pass', maxBid: 0, reason: 'expert-predicted-junk' };
+  }
+  let maxBid = cash;
+  if (difficulty === 'easy') maxBid = settings.blackMarket.startingPrice + increment;
+  else if (difficulty === 'normal') maxBid = Math.floor(cash * 0.5);
+  else {
+    const leader = aiTargetLeader(state, player);
+    const leading = leader && (aiCash(player) > aiCash(leader) || aiStars(player) > aiStars(leader));
+    const reserve = Math.max(settings.startingAssets * 0.25, settings.mergerPrice);
+    maxBid = Math.max(0, cash - (leading ? reserve : settings.startingAssets * 0.1));
+    if (difficulty === 'hard' && !leading && auction.highestBidder && auction.highestBidder !== player.id) {
+      maxBid = Math.min(cash, current + increment * (1 + (aiRandom(random) < 0.5 ? 0 : 1)));
+    }
+    if (settings.blackMarket.junkEnabled && !settings.blackMarket.transparent) maxBid = Math.floor(maxBid * 0.8);
+  }
+  maxBid = Math.max(0, Math.floor(maxBid));
+  const canBid = current <= maxBid && cash >= current;
+  return {
+    action: canBid ? 'bid' : 'pass', maxBid, currentPrice: current, nextPrice: current + increment,
+    followCount: difficulty === 'easy' && canBid ? 1 : 0,
+    willPassAfterBid: difficulty === 'easy' && canBid,
+    reason: canBid ? 'within-budget' : 'over-budget'
+  };
+}
+
+/** 投資格判斷；資產門檻永遠以當局初始資產比例計算。 */
+function aiChooseInvestAction(state, player) {
+  const settings = aiReadSettings(state);
+  const offer = state?.ext?.investOffer || state?.investOffer;
+  if (!settings.investment.enabled || !offer || offer.playerId && offer.playerId !== player?.id) return { action: 'skip', reason: 'investment-disabled' };
+  const cost = Math.max(0, aiInteger(offer.cost, Math.floor(aiCash(player) * 0.5)));
+  if (cost <= 0 || aiCash(player) < cost) return { action: 'skip', reason: 'insufficient-cash', cost };
+  const rivals = (state?.players || []).filter(other => other.id !== player?.id && aiAlive(other));
+  const second = rivals.sort((a, b) => aiCash(b) - aiCash(a))[0];
+  const lead = aiCash(player) - aiCash(second);
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const doomNear = state?.ext?.mode === 'evil' && aiInteger(state?.ext?.doomEvery) > 0 && ((aiInteger(state?.round) % aiInteger(state.ext.doomEvery)) === aiInteger(state.ext.doomEvery) - 1);
+  const should = difficulty === 'easy' ? true
+    : difficulty === 'normal' ? lead > settings.startingAssets * 0.8 && !doomNear
+      : difficulty === 'hard' ? !doomNear && (lead > 0 || aiCash(player) > settings.startingAssets * 2)
+        : !doomNear && (lead > settings.startingAssets * 0.4 || aiCash(player) > settings.startingAssets * 2);
+  return { action: should ? 'invest' : 'skip', cost, reason: should ? 'asset-lead' : 'preserve-assets' };
+}
+
+/** 查稅局二選一，依難度與模式狀態決定付錢或拘留。 */
+function aiChooseTaxAction(state, player, { random = Math.random } = {}) {
+  const settings = aiReadSettings(state);
+  const offer = state?.ext?.taxChoice || state?.taxChoice;
+  if (!settings.tax.enabled || !offer || (offer.playerId && offer.playerId !== player?.id)) return { action: 'skip', reason: 'tax-disabled' };
+  const terms = typeof state?.ext?.taxTerms === 'function' ? state.ext.taxTerms : null;
+  const wanted = aiInteger(player?.wantedLevel);
+  const tax = wanted >= 3 ? aiCash(player) : Math.floor(aiCash(player) * 0.5);
+  const hasIndulgence = aiHasItem(player, 'indulgence');
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const doomNear = state?.ext?.mode === 'evil' && aiInteger(state?.ext?.doomEvery) > 0 && ((aiInteger(state?.round) % aiInteger(state.ext.doomEvery)) === aiInteger(state.ext.doomEvery) - 1);
+  if (difficulty === 'easy') return { action: aiRandom(random) < 0.5 ? 'pay' : 'detain', amount: tax, reason: 'easy-random' };
+  if (hasIndulgence) return { action: 'pay', amount: tax, reason: 'use-indulgence' };
+  if ((difficulty === 'hard' || difficulty === 'expert') && doomNear) return { action: 'detain', amount: tax, reason: 'protect-before-doom' };
+  const starNear = state?.ext?.mode === 'star' && aiInteger(state.starGoal || state.ext?.targetStars, 3) - aiStars(player) <= 1;
+  if ((difficulty === 'hard' || difficulty === 'expert') && starNear && aiCash(player) >= tax + 300) return { action: 'pay', amount: tax, reason: 'star-sprint' };
+  if (difficulty === 'normal') return { action: aiCash(player) > settings.startingAssets * 1.5 ? 'detain' : 'pay', amount: tax, reason: 'asset-threshold' };
+  return { action: aiCash(player) > settings.startingAssets ? 'detain' : 'pay', amount: tax, reason: terms ? 'dynamic-terms' : 'asset-threshold' };
+}
+
+/** 內線交易是否支付 100 元啟動輪盤。 */
+function aiChooseInsiderAction(state, player) {
+  const settings = aiReadSettings(state);
+  const offer = state?.ext?.insiderOffer || state?.insiderOffer;
+  if (!settings.insider.enabled || !offer || (offer.playerId && offer.playerId !== player?.id)) return { action: 'skip', budget: 0, reason: 'insider-disabled' };
+  const cash = aiCash(player);
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const reserve = difficulty === 'easy' ? 0 : settings.startingAssets * (difficulty === 'normal' ? 0.1 : 0.05);
+  const should = cash > 100 + reserve && (difficulty === 'easy' || cash > 500 || difficulty === 'expert');
+  return { action: should ? 'pay' : 'skip', budget: should ? 100 : 0, reason: should ? 'cash-available' : 'preserve-cash' };
+}
+
+/** 快速二選一：簡單難度偏向隨機，其餘難度選擇可用效益較高的選項。 */
+function aiChooseDecisionAction(state, player, { random = Math.random } = {}) {
+  const decision = state?.pendingDecision;
+  if (!decision || (decision.playerId && decision.playerId !== player?.id)) return null;
+  const available = (decision.options || []).filter(option => option.hidden !== true && option.available !== false);
+  if (!available.length) return null;
+  const difficulty = normalizeAIDifficulty(player?.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const selected = difficulty === 'easy'
+    ? available[Math.min(available.length - 1, Math.floor(aiRandom(random) * available.length))]
+    : [...available].sort((a, b) => ((Number(b.cash) || 0) + (Number(b.energy) || 0) * 80) - ((Number(a.cash) || 0) + (Number(a.energy) || 0) * 80))[0];
+  return { type: 'DECISION', optionId: selected.id, reason: difficulty === 'easy' ? 'easy-random' : 'best-utility' };
+}
+
+/** 併購、買星與結束回合的高階策略摘要。 */
+function aiPlanTurn(state, playerOrId, options = {}) {
+  const player = typeof playerOrId === 'string' ? (state?.players || []).find(entry => entry.id === playerOrId) : playerOrId;
+  if (!player) return { action: 'wait', reason: 'player-not-found' };
+  const settings = aiReadSettings(state);
+  const difficulty = normalizeAIDifficulty(player.aiDifficulty || DEFAULT_AI_DIFFICULTY);
+  const analysis = aiAnalyzeBoard(state, player, { lookahead: difficulty === 'easy' ? 4 : 6 });
+  const discard = aiChooseDiscard(state, player, options);
+  const preRoll = aiChoosePreRollAction(state, player, options);
+  const roll = aiPredictRoll(state, player, options);
+  const leader = aiTargetLeader(state, player);
+  const mergerReady = aiCash(player) >= settings.mergerPrice && leader && leader.id !== player.id;
+  const starReady = state?.ext?.mode === 'star' && aiCash(player) >= aiInteger(state.ext.starPrice, 1000) && (analysis.route.some(entry => entry.steps <= 2 && entry.index === 0) || aiStars(player) >= aiInteger(state.starGoal, 3) - 1);
+  return {
+    playerId: player.id,
+    difficulty,
+    settings,
+    analysis,
+    discard,
+    preRoll,
+    roll,
+    auction: aiChooseAuctionAction(state, player, options),
+    investment: aiChooseInvestAction(state, player),
+    tax: aiChooseTaxAction(state, player, options),
+    insider: aiChooseInsiderAction(state, player),
+    merger: mergerReady ? { action: 'acquire', targetId: leader.id, cost: settings.mergerPrice } : { action: 'skip', reason: 'not-ready' },
+    mythic: aiHasItem(player, 'truthGate') && aiCash(player) < settings.startingAssets * 0.5
+      ? { action: 'USE_MYTHIC', id: 'truthGate', reason: 'need-cash' }
+      : aiHasItem(player, 'truthGate') && aiCash(player) > settings.startingAssets * 1.5 && aiInventory(player).length < 3
+        ? { action: 'USE_MYTHIC', id: 'truthGate', reason: 'forge-item' }
+        : aiHasItem(player, 'starBlade') && state?.ext?.mode === 'star'
+          ? { action: 'RUSH_START', reason: 'star-blade' } : { action: 'skip' },
+    ghostMove: difficulty === 'expert' && (player.isGhost || player.ext?.ghostRole)
+      ? (() => { const target = [...(state?.players || [])].filter(other => other.id !== player.id && aiAlive(other)).sort((a, b) => aiCash(b) - aiCash(a))[0]; return target ? { action: 'CHASE', targetId: target.id, targetIndex: aiInteger(target.position) } : { action: 'wait' }; })()
+      : { action: 'skip' },
+    star: starReady ? { action: 'buy-star', reason: 'near-start' } : { action: 'skip' },
+    energyPolicy: settings.autoEnergy ? 'spend' : (difficulty === 'easy' ? 'spend' : 'reserve')
+  };
+}
+
+// 常用別名，讓未來回合排程可以用語意化名稱接入而不複製決策規則。
+const aiDecideTurn = aiPlanTurn;
+const aiEvaluateState = aiAnalyzeBoard;
+const aiChooseAction = aiChoosePreRollAction;
+const aiNormalizeDifficulty = value => normalizeAIDifficulty(value);
+
+const aiEngineVersion = '1.0.0';
+
+
 // Revision ordering is shared by every tab; page navigation stays local to each tab.
 function syncInfo(game){
   if(!game)return null;
@@ -4040,7 +4473,20 @@ const PartyNet = (() => {
     debug: 1
   });
   const cleanName = (name, fallback) => String(name ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 16) || fallback;
-  const isOnline = p => p.host || p.connected !== false;
+  // 電腦玩家沒有 PeerJS 連線，但在房間裡永遠視為在線。
+  const isOnline = p => Boolean(p?.isAI) || p.host || p.connected !== false;
+  const normalizeLobby = lobby => {
+    if (!lobby || !Array.isArray(lobby.players)) return lobby;
+    return {
+      ...lobby,
+      players: lobby.players.map(player => ({
+        ...player,
+        isAI: Boolean(player?.isAI),
+        aiDifficulty: normalizeAIDifficulty(player?.aiDifficulty),
+        connected: player?.connected !== false
+      }))
+    };
+  };
   // 預設棋子顏色：優先挑還沒有人使用的索引，顏色在同一局內不重複。
   const freeColor = players => {
     const used = new Set((players || []).map(p => Number(p.color)).filter(Number.isInteger));
@@ -4137,7 +4583,7 @@ const PartyNet = (() => {
         this.code = code;
         this.lobby.code = code;
         this.lobby.hostId = peerId;
-        this.lobby.players = [{ peerId, name: this.name, roleId, color: 0, host: true, connected: true }];
+        this.lobby.players = [{ peerId, name: this.name, roleId, color: 0, host: true, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true }];
         this.emitLobby();
         this.broadcastLobby();
         this.startBeat();
@@ -4177,7 +4623,7 @@ const PartyNet = (() => {
       this.lobby = {
         code: this.code, hostId: this.hostId, status: 'waiting', mode: 'star', rounds: 10, target: 0,
         starGoal: 3, doomEvery: 5, doomPrice: 1000, doomStep: 500, debug: false,
-        confirms: [], players: [{ peerId: this.peerId, name: this.name, roleId: 'random', color: 0, connected: true }]
+        confirms: [], players: [{ peerId: this.peerId, name: this.name, roleId: 'random', color: 0, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true }]
       };
       this._connectTimeout = setTimeout(() => {
         this._connectTimeout = null;
@@ -4637,7 +5083,7 @@ const PartyNet = (() => {
       this.verifiedPeers.add(peerId);
       this.connectedPeers.add(peerId);
       this.lastSeen.set(peerId, Date.now());
-      this.lobby = message.lobby;
+      this.lobby = normalizeLobby(message.lobby);
       this.code = message.lobby.code || this.code;
       this._lastHostSeen = Date.now();
       if (!alreadyVerified) {
@@ -4681,7 +5127,7 @@ const PartyNet = (() => {
       if (!player) {
         if (this.lobby.status !== 'waiting') { this.refuse(peerId, '對局已開始，暫時無法加入。'); return; }
         if (this.lobby.players.length >= MAX_PLAYERS) { this.refuse(peerId, `房間已滿（最多 ${MAX_PLAYERS} 人）。`); return; }
-        player = { peerId, name: this.uniqueName(cleanName(name, '玩家'), peerId), roleId: 'random', color: freeColor(this.lobby.players), host: false, connected: true };
+        player = { peerId, name: this.uniqueName(cleanName(name, '玩家'), peerId), roleId: 'random', color: freeColor(this.lobby.players), host: false, isAI: false, aiDifficulty: DEFAULT_AI_DIFFICULTY, connected: true };
         this.lobby.players.push(player);
       } else if (name) player.name = this.uniqueName(cleanName(name, player.name), peerId);
       this.emitLobby();
@@ -4712,7 +5158,7 @@ const PartyNet = (() => {
     // 房主：玩家離開或斷線。開始前直接移出大廳；對局中只標成已離線（座位還在）。
     playerGone(peerId) {
       const player = this.lobby?.players.find(p => p.peerId === peerId);
-      if (!player || player.host) return;
+      if (!player || player.host || player.isAI) return;
       if (this.lobby.status === 'waiting') this.dropPlayer(peerId);
       else {
         player.connected = false;
@@ -4831,6 +5277,7 @@ const PartyNet = (() => {
       if (paused) return;
       let changed = false;
       for (const p of this.lobby?.players || []) {
+        if (p.isAI) continue;
         if (!isOnline(p)) continue;
         if (now - (this.lastSeen.get(p.peerId) ?? now) > OFFLINE_MS) {
           p.connected = false;
@@ -4871,6 +5318,59 @@ const PartyNet = (() => {
       } else if (this.hostId) {
         this.sendData({ t: 'role', roleId }, this.hostId);
       }
+    }
+
+    // 房主新增電腦玩家。AI 沒有 PeerJS 連線，也不會出現在離線倒數名單。
+    addAI({ name = '', roleId = 'random', color = null, aiDifficulty = DEFAULT_AI_DIFFICULTY } = {}) {
+      if (!this.host || !this.lobby) throw Error('只有房主可以新增電腦玩家。');
+      if (this.lobby.status !== 'waiting') throw Error('對局已開始，不能新增電腦玩家。');
+      if (this.lobby.players.length >= MAX_PLAYERS) throw Error(`最多 ${MAX_PLAYERS} 位玩家。`);
+      if (typeof roleId !== 'string' || !roleId || roleId.length > 40) throw Error('企業角色無效。');
+      if (roleId !== 'random' && this.lobby.players.some(player => player.roleId === roleId)) throw Error('這家企業已經被其他玩家選走了，請選別家。');
+      const selectedColor = color === null || color === undefined ? freeColor(this.lobby.players) : Number(color);
+      if (!Number.isInteger(selectedColor) || selectedColor < 0 || selectedColor >= PLAYER_COLORS.length) throw Error('顏色選項無效。');
+      if (this.lobby.players.some(player => player.color === selectedColor)) throw Error('這個顏色已經被其他玩家選走了，請選別的顏色。');
+      const peerId = `ai-${rid()}`;
+      const player = {
+        peerId,
+        name: this.uniqueName(cleanName(name, `電腦 ${this.lobby.players.filter(p => p.isAI).length + 1}`), peerId),
+        roleId,
+        color: selectedColor,
+        host: false,
+        isAI: true,
+        aiDifficulty: normalizeAIDifficulty(aiDifficulty),
+        connected: true
+      };
+      this.lobby.players.push(player);
+      this.broadcastLobby();
+      return peerId;
+    }
+
+    removeAI(peerId) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player) return false;
+      this.lobby.players = this.lobby.players.filter(p => p !== player);
+      this.broadcastLobby();
+      return true;
+    }
+
+    renamePlayer(peerId, name) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player) return false;
+      player.name = this.uniqueName(cleanName(name, player.name), peerId);
+      this.broadcastLobby();
+      return true;
+    }
+
+    setAIDifficulty(peerId, difficulty) {
+      if (!this.host || !this.lobby || this.lobby.status !== 'waiting') return false;
+      const player = this.lobby.players.find(p => p.peerId === peerId && p.isAI);
+      if (!player || !AI_DIFFICULTIES.some(item => item.id === String(difficulty))) return false;
+      player.aiDifficulty = normalizeAIDifficulty(difficulty);
+      this.broadcastLobby();
+      return true;
     }
 
     // 房主分配企業：同一家只能一個人選（未定新創集團可以多人）。回傳錯誤訊息，成功時回傳 null。
@@ -4950,7 +5450,7 @@ const PartyNet = (() => {
       this.lobby.confirms = [];
       const config = {
         seed: Date.now(),
-        players: this.lobby.players.map(p => ({ name: p.name, roleId: p.roleId, color: p.color })),
+        players: this.lobby.players.map(p => ({ name: p.name, roleId: p.roleId, color: p.color, isAI: Boolean(p.isAI), aiDifficulty: normalizeAIDifficulty(p.aiDifficulty) })),
         mode: this.lobby.mode,
         rounds: this.lobby.rounds,
         target: this.lobby.target,
@@ -4962,12 +5462,13 @@ const PartyNet = (() => {
         debug: this.lobby.debug,
         net: {
           roomCode: this.code, hostId: this.hostId,
-          owners: Object.fromEntries(this.lobby.players.map((p, i) => [`player-${i + 1}`, p.peerId])),
-          peerNames: Object.fromEntries(this.lobby.players.map((p, i) => [p.peerId, p.name]))
+          // AI 沒有 clientId；null 代表由房主這個權威端處理其回合。
+          owners: Object.fromEntries(this.lobby.players.map((p, i) => [`player-${i + 1}`, p.isAI ? null : p.peerId])),
+          peerNames: Object.fromEntries(this.lobby.players.filter(p => !p.isAI).map(p => [p.peerId, p.name]))
         }
       };
       this.broadcastData({ t: 'start', config });
-      this.playerIds = new Map(Object.entries(config.net.owners).map(([playerId, peerId]) => [peerId, playerId]));
+      this.playerIds = new Map(Object.entries(config.net.owners).filter(([, peerId]) => peerId).map(([playerId, peerId]) => [peerId, playerId]));
       this.broadcastLobby();
       this.onStart?.(config);
     }
@@ -5015,7 +5516,7 @@ const PartyNet = (() => {
     kickPlayer(peerId, text = '房主已將你移出對局。') {
       if (!this.host || !this.active || !peerId) return false;
       const player = this.lobby?.players.find(entry => entry.peerId === peerId);
-      if (!player || player.host) return false;
+      if (!player || player.host || player.isAI) return false;
       this.blacklist.add(peerId);
       this.sendData({ t: 'kicked', text }, peerId);
       this.autoKickPending.delete(peerId);
@@ -5091,7 +5592,7 @@ const PartyNet = (() => {
         return;
       }
       if (msg.t === 'lobby' && msg.lobby) {
-        this.lobby = msg.lobby;
+        this.lobby = normalizeLobby(msg.lobby);
         if (msg.lobby.hostId) this.hostId = msg.lobby.hostId;
         if (msg.lobby.code) this.code = msg.lobby.code;
         this.emitLobby();
@@ -5124,7 +5625,7 @@ const PartyNet = (() => {
       if (msg.t === 'state' && msg.game) {
         if (!this.host && fromPeer === this.hostId) {
           const owners = msg.game.net?.owners;
-          if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).map(([id, peer]) => [peer, id]));
+          if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).filter(([, peer]) => peer).map(([id, peer]) => [peer, id]));
           this.onState?.(msg.game, fromPeer, msg.forceSync === true);
         }
         return;
@@ -5145,7 +5646,7 @@ const PartyNet = (() => {
       if (msg.t === 'start' && msg.config) {
         if (this.lobby) this.lobby.status = 'playing';
         const owners = msg.config.net?.owners;
-        if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).map(([id, peer]) => [peer, id]));
+        if (owners && typeof owners === 'object') this.playerIds = new Map(Object.entries(owners).filter(([, peer]) => peer).map(([id, peer]) => [peer, id]));
         this.onStart?.(msg.config);
         return;
       }
@@ -5170,7 +5671,7 @@ const PartyNet = (() => {
         return;
       }
       if (msg.t === 'confirm-update' && msg.lobby) {
-        this.lobby = msg.lobby; this.emitLobby(); return;
+        this.lobby = normalizeLobby(msg.lobby); this.emitLobby(); return;
       }
       if (msg.t === 'return-lobby') {
         if (this.lobby) this.lobby.status = 'waiting';
@@ -5249,6 +5750,7 @@ const PartyNet = (() => {
       if (!owners) return true;
       const active = state.players?.[state.turnIndex];
       if (!active) return true;
+      if (active.isAI) return this.host;
       const owner = owners[active.id];
       return !owner || owner === this.peerId;
     }
@@ -5256,7 +5758,7 @@ const PartyNet = (() => {
     ownerName(state) {
       const active = state?.players?.[state?.turnIndex];
       const owner = state?.net?.owners?.[active?.id];
-      return state?.net?.peerNames?.[owner] || '';
+      return active?.isAI ? active.name : state?.net?.peerNames?.[owner] || '';
     }
   }
 
@@ -6564,6 +7066,13 @@ const PartyUI = (() => {
     const isHost = net?.isHost;
     const modes = window.__partyData?.GAME_MODES || {};
     const roles = window.__partyData?.LOBBY_ROLES || [];
+    const aiDifficulties = window.__partyData?.AI_DIFFICULTIES || [
+      { id: 'easy', name: '簡單', badge: '🤖 簡單' },
+      { id: 'normal', name: '普通', badge: '🤖 普通' },
+      { id: 'hard', name: '困難', badge: '🤖 困難' },
+      { id: 'expert', name: '專家', badge: '🤖 專家' }
+    ];
+    const aiDifficulty = value => aiDifficulties.find(item => item.id === value) || aiDifficulties[1];
     const activeMode = lobby.mode || 'star';
     const meta = modes[activeMode] || modes.star || {};
     const allowed = activeMode === 'star' ? ['rounds', 'starGoal']
@@ -6604,22 +7113,32 @@ const PartyUI = (() => {
         </div>
         <div class="lobby-grid">
           <div class="lobby-players">
-            <div class="lobby-section-head"><span>玩家 ${lobby.players.length}/8</span><small>${net?.connectedPeers?.size || 1} 條連線</small></div>
+            <div class="lobby-section-head"><span>玩家 ${lobby.players.length}/8</span><span class="lobby-section-actions"><small>${net?.connectedPeers?.size || 1} 條連線</small>${isHost && lobby.status === 'waiting' ? `<button type="button" class="secondary lobby-add-ai" data-add-ai ${lobby.players.length >= 8 ? 'disabled' : ''}>＋ 新增電腦玩家</button>` : ''}</span></div>
             ${lobby.players.map((p, i) => {
               const isMe = p.peerId === net?.peerId;
               const isLobbyHost = p.host === true || p.peerId === lobby.hostId || p.peerId === net?.hostId;
+              const isAI = Boolean(p.isAI);
+              const canEditAI = isHost && isAI && lobby.status === 'waiting';
               const role = roles.find(r => r.id === p.roleId) || roles[0];
               const color = colorMeta(p.color ?? i);
-              const colorLabel = `棋子顏色：${color.name}${isMe ? '（點擊更改）' : '（只有本人可以更改）'}`;
-              const colorButton = `<button class="lobby-color-btn" type="button" data-lobby-color="${h(p.peerId)}" style="--swatch:${color.hex}" aria-label="${h(colorLabel)}" title="${h(colorLabel)}" ${isMe && lobby.status === 'waiting' ? '' : 'disabled'}></button>`;
+              const colorLabel = `棋子顏色：${color.name}${isMe || canEditAI ? '（點擊更改）' : '（只有本人可以更改）'}`;
+              const colorButton = `<button class="lobby-color-btn" type="button" data-lobby-color="${h(p.peerId)}" style="--swatch:${color.hex}" aria-label="${h(colorLabel)}" title="${h(colorLabel)}" ${(isMe || canEditAI) && lobby.status === 'waiting' ? '' : 'disabled'}></button>`;
               const hostBadge = isLobbyHost ? '<span class="lobby-host-badge"><span class="host-crown" aria-label="房主" title="房主">👑</span><span>房主</span></span>' : '';
-              const kickButton = isHost && !isMe
+              const aiBadge = isAI ? `<span class="ai-badge" title="電腦難度：${h(aiDifficulty(p.aiDifficulty).name)}">${h(aiDifficulty(p.aiDifficulty).badge)}</span>` : '';
+              const kickButton = isHost && !isMe && !isAI
                 ? `<button class="kick-player-btn lobby-kick-btn" type="button" data-lobby-kick="${h(p.peerId)}" data-kick-name="${h(p.name)}">踢出</button>`
                 : '';
-              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${p.connected === false ? 'offline' : ''}">
+              const removeAIButton = canEditAI ? `<button class="kick-player-btn lobby-kick-btn" type="button" data-ai-remove="${h(p.peerId)}" data-kick-name="${h(p.name)}">移除</button>` : '';
+              const nameControl = isMe || canEditAI
+                ? `<input class="lobby-name-input" data-lobby-name data-peer-id="${h(p.peerId)}" aria-label="${isAI ? '電腦玩家' : '你的玩家'}名稱，按 Enter 或點擊欄外確定" maxlength="16" value="${h(p.name)}">`
+                : `<strong>${h(p.name)}</strong>`;
+              const difficultyControl = isAI && canEditAI
+                ? `<select class="lobby-ai-difficulty" data-lobby-difficulty="${h(p.peerId)}" aria-label="${h(p.name)} 電腦難度">${aiDifficulties.map(d => `<option value="${d.id}" ${d.id === p.aiDifficulty ? 'selected' : ''}>🤖 ${h(d.name)}</option>`).join('')}</select>`
+                : '';
+              return `<div class="lobby-player ${p.host ? 'host' : ''} ${isMe ? 'me' : ''} ${isAI ? 'ai-player' : ''} ${p.connected === false ? 'offline' : ''}">
                 <span class="lobby-avatar">${role?.icon || '🎲'}</span>
-                <div class="lobby-player-main">${isMe ? `<div class="lobby-player-name-line"><input class="lobby-name-input" data-lobby-name data-peer-id="${h(p.peerId)}" aria-label="你的玩家名稱，按 Enter 或點擊欄外確定" maxlength="16" value="${h(p.name)}">${hostBadge}</div>` : `<div class="lobby-player-name-line"><strong>${h(p.name)}</strong>${hostBadge}</div>`}<div class="lobby-player-company-line">${colorButton}<small>${h(role?.name || '未定新創集團')}${p.connected === false ? ' · 已離線' : ' · 已連線'}</small>${kickButton}</div></div>
-                <div class="lobby-player-controls">${(isHost && !isMe) ? `<select data-lobby-role="${i}" class="lobby-role-select" aria-label="替 ${h(p.name)} 選擇企業">${roles.map(r => { const taker = takenBy(r.id, p.peerId); return `<option value="${r.id}" ${r.id === p.roleId ? 'selected' : ''} ${taker ? 'disabled' : ''}>${r.icon} ${h(r.name)}${taker ? `（${h(shorten(taker.name, 6))}）` : ''}</option>`; }).join('')}</select>` : `<span class="lobby-role">${role?.icon || ''} ${h(role?.name || '')}</span>`}</div>
+                <div class="lobby-player-main"><div class="lobby-player-name-line">${nameControl}${aiBadge}${hostBadge}</div><div class="lobby-player-company-line">${colorButton}<small>${h(role?.name || '未定新創集團')}${isAI ? ' · 電腦' : p.connected === false ? ' · 已離線' : ' · 已連線'}</small>${kickButton}${removeAIButton}</div></div>
+                <div class="lobby-player-controls">${(isHost && !isMe) ? `<select data-lobby-role="${h(p.peerId)}" class="lobby-role-select" aria-label="替 ${h(p.name)} 選擇企業">${roles.map(r => { const taker = takenBy(r.id, p.peerId); return `<option value="${r.id}" ${r.id === p.roleId ? 'selected' : ''} ${taker ? 'disabled' : ''}>${r.icon} ${h(r.name)}${taker ? `（${h(shorten(taker.name, 6))}）` : ''}</option>`; }).join('')}</select>` : `<span class="lobby-role">${role?.icon || ''} ${h(role?.name || '')}</span>`}${difficultyControl}</div>
               </div>`;
             }).join('')}
             ${rolePicker}
@@ -6707,10 +7226,14 @@ const PartyUI = (() => {
     });
     // 房主替別人換企業（例如兩個人搶同一家時）：一樣不能選已被選走的。
     $$('[data-lobby-role]').forEach(sel => sel.onchange = e => {
-      const p = lobby.players[Number(sel.dataset.lobbyRole)];
+      const p = lobby.players.find(entry => entry.peerId === sel.dataset.lobbyRole) || lobby.players[Number(sel.dataset.lobbyRole)];
       if (!p || !isHost) return;
       const error = window.PartyNet.assignRole(p.peerId, e.target.value);
       if (error) { roleError(error); showLobby(window.PartyNet.lobby); }
+    });
+    $$('[data-lobby-difficulty]').forEach(sel => sel.onchange = e => {
+      if (!isHost) return;
+      if (!window.PartyNet.setAIDifficulty(sel.dataset.lobbyDifficulty, e.target.value)) showLobby(window.PartyNet.lobby);
     });
     $$('[data-lobby-name]').forEach(input => {
       const submit = () => {
@@ -6719,7 +7242,11 @@ const PartyUI = (() => {
         if (input.dataset.submittedName === name || current?.name === name) return;
         input.dataset.submittedName = name;
         lobbyNameSubmitting = true;
-        try { window.PartyNet.renameSelf(name); }
+        try {
+          const currentPlayer = window.PartyNet.lobby?.players?.find(entry => entry.peerId === input.dataset.peerId);
+          if (currentPlayer?.isAI && isHost) window.PartyNet.renamePlayer(input.dataset.peerId, name);
+          else window.PartyNet.renameSelf(name);
+        }
         finally { lobbyNameSubmitting = false; }
       };
       input.onkeydown = event => {
@@ -6732,22 +7259,31 @@ const PartyUI = (() => {
       window.PartyNet.kickPlayer(button.dataset.lobbyKick, '已由房主移出大廳。');
       sound('error');
     });
+    $$('[data-ai-remove]').forEach(button => button.onclick = () => {
+      if (!isHost || lobby.status !== 'waiting') return;
+      if (confirm(`確定移除「${button.dataset.kickName || '電腦玩家'}」嗎？`)) window.PartyNet.removeAI(button.dataset.aiRemove);
+    });
+    $('[data-add-ai]')?.addEventListener('click', () => {
+      try { window.PartyNet.addAI(); sound('click'); }
+      catch (error) { roleError(error.message); }
+    });
     $$('[data-lobby-color]').forEach(button => button.onclick = () => {
       if (button.disabled) return;
       const net = window.PartyNet;
       if (!net?.active || net.lobby?.status !== 'waiting') return;
-      if (button.dataset.lobbyColor !== net.peerId) {
+      const target = net.lobby?.players?.find(player => player.peerId === button.dataset.lobbyColor);
+      if (button.dataset.lobbyColor !== net.peerId && !(net.isHost && target?.isAI)) {
         app()?.notify?.('只能更改自己的棋子顏色。');
         return;
       }
-      const me = net.myPlayer;
+      const me = target || net.myPlayer;
       openColorPicker({
         current: Number(me?.color ?? 0),
-        taken: net.lobby.players.filter(p => p.peerId !== net.peerId).map(p => ({ color: p.color, name: p.name })),
-        title: '你的棋子顏色',
-        subtitle: '這個房間裡只能更改自己的顏色',
+        taken: net.lobby.players.filter(p => p.peerId !== button.dataset.lobbyColor).map(p => ({ color: p.color, name: p.name })),
+        title: target?.isAI ? `${target.name} 的棋子顏色` : '你的棋子顏色',
+        subtitle: target?.isAI ? '房主可以調整電腦玩家顏色' : '這個房間裡只能更改自己的顏色',
         onPick: color => {
-          const ok = net.setColor(color);
+          const ok = target?.isAI && net.isHost ? !net.assignColor(target.peerId, color) : net.setColor(color);
           sound(ok ? 'click' : 'error');
         }
       });
@@ -8254,8 +8790,27 @@ const PartyUI = (() => {
 
   function clearTurnLock() {
     document.body.classList.remove('spectator-mode');
+    document.body.classList.remove('ai-thinking');
     const overlay = $('#spectator-note');
-    if (overlay) overlay.hidden = true;
+    if (overlay && overlay.dataset.aiThinking === 'true') { overlay.hidden = true; delete overlay.dataset.aiThinking; }
+  }
+
+  // 房主執行器把這個狀態寫進快照；訪客只顯示提示，不會在本地重跑 AI。
+  function setAIThinking(active, name = '', phase = 'turn') {
+    document.body.classList.toggle('ai-thinking', Boolean(active));
+    let overlay = $('#spectator-note');
+    if (!active) {
+      if (overlay?.dataset.aiThinking === 'true') { overlay.hidden = true; delete overlay.dataset.aiThinking; }
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'spectator-note';
+      document.body.appendChild(overlay);
+    }
+    overlay.dataset.aiThinking = 'true';
+    overlay.innerHTML = `🤖 <strong>${h(name || '電腦玩家')}</strong> 電腦思考中...`;
+    overlay.hidden = false;
   }
 
   function lockForeignTurn(p) {
@@ -8437,6 +8992,9 @@ const PartyUI = (() => {
     ensureDebugPanel(p);
     document.body.classList.toggle('debug-mode', Boolean(p.ext?.debug));
     lockForeignTurn(p);
+    const active = p.players?.[p.turnIndex];
+    const thinking = Boolean(active?.isAI && (p.net?.aiThinking?.playerId === active.id || !p.net));
+    setAIThinking(thinking, active?.name, p.net?.aiThinking?.phase || 'turn');
     const net = window.PartyNet;
     if (net?.active && net.lobby && net.lobby.status !== 'playing') showLobby(net.lobby);
     const subsidy = p.cornerSubsidyEvent;
@@ -8913,7 +9471,7 @@ const PartyUI = (() => {
     getAdvancedSettings,
     openJoin: (code, name) => openConnect('join', code, name),
     openSettlement, hideSettlement, showHostLeftNotice, openTilePicker, openTruthGate, openWheel: showWheel, openFateDice,
-    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, resetTurnInteractions,
+    closeExtModal, openDebugItemPicker, updateConfirm, clearTurnLock, setAIThinking, resetTurnInteractions,
     playGhostInterference: flashGhostInterference, playSkillCue, playPortalSmokeEvent: emitPortalSmoke,
     flashCornerSubsidy, startCornerMessage, centerCameraOnPosition, toggleCameraFollow,
     setTurnTimer, updateTurnTimer, turnSeconds, clearTurnInteractions,
@@ -8926,7 +9484,7 @@ globalThis.PartyUI = PartyUI;
 
 
 // 供動態擴充 UI 使用；匯入後的模組資料在同一頁面共享。
-globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS};
+globalThis.__partyData={GAME_MODES,MODE_IDS,PARTY_ROLES,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,SPECIAL_ITEM_BY_ID,SPECIAL_TILE_META,QUICK_DECISIONS,RANDOM_ROLE_ID,ITEMS,WHEEL_EFFECTS,AI_DIFFICULTIES,DEFAULT_AI_DIFFICULTY};
 globalThis.__partyEngine={
   extSettlementData,extAuctionCurrent,extAuctionAction,extAuctionFinish,extAuctionId,extInvest,extTaxPay,extTaxDetain,extTaxTerms,
   extInsiderPay,extUseMythic,extDebugRollAgain,extDebugEndTurn,extModeInfo,extStarPrice,extSkipStarOffer,extResolveReplace,extBuyStar,extCanBuyStar,
@@ -8935,11 +9493,15 @@ globalThis.__partyEngine={
 };
 globalThis.PartyNet=PartyNet;
 globalThis.SoundManager=SoundManager;
+// 決策模組保持純函式；暴露唯讀入口供房主回合排程與除錯工具使用。
+globalThis.__partyAI={aiPlanTurn,aiChoosePreRollAction,aiPredictRoll,aiChooseAuctionAction,aiChooseInvestAction,aiChooseTaxAction,aiChooseInsiderAction,aiChooseDiscard,aiChooseDecisionAction,aiReadSettings,aiAnalyzeBoard};
 
 const $=s=>document.querySelector(s),h=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>Math.round(n).toLocaleString('zh-TW'),signed=n=>`${n>=0?'+':'−'}${money(Math.abs(n))}`;
 const colors=PLAYER_COLORS.map(c=>c.hex);
 const colorMeta=i=>PLAYER_COLORS[Number(i)]||PLAYER_COLORS[0];
+const aiDifficultyMeta=value=>AI_DIFFICULTIES.find(x=>x.id===normalizeAIDifficulty(value))||AI_DIFFICULTIES[1];
+const aiBadge=p=>p?.isAI?`<span class="ai-badge" title="電腦難度：${h(aiDifficultyMeta(p.aiDifficulty).name)}">${h(aiDifficultyMeta(p.aiDifficulty).badge)}</span>`:'';
 const role=id=>PARTY_ROLES.find(x=>x.id===id)||PARTY_ROLES[0],item=id=>ITEMS.find(x=>x.id===id),mythic=id=>MYTHIC_BY_ID[id],boardTile=(state,i)=>boardOf(state)[i];
 const roleStories={
   social:'一支影片讓全城燒起來。你坐在流量儀表板前，準備把對手的公關危機變成自己的紅利。',
@@ -8958,7 +9520,7 @@ const viewKey='economy-party-view-v1';
 const tabId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random()}`;
 let channel=null;
 try{if('BroadcastChannel' in globalThis)channel=new BroadcastChannel(storageKey)}catch{}
-let state=null,page='home',homeMode='choose',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0},{name:'玩家 2',roleId:'hardware',color:1}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
+let state=null,page='home',homeMode='choose',tab='board',setupPlayers=[{name:'玩家 1',roleId:'social',color:0,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY},{name:'玩家 2',roleId:'hardware',color:1,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY}],toastTimer,resetAt=0,dismissedInvestmentSettlementKey='';
 const seenSpecialUnlocks=new Set();
 let deferredInstallPrompt=null;
 let turnClock={key:'',playerId:'',deadline:0,seconds:60,infinite:false,interval:null,expiring:false,paused:false,remaining:0};
@@ -8981,6 +9543,33 @@ const TURN_WATCHDOG_MS=5000;
 let localTurnLocks={isRolling:false,isMoving:false,isHandlingEvent:false,hasRolled:false,isUsingItem:false,pendingAction:null};
 let turnWatchdogTimer=null;
 let turnWatchdogToken=0;
+// 電腦回合只在單機或房主權威端執行。訪客只接收 aiThinking 快照，
+// 因此不會因為各裝置的亂數或動畫時間不同而分叉。
+const AI_STEP_DELAY_MIN=750,AI_STEP_DELAY_MAX=1000,AI_WATCHDOG_MS=45000;
+let aiTurnBusy=false,aiTurnToken=0,aiWatchdogTimer=null,aiAuctionPassKey='';
+const aiAuthority=()=>!PartyNet.active||PartyNet.isHost;
+const aiDelay=(ms=null)=>new Promise(resolve=>setTimeout(resolve,ms==null?(isTestMode()?35:AI_STEP_DELAY_MIN+Math.floor(Math.random()*(AI_STEP_DELAY_MAX-AI_STEP_DELAY_MIN+1))):ms));
+function aiClearWatchdog(){clearTimeout(aiWatchdogTimer);aiWatchdogTimer=null}
+function aiIsCurrent(player=activePlayer()){return Boolean(state?.status==='playing'&&player?.isAI&&aiAuthority())}
+function aiSetThinking(active,phase='turn',player=activePlayer()){
+  if(state?.net){
+    state.net.aiThinking=active&&player?{playerId:player.id,phase,at:Date.now()}:null;
+    try{save()}catch(error){console.warn('AI 思考狀態同步失敗',error)}
+  }
+  try{PartyUI.setAIThinking?.(Boolean(active),player?.name,phase)}catch{}
+}
+function aiWaitForSettled(token,timeout=AI_WATCHDOG_MS){
+  const started=Date.now();
+  return new Promise(resolve=>{
+    const poll=()=>{
+      if(token!==aiTurnToken||!state||state.status!=='playing'||!aiAuthority()){resolve(false);return}
+      if(!animation&&state.phase!=='moving'){resolve(true);return}
+      if(Date.now()-started>=timeout){resolve(false);return}
+      setTimeout(poll,isTestMode()?20:80);
+    };
+    poll();
+  });
+}
 
 function clearTurnWatchdog(){
   clearTimeout(turnWatchdogTimer);
@@ -9308,6 +9897,20 @@ function syncTurnClock(){
   }
   const key=turnClockKey();
   if(!key)return;
+  // 電腦沒有「未操作」的概念；房主執行器可能需要播放多段動畫，
+  // 所以整個 AI 回合都使用無限計時並同步給訪客。
+  if(activePlayer()?.isAI){
+    clearInterval(turnClock.interval);
+    turnClock.interval=null;
+    const playerId=activePlayer().id;
+    const changed=turnClock.key!==key||!turnClock.infinite||turnClock.playerId!==playerId;
+    turnClock={key,playerId,deadline:0,seconds:Infinity,infinite:true,interval:null,expiring:false,paused:false,remaining:0};
+    const timer={key,playerId,deadlineAt:0,seconds:0,infinite:true,paused:false};
+    state.net.turnTimer=timer;
+    if(changed)PartyNet.broadcastEvent({type:'TURN_TIMER',...timer});
+    try{PartyUI.setTurnTimer(timer,true)}catch{}
+    return;
+  }
   if(isTestMode()){
     clearInterval(turnClock.interval);
     const playerId=activePlayer().id;
@@ -9346,6 +9949,8 @@ function finishRoomByExit(reason,winners,title){
 }
 function checkRoomPlayersAfterExit(){
   if(!PartyNet.isHost||!state||state.status!=='playing'||state.isGameOver)return false;
+  const aiAlive=state.players.some(player=>player.isAI&&!player.ext?.eliminated&&!player.isGhost);
+  if(aiAlive)return false;
   const online=PartyNet.lobby?.players?.filter(player=>player.host||player.connected!==false)||[];
   if(online.length!==1||!online[0]?.host)return false;
   const hostId=Object.entries(state.net?.owners||{}).find(([,peerId])=>peerId===PartyNet.peerId)?.[0]||PartyNet.myPlayerId;
@@ -9715,8 +10320,11 @@ async function run(fn,options={}){
     if(auctionBefore&&!state?.ext?.auction)broadcastAuctionResolved(auctionBefore);
     options.afterCommit?.();
   })}
-  catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return}
+  catch(e){notify(e.message||'操作失敗');SoundManager.play('error');return false}
   if(before)animateCashChanges(before);
+  // 人類或訪客動作可能剛好把回合交給電腦；由房主排程下一個權威回合。
+  if(!PartyNet.isClient)setTimeout(aiScheduleTurn,0);
+  return true;
 }
 
 function dispatchSkillCue(playerId){
@@ -9745,6 +10353,190 @@ function runAction(action,fn,options={}){
     return;
   }
   return run(fn,runOptions);
+}
+
+// ---------------------------------------------------------------------------
+// 電腦玩家回合執行器
+// ---------------------------------------------------------------------------
+function aiAction(type,payload,fn,options={}){
+  const player=activePlayer();
+  if(!player?.isAI||!aiAuthority())return Promise.resolve(false);
+  return Promise.resolve(runAction({type,playerId:player.id,...(payload||{})},fn,{...options,authoritative:true})).then(result=>{
+    if(result===false)throw Error('AI 動作未能完成');
+    return true;
+  });
+}
+async function aiResolvePending(player,token){
+  for(let guard=0;guard<24;guard++){
+    if(token!==aiTurnToken||!state||state.status!=='playing')return false;
+    const ext=state.ext||{};
+    if(ext.portalPending?.playerId===player.id){
+      await aiDelay();
+      await aiAction('PORTAL_RESOLVE',{at:ext.portalPending.at},()=>extResolvePortal(state,ext.portalPending.at),{allowPortal:true});
+      continue;
+    }
+    if(ext.vectorPending?.ownerId===player.id){
+      await aiDelay();
+      await aiAction('VECTOR_RESOLVE',{},()=>extResolveVectorPending(state));
+      continue;
+    }
+    if(state.phase==='moving'||animation){
+      if(!await aiWaitForSettled(token))return false;
+      continue;
+    }
+    if(state.pendingDecision?.playerId===player.id){
+      const choice=aiChooseDecisionAction(state,player);
+      if(!choice)return false;
+      await aiDelay();
+      await aiAction('DECISION',{optionId:choice.optionId},()=>chooseDecision(state,choice.optionId));
+      continue;
+    }
+    if(ext.replaceOffer?.playerId===player.id){
+      const discard=aiChooseDiscard(state,player);
+      await aiDelay();
+      if(discard){
+        await aiAction('REPLACE_ITEM',{kind:discard.kind,index:discard.index},()=>extResolveReplace(state,{kind:discard.kind,index:discard.index}));
+      }else{
+        await aiAction('REPLACE_ITEM',{dropNew:true},()=>extResolveReplace(state,{dropNew:true}));
+      }
+      continue;
+    }
+    if(ext.starOffer?.playerId===player.id){
+      const buy=Number(player.cash)>=Number(ext.starOffer.price||Infinity)&&(!player.ext?.bankFreeze);
+      await aiDelay();
+      await aiAction('STAR_OFFER',{buy},()=>buy?extBuyStar(state):extSkipStarOffer(state));
+      continue;
+    }
+    if(ext.forcedStarOffer?.targetId===player.id||ext.forcedStarOffer?.playerId===player.id){
+      const info=extForcedStarInfo(state);
+      const buy=Boolean(info&&Number(player.cash)>=Number(info.cost||Infinity));
+      await aiDelay();
+      if(buy)await aiAction('FORCE_BUY_STAR',{targetId:info.targetId},()=>extForcedBuyStar(state,info.targetId));
+      else await aiAction('FORCE_BUY_STAR',{targetId:info?.targetId},()=>{state.ext.forcedStarOffer=null});
+      continue;
+    }
+    if(ext.investOffer?.playerId===player.id){
+      const decision=aiChooseInvestAction(state,player);
+      await aiDelay();
+      await aiAction('INVEST',{yes:decision.action==='invest'},()=>extInvest(state,decision.action==='invest'));
+      continue;
+    }
+    if(ext.taxChoice?.playerId===player.id){
+      const decision=aiChooseTaxAction(state,player);
+      await aiDelay();
+      await aiAction('TAX',{action:decision.action==='pay'?'pay':'detain'},()=>decision.action==='pay'?extTaxPay(state):extTaxDetain(state));
+      continue;
+    }
+    if(ext.insiderOffer?.playerId===player.id){
+      const decision=aiChooseInsiderAction(state,player);
+      await aiDelay();
+      await aiAction('INSIDER',{yes:decision.action==='pay'},()=>decision.action==='pay'?extInsiderPay(state):(state.ext.insiderOffer=null));
+      continue;
+    }
+    if(ext.wheelPending?.playerId===player.id){
+      await aiDelay();
+      await aiAction('RESOLVE_WHEEL',{at:ext.wheelPending.at},()=>extResolveWheel(state,{playerId:player.id,at:ext.wheelPending.at}));
+      continue;
+    }
+    if(ext.eventPrompt?.playerId===player.id){
+      await aiDelay();
+      await aiAction('CLEAR_EVENT_PROMPT',{},()=>extClearEventPrompt(state));
+      continue;
+    }
+    if(ext.auction){
+      const current=extAuctionCurrent(state);
+      if(current?.id===player.id){
+        const auctionKey=`${auctionWaitId(ext.auction)}:${player.id}`;
+        const forcedPass=aiAuctionPassKey===auctionKey;
+        const decision=forcedPass?{action:'pass'}:aiChooseAuctionAction(state,player);
+        await aiDelay(600+Math.floor(Math.random()*301));
+        await aiAction('AUCTION_ACTION',{action:decision.action},()=>extAuctionAction(state,decision.action),{allowAuction:true});
+        if(!forcedPass&&decision.willPassAfterBid&&decision.action==='bid')aiAuctionPassKey=auctionKey;
+        if(forcedPass)aiAuctionPassKey='';
+        continue;
+      }
+      // 黑市輪到人類時交還控制權；人類完成一手後 run() 會再次排程 AI。
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+async function aiRunTurn(){
+  if(aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return;
+  const player=activePlayer();
+  if(!player?.isAI)return;
+  aiTurnBusy=true;
+  const token=++aiTurnToken;
+  let watchdogFired=false;
+  aiWatchdogTimer=setTimeout(()=>{watchdogFired=true},AI_WATCHDOG_MS);
+  try{
+    aiSetThinking(true,'turn',player);
+    await aiDelay();
+    // 滿包先依難度丟棄，避免黑市或事件獎勵把流程鎖在替換視窗。
+    const discard=aiChooseDiscard(state,player);
+    if(discard&&state.phase==='roll'){
+      await aiAction('DISCARD',{kind:discard.kind,index:discard.index},()=>extDiscard(state,player,discard.kind,discard.index));
+      await aiDelay();
+    }
+    const plan=aiPlanTurn(state,player);
+    const pre=plan.preRoll;
+    if(pre&&pre.type==='USE_ITEM'&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_ITEM',{itemId:pre.id,targetId:pre.targetId},()=>useItem(state,pre.id,pre.targetId));
+    }else if(pre&&pre.type==='USE_MYTHIC'&&pre.id&&pre.id!=='truthGate'&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_MYTHIC',{id:pre.id,payload:pre.payload||{}},()=>extUseMythic(state,pre.id,pre.payload||{}));
+    }else if(pre&&pre.type==='USE_SKILL'&&pre.targetId&&state.phase==='roll'){
+      await aiDelay();
+      await aiAction('USE_SKILL',{targetId:pre.targetId},()=>extUseSkill(state,pre.targetId));
+    }
+    if(token!==aiTurnToken||state.status!=='playing')return;
+    if(state.phase==='roll'){
+      await aiDelay();
+      await rollWithAnimation(true);
+      if(!await aiWaitForSettled(token)){watchdogFired=true;throw Error('棋子動畫逾時')}
+    }
+    const pendingDone=await aiResolvePending(player,token);
+    if(!pendingDone&&state?.phase==='moving'){watchdogFired=true;throw Error('特殊格動畫逾時')}
+    if(pendingDone&&token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&!state.ext?.auction&&['roll','resolve'].includes(state.phase)){
+      const latest=aiPlanTurn(state,player);
+      const target=latest.merger?.targetId&&state.players.find(entry=>entry.id===latest.merger.targetId);
+      if(latest.merger?.action==='acquire'&&target&&canAcquire(state,player,target)){
+        await aiDelay();
+        await aiAction('TARGET_ACTION',{action:'acquire',targetId:target.id},()=>acquireTarget(state,target.id));
+      }
+    }
+    if(token===aiTurnToken&&state.status==='playing'&&activePlayer()?.id===player.id&&['resolve','skipped'].includes(state.phase)){
+      await aiDelay();
+      await aiAction('END_TURN',{},()=>endTurn(state),{clearTurnInteractions:true});
+    }
+  }catch(error){
+    console.error('AI 回合執行失敗',error);
+    notify(`電腦玩家回合已安全收束：${error?.message||'請稍候'}`);
+  }finally{
+    aiClearWatchdog();
+    // 任何子步驟失敗都不能把房間留在 moving／decision 鎖定狀態。
+    if((watchdogFired||state?.phase==='moving')&&state?.status==='playing'&&activePlayer()?.id===player.id){
+      try{
+        cancelAnimation({resumeTimer:false});
+        if(state.phase==='moving'){state.phase='resolve';state.pendingLanding=null;if(state.lastRoll)state.lastRoll.resolved=true}
+        extForceEndTurn(state,'電腦玩家回合逾時，系統自動收束');
+        save();render();
+      }catch(fallbackError){console.error('AI watchdog 收束失敗',fallbackError)}
+    }
+    if(state?.net&&state.net.aiThinking?.playerId===player.id)aiSetThinking(false,'idle',player);
+    aiTurnBusy=false;
+    if(state?.status==='playing')setTimeout(aiScheduleTurn,0);
+  }
+}
+function aiScheduleTurn(){
+  if(aiTurnBusy||!aiAuthority()||!state||state.status!=='playing')return;
+  const player=activePlayer();
+  if(!player?.isAI)return;
+  const auction=state.ext?.auction;
+  if(auction&&extAuctionCurrent(state)?.id!==player.id)return;
+  setTimeout(()=>{if(!aiTurnBusy)void aiRunTurn()},0);
 }
 
 function cashSnapshot(){
@@ -9805,7 +10597,10 @@ function renderRulesContent(container){
 }
 function renderRules(){renderRulesContent($('#rules-content'))}
 function renderSetup(){
-  $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{const c=colorMeta(p.color??i);return `<div class="setup-player"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`}).join('');
+  $('#setup-players').innerHTML=setupPlayers.map((p,i)=>{
+    const c=colorMeta(p.color??i), ai=Boolean(p.isAI), difficulty=normalizeAIDifficulty(p.aiDifficulty);
+    return `<div class="setup-player ${ai?'is-ai':''}"><span class="player-numeral">${i+1}</span><input data-setup-name="${i}" aria-label="玩家 ${i+1} 名稱" maxlength="16" value="${h(p.name)}"><select class="setup-kind" data-setup-kind="${i}" aria-label="玩家 ${i+1} 類型"><option value="human" ${ai?'':'selected'}>人類</option><option value="ai" ${ai?'selected':''}>電腦</option></select>${ai?`<select class="setup-difficulty" data-setup-difficulty="${i}" aria-label="玩家 ${i+1} 電腦難度">${AI_DIFFICULTIES.map(d=>`<option value="${d.id}" ${d.id===difficulty?'selected':''}>🤖 ${h(d.name)}</option>`).join('')}</select>`:''}<button class="setup-color-btn" type="button" data-setup-color="${i}" style="--swatch:${c.hex}" aria-label="更改玩家 ${i+1} 的棋子顏色（目前：${h(c.name)}）" title="棋子顏色：${h(c.name)}"></button><select data-setup-role="${i}" aria-label="玩家 ${i+1} 企業">${LOBBY_ROLES.map(r=>`<option value="${r.id}" ${r.id===p.roleId?'selected':''}>${r.icon} ${h(r.name)}</option>`).join('')}</select><button class="remove-player" data-remove-player="${i}" type="button" aria-label="移除玩家 ${i+1}" ${setupPlayers.length<=2?'disabled':''}>×</button></div>`;
+  }).join('');
   $('#add-player').disabled=setupPlayers.length>=8;
   PartyUI?.renderSetupExtras?.();
 }
@@ -10030,7 +10825,8 @@ function renderTurn(){
     $('#turn-content').innerHTML=`<h2 class="turn-name">${h(finishHeading)}</h2><p class="turn-role">${h(reason)}</p><p class="turn-meta">勝出：<strong>${h(winners||'無')}</strong></p><div class="final-rank">${[...state.players].sort((a,b)=>b.stars-a.stars||b.cash-a.cash).map((x,i)=>`<div><span>${i+1}</span><strong>${h(x.name)}${hostCrown?hostCrown(x.id,state)?'<span class="host-crown" aria-label="房主">👑</span>':'':''}</strong><em>${x.stars}★ · ${money(x.cash)}</em></div>`).join('')}</div><button class="primary" data-action="open-settlement">查看遊戲結算</button><button class="secondary" data-action="new-game">創建新遊戲</button>`;
     return;
   }
-  const localTurn=PartyNet.canAct(state);
+  const aiTurn=Boolean(p.isAI);
+  const localTurn=PartyNet.canAct(state)&&!aiTurn;
   const localLocked=localActionLocked();
   const canRoll=(Boolean(state.ext?.debug)||state.phase==='roll')&&localTurn&&!localLocked,
     canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
@@ -10039,10 +10835,10 @@ function renderTurn(){
   const canAct=['roll','resolve'].includes(state.phase);
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
-  const status=state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
-  const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
+  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
+  const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${aiTurn?' · 🤖 電腦思考中...':localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
+  $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn">⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
 }
 function renderPlayers(){
   $('#player-cards').innerHTML=state.players.map((p,index)=>{
@@ -10056,7 +10852,7 @@ function renderPlayers(){
       ? `<button type="button" class="kick-player-btn" data-kick-peer="${h(ownerPeerId)}" data-kick-name="${h(p.name)}">踢出</button>`:'';
     const cornerMarks=CORNER_PLAYER_MARKS.map(([color,label])=>`<span class="corner-player-mark ${color} ${p.marks?.[color]?'collected':''}" title="${CORNER_MARK_LABELS[color]}角落記號 ${p.marks?.[color]?'已取得':'未取得'}"><i></i>${label}</span>`).join('');
     const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
-    return `<article class="player-card party-player-card ${turnState} ${localClass} ${p.ext?.eliminated?'eliminated':''}" style="--player-color:${p.ext?.eliminated?'#5f8ec4':colors[p.color]}" data-player-card="${h(p.id)}"><div class="player-card-head"><div class="player-identity"><span class="role-icon">${r.icon}</span><div><h3>${h(p.name)}${hostCrown}</h3><div class="player-company-line"><span class="player-color-dot" style="--swatch:${colorMeta(p.color).hex}" title="棋子顏色：${h(colorMeta(p.color).name)}"></span><small>${h(r.name)} · ${h(r.sector)}</small>${kickButton}</div></div></div><div class="player-card-side"><span class="position-label">第 ${tileNo(p.position)} 格</span></div></div><div class="party-money"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 能量</span><strong>${p.energy}</strong></div></div><div class="corner-player-marks" aria-label="四角記號"><small>四角記號</small>${cornerMarks}</div>${chipMarkup(chips)}${p.parentId?`<p class="subsidiary-note">🏢 子公司，每回合收益 40% 上繳 ${h(state.players.find(x=>x.id===p.parentId)?.name||'母公司')}${p.cash>=REBEL_COST?' · 可獨立反撲':''}</p>`:''}${children.length?`<p class="subsidiary-note parent">👑 母公司：${children.map(x=>h(x.name)).join('、')}</p>`:''}<div class="player-items">${Array.from({length:3},(_,i)=>{const slot=inventory[i];return `<span class="mini-item ${slot?(slot.kind==='mythic'?'mythic filled':slot.kind==='special'?'special filled':'filled'):''}" title="${slot?h(slot.meta.desc):'空欄位'}">${slot?slot.meta.icon:'·'}</span>`}).join('')}<small>${inventory.length}/3 道具</small></div></article>`;
+    return `<article class="player-card party-player-card ${turnState} ${localClass} ${p.ext?.eliminated?'eliminated':''}" style="--player-color:${p.ext?.eliminated?'#5f8ec4':colors[p.color]}" data-player-card="${h(p.id)}"><div class="player-card-head"><div class="player-identity"><span class="role-icon">${r.icon}</span><div><h3>${h(p.name)}${aiBadge(p)}${hostCrown}</h3><div class="player-company-line"><span class="player-color-dot" style="--swatch:${colorMeta(p.color).hex}" title="棋子顏色：${h(colorMeta(p.color).name)}"></span><small>${h(r.name)} · ${h(r.sector)}</small>${kickButton}</div></div></div><div class="player-card-side"><span class="position-label">第 ${tileNo(p.position)} 格</span></div></div><div class="party-money"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 能量</span><strong>${p.energy}</strong></div></div><div class="corner-player-marks" aria-label="四角記號"><small>四角記號</small>${cornerMarks}</div>${chipMarkup(chips)}${p.parentId?`<p class="subsidiary-note">🏢 子公司，每回合收益 40% 上繳 ${h(state.players.find(x=>x.id===p.parentId)?.name||'母公司')}${p.cash>=REBEL_COST?' · 可獨立反撲':''}</p>`:''}${children.length?`<p class="subsidiary-note parent">👑 母公司：${children.map(x=>h(x.name)).join('、')}</p>`:''}<div class="player-items">${Array.from({length:3},(_,i)=>{const slot=inventory[i];return `<span class="mini-item ${slot?(slot.kind==='mythic'?'mythic filled':slot.kind==='special'?'special filled':'filled'):''}" title="${slot?h(slot.meta.desc):'空欄位'}">${slot?slot.meta.icon:'·'}</span>`}).join('')}<small>${inventory.length}/3 道具</small></div></article>`;
   }).join('');
 }
 function renderGoals(){
@@ -10322,7 +11118,7 @@ async function rollWithAnimation(authoritative=false){
     PartyNet.sendAction({type:'ROLL_DICE',playerId:PartyNet.myPlayerId});
     return;
   }
-  if(PartyNet.isHost&&state?.net&&!authoritative){
+  if(PartyNet.isHost&&state?.net&&!authoritative&&!activePlayer()?.isAI){
     const owner=state.net.owners?.[activePlayer()?.id];
     if(owner!==PartyNet.peerId){notify('現在不是房主的回合，已等待玩家擲骰。');return}
   }
@@ -10398,6 +11194,9 @@ function targetOptions(){
 function renderModal(){
   const el=$('#party-modal');
   if(page!=='game'||!state){el.hidden=true;return}
+  // AI 的特殊格由房主執行器直接呼叫純函式；房主與訪客都只看回合提示，
+  // 不建立可點擊的本機視窗，避免誤操作或讓訪客各自做出不同決策。
+  if(activePlayer()?.isAI){modal=null;el.hidden=true;return}
   if(state.net&&PartyNet.active){
     const decisionOwner=state.pendingDecision?.playerId;
     if(!PartyNet.canAct(state)||(decisionOwner&&decisionOwner!==PartyNet.myPlayerId)){
@@ -10454,9 +11253,9 @@ function render(){
   try{PartyUI.afterRender(state);}catch(e){console.error(e)}
 }
 
-$('#add-player').addEventListener('click',()=>{if(setupPlayers.length<8){const used=new Set(setupPlayers.map(x=>x.roleId));let number=1;while(setupPlayers.some(x=>x.name===`玩家 ${number}`))number++;const free=PARTY_ROLES.find(x=>!used.has(x.id));const usedColors=new Set(setupPlayers.map(x=>x.color));let color=0;while(usedColors.has(color))color++;setupPlayers.push({name:`玩家 ${number}`,roleId:free?free.id:'random',color});renderSetup()}});
+$('#add-player').addEventListener('click',()=>{if(setupPlayers.length<8){const used=new Set(setupPlayers.map(x=>x.roleId));let number=1;while(setupPlayers.some(x=>x.name===`玩家 ${number}`))number++;const free=PARTY_ROLES.find(x=>!used.has(x.id));const usedColors=new Set(setupPlayers.map(x=>x.color));let color=0;while(usedColors.has(color))color++;setupPlayers.push({name:`玩家 ${number}`,roleId:free?free.id:'random',color,isAI:false,aiDifficulty:DEFAULT_AI_DIFFICULTY});renderSetup()}});
 $('#setup-players').addEventListener('input',e=>{if(e.target.dataset.setupName!==undefined)setupPlayers[Number(e.target.dataset.setupName)].name=e.target.value});
-$('#setup-players').addEventListener('change',e=>{if(e.target.dataset.setupRole!==undefined)setupPlayers[Number(e.target.dataset.setupRole)].roleId=e.target.value});
+$('#setup-players').addEventListener('change',e=>{const i=Number(e.target.dataset.setupRole??e.target.dataset.setupKind??e.target.dataset.setupDifficulty);if(!Number.isInteger(i)||!setupPlayers[i])return;if(e.target.dataset.setupRole!==undefined)setupPlayers[i].roleId=e.target.value;if(e.target.dataset.setupKind!==undefined)setupPlayers[i].isAI=e.target.value==='ai';if(e.target.dataset.setupDifficulty!==undefined)setupPlayers[i].aiDifficulty=normalizeAIDifficulty(e.target.value);if(e.target.dataset.setupKind!==undefined)renderSetup()});
 $('#setup-players').addEventListener('click',e=>{const i=e.target.dataset.removePlayer;if(i!==undefined&&setupPlayers.length>2){setupPlayers.splice(Number(i),1);renderSetup()}});
 async function startGameFromConfig(config){
   resetLocalTurnLocks();
@@ -10478,6 +11277,7 @@ async function startGameFromConfig(config){
   $('#setup-error').textContent='';
   save();render();
   try{PartyUI.onGameStart(state,{fromLobby:Boolean(config.net)});}catch(e){console.error(e)}
+  aiScheduleTurn();
   return next;
 }
 window.__partyStartGame=startGameFromConfig;
@@ -11015,6 +11815,7 @@ window.PartyApp={
   cancelMapPick,
   run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
+  aiScheduleTurn, aiRunTurn, aiResolvePending,
   cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
@@ -11059,3 +11860,4 @@ if(savedAtStart?.status==='playing'){
   try{localStorage.removeItem(storageKey)}catch{}
 }
 renderHomeRoles();renderRules();render();PartyUI.init?.();checkDeveloperUpdate();
+aiScheduleTurn();
