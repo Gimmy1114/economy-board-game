@@ -475,6 +475,9 @@ export function resolveLanding(state,options={}){
   roll.resolved=true;
   state.pendingLanding=null;
   if(engineHooks.afterRoll)engineHooks.afterRoll(state,player,roll,options);
+  // 任何落地擴充都不能留下沒有選項的 decision 狀態；這是引擎層的
+  // 最後一道防線，讓單機、多人同步或 UI 例外都能回到可結束回合。
+  normalizePendingDecision(state);
   if(state.status==='playing'&&state.phase==='roll'){
     if(!struck&&!ghostPlayer){
       const decision={playerId:player.id,kind:'landing',options:DECISION_OPTIONS.map(x=>({...x,available:x.id!=='invest'||player.cash>=300}))};
@@ -493,6 +496,26 @@ export function resolveLanding(state,options={}){
     player.isMoving=false;
     player.isHandlingEvent=false;
   }
+}
+
+export function isValidPendingDecision(state){
+  const pending=state?.pendingDecision;
+  if(!pending||state.status!=='playing'||state.phase!=='decision')return false;
+  const owner=state.players?.find(player=>player.id===pending.playerId);
+  const options=Array.isArray(pending.options)
+    ? pending.options.filter(option=>option&&option.id&&!option.hidden)
+    : [];
+  return Boolean(owner&&options.length);
+}
+
+export function normalizePendingDecision(state){
+  if(!state)return false;
+  const hasPending=Boolean(state.pendingDecision);
+  const invalid=hasPending?!isValidPendingDecision(state):state.phase==='decision';
+  if(!invalid)return false;
+  state.pendingDecision=null;
+  if(state.phase==='decision')state.phase='resolve';
+  return true;
 }
 
 export function chooseDecision(state,optionId){

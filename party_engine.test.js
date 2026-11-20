@@ -784,6 +784,7 @@ test('企業之星經過或停在起點都會建立買星邀請', () => {
   const p = state.players[0];
   p.position = 23;
   p.cash = 5000;
+  p.marks = {red: true, green: true, blue: true, yellow: true};
   avoidGhost(state);
   state.phase = 'roll';
   rollDie(state, 1);
@@ -791,10 +792,18 @@ test('企業之星經過或停在起點都會建立買星邀請', () => {
   assert.equal(state.ext.starOffer.playerId, p.id);
   assert.equal(state.ext.starOffer.passed, true);
   assert.equal(state.ext.starOffer.landed, true);
-  chooseDecision(state, 'squeeze');
+  assert.equal(state.pendingDecision, null, '起始格永遠不能建立二選一決策');
+  assert.equal(state.phase, 'resolve');
+  assert.equal(p.cash, 6000, '集齊四角後踩中起始格應先領取 1,000 元補助金');
   assert.equal(extCanBuyStar(state).ok, true);
   assert.equal(extCanBuyStar(state).offer, true);
-  extSkipStarOffer(state);
+  extBuyStar(state);
+  assert.equal(state.pendingDecision, null, '買下起始格星星後不得殘留二選一決策');
+  assert.equal(state.phase, 'resolve');
+  assert.equal(p.stars, 1);
+  endTurn(state);
+  assert.equal(state.turnIndex, 1, '起始格買星後可以正常交棒');
+  assert.equal(state.phase, 'roll');
   assert.equal(state.ext.starOffer, null);
 
   const passing = make('star');
@@ -1632,6 +1641,30 @@ test('手機介面、倒數暫停、全螢幕與棋子響應式定位已接線',
   assert.match(css, /\.camera-follow-btn\.is-on/);
   assert.match(css, /\.camera-follow-btn\.is-off/);
   assert.doesNotMatch(css, /\.board\.party-board\{[^}]*max-width:95vw[^}]*max-height:85vh[^}]*aspect-ratio:1/);
+});
+
+test('手機回合紀錄以底部列切換，面板不再建立重疊返回鍵', async () => {
+  const {readFileSync} = await import('node:fs');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(ui, /map-history-close|data-map-history-close/);
+  assert.match(ui, /toggleMapHistory\(!mobileMap\.historyOpen\)/);
+  assert.match(ui, /aria-expanded/);
+  assert.match(ui, /map-latest-log-toggle/);
+  assert.doesNotMatch(css, /\.map-history-close/);
+  assert.match(css, /\.map-latest-log-toggle/);
+});
+
+test('無效二選一狀態會在引擎與畫面操作鎖中自動收束', async () => {
+  const {readFileSync} = await import('node:fs');
+  const engine = readFileSync(new URL('./engine.js', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
+  const ui = readFileSync(new URL('./ui_party.js', import.meta.url), 'utf8');
+  assert.match(engine, /export function normalizePendingDecision\(state\)/);
+  assert.match(engine, /state\.pendingDecision=null;\s*if\(state\.phase==='decision'\)state\.phase='resolve'/);
+  assert.match(app, /clearInvalidPendingDecision\(\)\&&!PartyNet\.isClient\)save\(\)/);
+  assert.match(ui, /function gateTurnControls\(p\)/);
+  assert.match(ui, /clearInvalidPendingDecision\?\.\(p\)/);
 });
 
 test('結束回合時沒確認的命運輪盤直接套用、沒回應的特殊格邀請視為放棄，不會卡住下一位玩家', () => {
