@@ -1249,7 +1249,9 @@ engineHooks.afterRoll = (state, player, roll, options = {}) => {
     ext.starOffer = null;
   }
   const tile = boardOf(state)[roll.tileIndex];
-  if (extIsGhost(player) || roll.struck || tile?.special) {
+  // 出發格只負責補助金與起點買星；它沒有二選一決策。
+  // 買星視窗關閉後必須直接回到可結束回合的狀態，不能留下空的 pendingDecision。
+  if (extIsGhost(player) || roll.struck || tile?.special || tile?.type === 'start') {
     state.pendingDecision = null;
     state.phase = 'resolve';
   } else {
@@ -1583,6 +1585,16 @@ export function extMaybeForcedStar(state) {
 
 export function extStarPrice(state) { return Number(state.ext?.starPrice) || STAR_PRICE_START; }
 
+// 起始格不會有快速決策；清除舊存檔或舊版流程留下的等待旗標，
+// 讓買星／放棄買星後一定能回到 resolve 並結束回合。
+function clearStartLandingDecision(state, player) {
+  const tile = player && boardOf(state)[player.position];
+  if (tile?.type !== 'start' || state.pendingDecision?.playerId !== player.id) return false;
+  state.pendingDecision = null;
+  if (state.phase === 'decision') state.phase = 'resolve';
+  return true;
+}
+
 export function extCanBuyStar(state) {
   if (state.status !== 'playing' || !state.ext) return { ok: false, reason: '對局已結束' };
   const p = currentOf(state);
@@ -1622,13 +1634,16 @@ export function extBuyStar(state) {
     log(state, `⭐ ${p.name} 以 ${extMoney(price)} 買下第 ${p.stars} 顆併購星。`);
   }
   ext.starOffer = null;
+  clearStartLandingDecision(state, p);
   extSyncStarBlade(state, p);
   extCheckWin(state);
   return p.stars;
 }
 
 export function extSkipStarOffer(state) {
+  const p = currentOf(state);
   if (state.ext) state.ext.starOffer = null;
+  clearStartLandingDecision(state, p);
   return true;
 }
 

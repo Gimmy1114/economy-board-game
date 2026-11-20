@@ -868,6 +868,9 @@ function resolveLanding(state,options={}){
   roll.resolved=true;
   state.pendingLanding=null;
   if(engineHooks.afterRoll)engineHooks.afterRoll(state,player,roll,options);
+  // 任何落地擴充都不能留下沒有選項的 decision 狀態；這是引擎層的
+  // 最後一道防線，讓單機、多人同步或 UI 例外都能回到可結束回合。
+  normalizePendingDecision(state);
   if(state.status==='playing'&&state.phase==='roll'){
     if(!struck&&!ghostPlayer){
       const decision={playerId:player.id,kind:'landing',options:DECISION_OPTIONS.map(x=>({...x,available:x.id!=='invest'||player.cash>=300}))};
@@ -886,6 +889,26 @@ function resolveLanding(state,options={}){
     player.isMoving=false;
     player.isHandlingEvent=false;
   }
+}
+
+function isValidPendingDecision(state){
+  const pending=state?.pendingDecision;
+  if(!pending||state.status!=='playing'||state.phase!=='decision')return false;
+  const owner=state.players?.find(player=>player.id===pending.playerId);
+  const options=Array.isArray(pending.options)
+    ? pending.options.filter(option=>option&&option.id&&!option.hidden)
+    : [];
+  return Boolean(owner&&options.length);
+}
+
+function normalizePendingDecision(state){
+  if(!state)return false;
+  const hasPending=Boolean(state.pendingDecision);
+  const invalid=hasPending?!isValidPendingDecision(state):state.phase==='decision';
+  if(!invalid)return false;
+  state.pendingDecision=null;
+  if(state.phase==='decision')state.phase='resolve';
+  return true;
 }
 
 function chooseDecision(state,optionId){
@@ -2528,7 +2551,9 @@ engineHooks.afterRoll = (state, player, roll, options = {}) => {
     ext.starOffer = null;
   }
   const tile = boardOf(state)[roll.tileIndex];
-  if (extIsGhost(player) || roll.struck || tile?.special) {
+  // 出發格只負責補助金與起點買星；它沒有二選一決策。
+  // 買星視窗關閉後必須直接回到可結束回合的狀態，不能留下空的 pendingDecision。
+  if (extIsGhost(player) || roll.struck || tile?.special || tile?.type === 'start') {
     state.pendingDecision = null;
     state.phase = 'resolve';
   } else {
@@ -2862,6 +2887,16 @@ function extMaybeForcedStar(state) {
 
 function extStarPrice(state) { return Number(state.ext?.starPrice) || STAR_PRICE_START; }
 
+// 起始格不會有快速決策；清除舊存檔或舊版流程留下的等待旗標，
+// 讓買星／放棄買星後一定能回到 resolve 並結束回合。
+function clearStartLandingDecision(state, player) {
+  const tile = player && boardOf(state)[player.position];
+  if (tile?.type !== 'start' || state.pendingDecision?.playerId !== player.id) return false;
+  state.pendingDecision = null;
+  if (state.phase === 'decision') state.phase = 'resolve';
+  return true;
+}
+
 function extCanBuyStar(state) {
   if (state.status !== 'playing' || !state.ext) return { ok: false, reason: '對局已結束' };
   const p = currentOf(state);
@@ -2901,13 +2936,16 @@ function extBuyStar(state) {
     log(state, `⭐ ${p.name} 以 ${extMoney(price)} 買下第 ${p.stars} 顆併購星。`);
   }
   ext.starOffer = null;
+  clearStartLandingDecision(state, p);
   extSyncStarBlade(state, p);
   extCheckWin(state);
   return p.stars;
 }
 
 function extSkipStarOffer(state) {
+  const p = currentOf(state);
   if (state.ext) state.ext.starOffer = null;
+  clearStartLandingDecision(state, p);
   return true;
 }
 
@@ -6312,8 +6350,8 @@ const PartyUI = (() => {
       const viewport = document.createElement('div'); viewport.className = 'map-viewport';
       const zoom = document.createElement('div'); zoom.className = 'map-zoom-controls'; zoom.innerHTML = '<button type="button" class="zoom-btn" data-map-zoom="in" aria-label="放大地圖" title="放大">＋</button><button type="button" class="zoom-btn" data-map-zoom="out" aria-label="縮小地圖" title="縮小">－</button>';
       const camera = document.createElement('button'); camera.type = 'button'; camera.className = 'camera-follow-btn'; camera.dataset.mapCameraFollow = '1'; camera.innerHTML = '<span class="camera-follow-icon" aria-hidden="true">◎</span><span class="camera-follow-label">跟隨</span>';
-      const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '查看所有最近動態');
-      const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<button type="button" class="map-history-close" data-map-history-close aria-label="關閉動態清單">×</button><div class="map-history-items"></div>';
+      const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '展開最近動態'); ticker.setAttribute('aria-expanded', 'false');
+      const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<div class="map-history-items"></div>';
       map.append(viewport, zoom, camera, ticker, history); controls.append(side, players); grid.prepend(map, controls);
       viewport.append(boardPanel);
       viewport.addEventListener('pointerdown', mapPointerDown);
@@ -6357,8 +6395,7 @@ const PartyUI = (() => {
       const zoom = target.closest('[data-map-zoom]');
       if (zoom) zoomMap(zoom.dataset.mapZoom === 'in' ? 1.2 : 1 / 1.2);
       if (target.closest('[data-map-camera-follow]')) toggleCameraFollow();
-      if (target.closest('[data-map-history-open]')) toggleMapHistory(true);
-      if (target.closest('[data-map-history-close]')) toggleMapHistory(false);
+      if (target.closest('[data-map-history-open]')) { toggleMapHistory(!mobileMap.historyOpen); return; }
       if (target.closest('[data-mobile-mode-rules]')) showMobileModeRules();
       if (target.closest('[data-mobile-panel="players"]')) showMobilePanel('players');
       if (target.closest('[data-mobile-panel="rules"]')) showMobilePanel('rules');
@@ -6558,10 +6595,24 @@ const PartyUI = (() => {
     const log = $('#party-log'), ticker = $('.map-latest-log'), list = $('.map-history-items');
     if (!log || !ticker || !list) return;
     const entries = game?.log || [];
-    ticker.textContent = entries[0] || '等待玩家擲骰。';
+    const latest = entries[0] || '等待玩家擲骰。';
+    ticker.innerHTML = `<span class="map-latest-log-text">${h(latest)}</span><span class="map-latest-log-toggle" aria-hidden="true">${mobileMap.historyOpen ? '▲' : '▼'}</span>`;
+    ticker.setAttribute('aria-expanded', String(mobileMap.historyOpen));
+    ticker.setAttribute('aria-label', mobileMap.historyOpen ? '收合最近動態' : '展開最近動態');
     list.innerHTML = entries.length ? entries.map(item => `<div class="log-item">${h(item)}</div>`).join('') : '<div class="log-item">等待玩家擲骰。</div>';
   }
-  function toggleMapHistory(open) { mobileMap.historyOpen = open; const el = $('.map-history'); if (el) el.hidden = !open; }
+  function toggleMapHistory(open) {
+    mobileMap.historyOpen = Boolean(open);
+    const el = $('.map-history');
+    if (el) el.hidden = !mobileMap.historyOpen;
+    const ticker = $('.map-latest-log');
+    if (ticker) {
+      ticker.setAttribute('aria-expanded', String(mobileMap.historyOpen));
+      ticker.setAttribute('aria-label', mobileMap.historyOpen ? '收合最近動態' : '展開最近動態');
+      const indicator = ticker.querySelector('.map-latest-log-toggle');
+      if (indicator) indicator.textContent = mobileMap.historyOpen ? '▲' : '▼';
+    }
+  }
   function updateMapBounds() {
     const viewport = $('.map-viewport'), board = $('#board');
     if (!viewport || !board) return;
@@ -9107,8 +9158,13 @@ const PartyUI = (() => {
     overlay.hidden = false;
   }
 
-  function lockForeignTurn(p) {
+  function gateTurnControls(p) {
     if (!p) return;
+    // 操作區是最後一道防線：若快照聲稱正在等二選一，卻沒有任何有效選項，
+    // 立即收束成可結束回合，避免單機或多人畫面被空狀態鎖住。
+    if (p.phase === 'decision' && p.pendingDecision && !app()?.pendingDecisionIsValid?.(p)) {
+      app()?.clearInvalidPendingDecision?.(p);
+    }
     const active = p.players?.[p.turnIndex];
     const aiTurn = Boolean(active?.isAI);
     const mine = p.net ? window.PartyNet?.canAct(p) : !aiTurn;
@@ -9293,7 +9349,7 @@ const PartyUI = (() => {
     updateTurnTimerDisplay();
     ensureDebugPanel(p);
     document.body.classList.toggle('debug-mode', Boolean(p.ext?.debug));
-    lockForeignTurn(p);
+    gateTurnControls(p);
     const active = p.players?.[p.turnIndex];
     const thinking = Boolean(active?.isAI && (p.net?.aiThinking?.playerId === active.id || !p.net));
     setAIThinking(thinking, active?.name, p.net?.aiThinking?.phase || 'turn');
@@ -10499,6 +10555,12 @@ function isHandlingEvent(playerId=activePlayer()?.id){
     state.pendingDecision?.playerId===playerId
   );
 }
+function pendingDecisionIsValid(game=state){
+  return isValidPendingDecision(game);
+}
+function clearInvalidPendingDecision(game=state){
+  return normalizePendingDecision(game);
+}
 function localActivePlayerId(){
   const player=activePlayer();
   return PartyNet.isClient&&player?.id===PartyNet.myPlayerId?player.id:null;
@@ -11273,14 +11335,15 @@ function renderTurn(){
   const aiTurn=Boolean(p.isAI);
   const localTurn=PartyNet.canAct(state)&&!aiTurn;
   const localLocked=localActionLocked();
+  const decisionPending=pendingDecisionIsValid(state);
   const canRoll=(Boolean(state.ext?.debug)||state.phase==='roll')&&localTurn&&!localLocked,
-    canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
+    canEnd=['resolve','skipped'].includes(state.phase)&&!decisionPending&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
   const skill=r.skill,blocked=chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
   const acquireTargets=state.players.filter(x=>canAcquire(state,p,x));
   const canAct=['roll','resolve'].includes(state.phase)&&localTurn;
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
-  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
+  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':decisionPending?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
   const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${aiTurn?' · 🤖 電腦思考中...':localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
   $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn" ${localTurn?'':'disabled'}>⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
@@ -11677,6 +11740,9 @@ function renderModal(){
 }
 function render(){
   const onHome=page==='home';
+  // 舊快照或特殊格 UI 例外可能只留下 phase='decision'，卻沒有可用選項。
+  // 先在畫面與操作鎖之前修復，避免顯示「請先完成二選一決策」的軟鎖。
+  if(clearInvalidPendingDecision()&&!PartyNet.isClient)save();
   if(state)syncTurnClock();else clearTurnClock();
   if(!state||onHome){try{PartyUI.clearTurnLock?.()}catch{}}
   $('#round-badge').hidden=onHome||!state;
@@ -12291,7 +12357,7 @@ window.PartyApp={
   run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
   aiScheduleTurn, aiScheduleAuction, aiRunAuction, aiRunTurn, aiResolvePending,
-  cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
+  cashSnapshot, animateCashChanges, recoverAfterUiError, pendingDecisionIsValid, clearInvalidPendingDecision, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
     const event=extResolvePortal(state,at);

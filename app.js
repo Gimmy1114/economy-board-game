@@ -1,6 +1,6 @@
 import {ITEMS,BOARD,SECTORS,STAR_COST,STAR_GOAL,ACQUIRE_COST,ACQUIRE_DISCOUNT_COST,REBEL_COST,AI_DIFFICULTIES,DEFAULT_AI_DIFFICULTY,normalizeAIDifficulty} from './data.js';
 import {PARTY_ROLES,GAME_MODES,MODE_IDS,LOBBY_ROLES,MYTHIC_ITEMS,MYTHIC_BY_ID,SPECIAL_ITEMS,QUICK_DECISIONS,SPECIAL_TILE_META,SPECIAL_ITEM_BY_ID,RANDOM_ROLE_ID,WHEEL_EFFECTS,PLAYER_COLORS} from './party_data.js';
-import {createGame,finish,rollDie,resolveLanding,chooseDecision,useItem,acquireTarget,acquisitionCost,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,boardOf,startTurn,cornerMarksForBoard,tileNo,resumeRoundAfterDoom} from './engine.js';
+import {createGame,finish,rollDie,resolveLanding,chooseDecision,useItem,acquireTarget,acquisitionCost,rebel,endTurn,removePlayer,statusChips,canAcquire,canRebel,exportGame,importGame,boardOf,startTurn,cornerMarksForBoard,tileNo,resumeRoundAfterDoom,isValidPendingDecision,normalizePendingDecision} from './engine.js';
 import {
   extInitGame,extResolveRoles,extUseSkill,extBuyStar,extCanBuyStar,extForcedStarInfo,extForcedBuyStar,extPlayerStatusMetric,
   extUseMythic,extDiscard,extAddMythic,extAddItem,extModeInfo,extRoleOf,extStatusChips,extStarPrice,
@@ -711,6 +711,12 @@ function isHandlingEvent(playerId=activePlayer()?.id){
     ext.wheelPending?.playerId===playerId||
     state.pendingDecision?.playerId===playerId
   );
+}
+function pendingDecisionIsValid(game=state){
+  return isValidPendingDecision(game);
+}
+function clearInvalidPendingDecision(game=state){
+  return normalizePendingDecision(game);
 }
 function localActivePlayerId(){
   const player=activePlayer();
@@ -1486,14 +1492,15 @@ function renderTurn(){
   const aiTurn=Boolean(p.isAI);
   const localTurn=PartyNet.canAct(state)&&!aiTurn;
   const localLocked=localActionLocked();
+  const decisionPending=pendingDecisionIsValid(state);
   const canRoll=(Boolean(state.ext?.debug)||state.phase==='roll')&&localTurn&&!localLocked,
-    canEnd=['resolve','skipped'].includes(state.phase)&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
+    canEnd=['resolve','skipped'].includes(state.phase)&&!decisionPending&&localTurn&&!localTurnLocks.isMoving&&!localTurnLocks.isHandlingEvent;
   const skill=r.skill,blocked=chips.some(c=>['限電禁技','凍結','冰封','弱者的領域','帳戶凍結'].some(x=>c.label.includes(x)));
   const acquireTargets=state.players.filter(x=>canAcquire(state,p,x));
   const canAct=['roll','resolve'].includes(state.phase)&&localTurn;
   const forced=extForcedStarInfo(state);
   const tile=boardTile(state,p.position)||BOARD[p.position];
-  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':state.phase==='decision'?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
+  const status=aiTurn?'🤖 電腦思考中...':state.phase==='skipped'?'這回合被暫停，無法擲骰。':decisionPending?'請先完成二選一決策。':state.phase==='resolve'?`本回合已停在「${h(tile.label)}」格。`:'先使用道具、神話道具或技能，再擲骰前進。';
   const netNote=state.net?`<span class="net-turn-note">🌐 房間 ${h(state.net.roomCode)}${aiTurn?' · 🤖 電腦思考中...':localTurn?' · 你的回合':' · 等待其他玩家'}</span>`:'';
   const hostCrown=PartyUI.isHostPlayer?.(p.id,state)?'<span class="host-crown" aria-label="房主" title="房主">👑</span>':'';
   $('#turn-content').innerHTML=`<div class="turn-head"><div><h2 class="turn-name" style="color:${colors[p.color]}">${h(p.name)}${aiBadge(p)}${hostCrown}</h2><p class="turn-role">${r.icon} ${h(r.name)} · ${h(r.sector)}</p></div><span class="position-label">第 ${tileNo(p.position)} 格</span></div><div class="mode-strip ${mode.id}"><span>${mode.icon} ${h(mode.name)}</span><small>${h(mode.win)}</small></div>${netNote}<div class="stat-strip"><div><span>💰 總資產</span><strong class="${p.cash<0?'negative':''}">${money(p.cash)}</strong></div>${playerMetricMarkup(p)}<div><span>⚡ 技能能量</span><strong>${p.energy}</strong></div></div>${chipMarkup(chips)}<p class="turn-meta">${h(status)}</p><div class="turn-actions${localTurn?'':' is-waiting'}"><button class="primary" data-action="roll" ${canRoll?'':'disabled'}>🎲 擲骰子</button>${forced?`<button class="secondary forced-star-btn" data-action="forced-buy-star" ${canAct?'':'disabled'}>🌟 強買星 · ${money(forced.cost)}</button>`:''}<button class="secondary skill-btn" data-action="skill" ${canRoll&&p.energy>0&&!blocked&&!p.ext?.eliminated?'':'disabled'} title="${h(skill.desc)}">${skill.icon} 發動技能 · ${h(skill.name)}<span class="skill-info-btn" role="button" tabindex="0" data-skill-info="${h(p.roleId)}" aria-label="查看${h(skill.name)}說明">i</span></button>${acquireTargets.length?`<button class="secondary acquire-btn" data-action="acquire" ${canAct?'':'disabled'}>🤝 併購對手</button>`:''}${canRebel(p)?`<button class="secondary rebel-btn" data-action="rebel" ${canAct?'':'disabled'}>🕊️ 獨立反撲 · ${money(REBEL_COST)}</button>`:''}${state.ext?.debug?`<button class="secondary debug-end-turn" data-action="debug-end-turn" ${localTurn?'':'disabled'}>⏭️ 結束回合</button>`:''}</div><p class="skill-hint"><strong>${skill.icon} ${h(skill.name)}</strong>${h(skill.desc)}（消耗 1 能量）</p>${itemBarMarkup(p)}${canEnd?`<button class="primary end-turn" data-action="end-turn">${state.turnIndex===state.players.length-1?'結束回合，結算本季 →':'結束回合，交給下一位 →'}</button>`:''}`;
@@ -1890,6 +1897,9 @@ function renderModal(){
 }
 function render(){
   const onHome=page==='home';
+  // 舊快照或特殊格 UI 例外可能只留下 phase='decision'，卻沒有可用選項。
+  // 先在畫面與操作鎖之前修復，避免顯示「請先完成二選一決策」的軟鎖。
+  if(clearInvalidPendingDecision()&&!PartyNet.isClient)save();
   if(state)syncTurnClock();else clearTurnClock();
   if(!state||onHome){try{PartyUI.clearTurnLock?.()}catch{}}
   $('#round-badge').hidden=onHome||!state;
@@ -2504,7 +2514,7 @@ window.PartyApp={
   run, runAction, render, notify, showSpecialItemUnlockBanner, playGateOfTruthEffect, save, startGameFromConfig, returnToLobby, resetGame, resetToHome, dismissInvestmentSettlement, visibleInvestmentSettlement,
   activePlayer, openTarget, closeModal, PartyNet, SoundManager, resolveLanding,
   aiScheduleTurn, aiScheduleAuction, aiRunAuction, aiRunTurn, aiResolvePending,
-  cashSnapshot, animateCashChanges, recoverAfterUiError, forceCloseAuctionWaitingUI,
+  cashSnapshot, animateCashChanges, recoverAfterUiError, pendingDecisionIsValid, clearInvalidPendingDecision, forceCloseAuctionWaitingUI,
   resumeTurnClock,
   resolvePortal:(at)=>runAction({type:'PORTAL_RESOLVE',at},()=>{
     const event=extResolvePortal(state,at);

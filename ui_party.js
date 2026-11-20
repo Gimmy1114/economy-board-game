@@ -195,8 +195,8 @@ export const PartyUI = (() => {
       const viewport = document.createElement('div'); viewport.className = 'map-viewport';
       const zoom = document.createElement('div'); zoom.className = 'map-zoom-controls'; zoom.innerHTML = '<button type="button" class="zoom-btn" data-map-zoom="in" aria-label="放大地圖" title="放大">＋</button><button type="button" class="zoom-btn" data-map-zoom="out" aria-label="縮小地圖" title="縮小">－</button>';
       const camera = document.createElement('button'); camera.type = 'button'; camera.className = 'camera-follow-btn'; camera.dataset.mapCameraFollow = '1'; camera.innerHTML = '<span class="camera-follow-icon" aria-hidden="true">◎</span><span class="camera-follow-label">跟隨</span>';
-      const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '查看所有最近動態');
-      const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<button type="button" class="map-history-close" data-map-history-close aria-label="關閉動態清單">×</button><div class="map-history-items"></div>';
+      const ticker = document.createElement('button'); ticker.type = 'button'; ticker.className = 'map-latest-log'; ticker.dataset.mapHistoryOpen = '1'; ticker.setAttribute('aria-label', '展開最近動態'); ticker.setAttribute('aria-expanded', 'false');
+      const history = document.createElement('div'); history.className = 'map-history'; history.hidden = true; history.innerHTML = '<div class="map-history-items"></div>';
       map.append(viewport, zoom, camera, ticker, history); controls.append(side, players); grid.prepend(map, controls);
       viewport.append(boardPanel);
       viewport.addEventListener('pointerdown', mapPointerDown);
@@ -240,8 +240,7 @@ export const PartyUI = (() => {
       const zoom = target.closest('[data-map-zoom]');
       if (zoom) zoomMap(zoom.dataset.mapZoom === 'in' ? 1.2 : 1 / 1.2);
       if (target.closest('[data-map-camera-follow]')) toggleCameraFollow();
-      if (target.closest('[data-map-history-open]')) toggleMapHistory(true);
-      if (target.closest('[data-map-history-close]')) toggleMapHistory(false);
+      if (target.closest('[data-map-history-open]')) { toggleMapHistory(!mobileMap.historyOpen); return; }
       if (target.closest('[data-mobile-mode-rules]')) showMobileModeRules();
       if (target.closest('[data-mobile-panel="players"]')) showMobilePanel('players');
       if (target.closest('[data-mobile-panel="rules"]')) showMobilePanel('rules');
@@ -441,10 +440,24 @@ export const PartyUI = (() => {
     const log = $('#party-log'), ticker = $('.map-latest-log'), list = $('.map-history-items');
     if (!log || !ticker || !list) return;
     const entries = game?.log || [];
-    ticker.textContent = entries[0] || '等待玩家擲骰。';
+    const latest = entries[0] || '等待玩家擲骰。';
+    ticker.innerHTML = `<span class="map-latest-log-text">${h(latest)}</span><span class="map-latest-log-toggle" aria-hidden="true">${mobileMap.historyOpen ? '▲' : '▼'}</span>`;
+    ticker.setAttribute('aria-expanded', String(mobileMap.historyOpen));
+    ticker.setAttribute('aria-label', mobileMap.historyOpen ? '收合最近動態' : '展開最近動態');
     list.innerHTML = entries.length ? entries.map(item => `<div class="log-item">${h(item)}</div>`).join('') : '<div class="log-item">等待玩家擲骰。</div>';
   }
-  function toggleMapHistory(open) { mobileMap.historyOpen = open; const el = $('.map-history'); if (el) el.hidden = !open; }
+  function toggleMapHistory(open) {
+    mobileMap.historyOpen = Boolean(open);
+    const el = $('.map-history');
+    if (el) el.hidden = !mobileMap.historyOpen;
+    const ticker = $('.map-latest-log');
+    if (ticker) {
+      ticker.setAttribute('aria-expanded', String(mobileMap.historyOpen));
+      ticker.setAttribute('aria-label', mobileMap.historyOpen ? '收合最近動態' : '展開最近動態');
+      const indicator = ticker.querySelector('.map-latest-log-toggle');
+      if (indicator) indicator.textContent = mobileMap.historyOpen ? '▲' : '▼';
+    }
+  }
   function updateMapBounds() {
     const viewport = $('.map-viewport'), board = $('#board');
     if (!viewport || !board) return;
@@ -2990,8 +3003,13 @@ export const PartyUI = (() => {
     overlay.hidden = false;
   }
 
-  function lockForeignTurn(p) {
+  function gateTurnControls(p) {
     if (!p) return;
+    // 操作區是最後一道防線：若快照聲稱正在等二選一，卻沒有任何有效選項，
+    // 立即收束成可結束回合，避免單機或多人畫面被空狀態鎖住。
+    if (p.phase === 'decision' && p.pendingDecision && !app()?.pendingDecisionIsValid?.(p)) {
+      app()?.clearInvalidPendingDecision?.(p);
+    }
     const active = p.players?.[p.turnIndex];
     const aiTurn = Boolean(active?.isAI);
     const mine = p.net ? window.PartyNet?.canAct(p) : !aiTurn;
@@ -3176,7 +3194,7 @@ export const PartyUI = (() => {
     updateTurnTimerDisplay();
     ensureDebugPanel(p);
     document.body.classList.toggle('debug-mode', Boolean(p.ext?.debug));
-    lockForeignTurn(p);
+    gateTurnControls(p);
     const active = p.players?.[p.turnIndex];
     const thinking = Boolean(active?.isAI && (p.net?.aiThinking?.playerId === active.id || !p.net));
     setAIThinking(thinking, active?.name, p.net?.aiThinking?.phase || 'turn');
