@@ -529,11 +529,12 @@ body.settlement-active .center-backdrop .evil-tower{display:none!important}
   .map-zoom-controls,.map-latest-log{display:flex}
   .map-history:not([hidden]){display:block}
   .map-zoom-controls{position:absolute;z-index:30;top:8px;right:8px;display:flex;gap:5px}
-  .map-zoom-controls button,.map-history-close{width:40px;height:40px;border:1px solid #ffffff38;border-radius:10px;background:#182a32eF;color:#fff;font-size:20px;box-shadow:0 3px 12px #0004}
+  .map-zoom-controls button{width:40px;height:40px;border:1px solid #ffffff38;border-radius:10px;background:#182a32eF;color:#fff;font-size:20px;box-shadow:0 3px 12px #0004}
   .map-zoom-controls button:disabled{opacity:.4}
-  .map-latest-log{position:absolute;z-index:20;bottom:0;left:0;right:0;height:40px;display:flex;align-items:center;overflow:hidden;padding:0 10px;background:#102028;color:#e9f4ef;font-size:12px;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}
-  .map-history{position:absolute;z-index:25;inset:0 0 40px;background:#f7f8f5;overflow:auto;padding:48px 12px 10px;color:#33443f}
-  .map-history-close{position:fixed;top:8px;left:8px;background:#243a40}
+  .map-latest-log{position:absolute;z-index:20;bottom:0;left:0;right:0;height:40px;display:flex;align-items:center;gap:8px;overflow:hidden;padding:0 10px;background:#102028;color:#e9f4ef;font-size:12px;white-space:nowrap;cursor:pointer;text-align:left}
+  .map-latest-log-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .map-latest-log-toggle{flex:none;font-size:10px;color:#a9d9cc}
+  .map-history{position:absolute;z-index:25;inset:0 0 40px;background:#f7f8f5;overflow:auto;padding:10px 12px;color:#33443f}
   .map-history .log-item{font-size:12px;padding:7px 4px;border-bottom:1px solid #dde5df;line-height:1.4}
   .mobile-control-area .side-stack{position:relative;inset:auto;display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px;background:#f5f7f4}
   .mobile-control-area .player-area{position:absolute;inset:0;min-height:0;overflow:auto;padding:8px;background:#f5f7f4}
